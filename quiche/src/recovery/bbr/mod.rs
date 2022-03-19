@@ -414,6 +414,8 @@ mod tests {
                 delivered_time: now,
                 first_sent_time: now,
                 is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
                 has_data: false,
             };
 
@@ -481,6 +483,8 @@ mod tests {
                 delivered_time: now,
                 first_sent_time: now,
                 is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
                 has_data: false,
             };
 
@@ -546,6 +550,8 @@ mod tests {
                 delivered_time: now,
                 first_sent_time: now,
                 is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
                 has_data: false,
             };
 
@@ -594,6 +600,8 @@ mod tests {
                 delivered_time: now,
                 first_sent_time: now,
                 is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
                 has_data: false,
             };
 
@@ -665,6 +673,8 @@ mod tests {
                 delivered_time: now,
                 first_sent_time: now,
                 is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
                 has_data: false,
             };
 
@@ -735,6 +745,8 @@ mod tests {
                 delivered_time: now,
                 first_sent_time: now,
                 is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
                 has_data: false,
             };
 
@@ -786,6 +798,8 @@ mod tests {
             delivered_time: now,
             first_sent_time: now,
             is_app_limited: false,
+            tx_in_flight: 0,
+            lost: 0,
             has_data: false,
         };
 

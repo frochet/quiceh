@@ -212,6 +212,8 @@ mod tests {
             delivered_time: std::time::Instant::now(),
             first_sent_time: std::time::Instant::now(),
             is_app_limited: false,
+            tx_in_flight: 0,
+            lost: 0,
             has_data: false,
         };
 
@@ -230,6 +232,8 @@ mod tests {
             delivered_time: now,
             first_sent_time: now,
             is_app_limited: false,
+            tx_in_flight: 0,
+            lost: 0,
             rtt: Duration::ZERO,
         }];
 
@@ -261,6 +265,8 @@ mod tests {
             delivered_time: std::time::Instant::now(),
             first_sent_time: std::time::Instant::now(),
             is_app_limited: false,
+            tx_in_flight: 0,
+            lost: 0,
             has_data: false,
         };
 
@@ -280,6 +286,8 @@ mod tests {
                 delivered_time: now,
                 first_sent_time: now,
                 is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
                 rtt: Duration::ZERO,
             },
             Acked {
@@ -290,6 +298,8 @@ mod tests {
                 delivered_time: now,
                 first_sent_time: now,
                 is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
                 rtt: Duration::ZERO,
             },
             Acked {
@@ -300,6 +310,8 @@ mod tests {
                 delivered_time: now,
                 first_sent_time: now,
                 is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
                 rtt: Duration::ZERO,
             },
         ];
@@ -335,6 +347,8 @@ mod tests {
             first_sent_time: std::time::Instant::now(),
             is_app_limited: false,
             has_data: false,
+            tx_in_flight: 0,
+            lost: 0,
         };
 
         r.congestion_event(
@@ -374,6 +388,8 @@ mod tests {
             first_sent_time: std::time::Instant::now(),
             is_app_limited: false,
             has_data: false,
+            tx_in_flight: 0,
+            lost: 0,
         };
 
         // Trigger congestion event to update ssthresh
@@ -401,6 +417,8 @@ mod tests {
             delivered_time: now,
             first_sent_time: now,
             is_app_limited: false,
+            tx_in_flight: 0,
+            lost: 0,
             rtt: Duration::ZERO,
         }];
 
