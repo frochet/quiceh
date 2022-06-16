@@ -331,6 +331,7 @@
 #![allow(clippy::upper_case_acronyms)]
 #![warn(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![feature(map_first_last)]
 
 #[macro_use]
 extern crate log;
@@ -3612,6 +3613,9 @@ impl Connection {
 
         let local = stream.local;
 
+        let urgency = stream.urgency;
+        let incremental = stream.incremental;
+
         #[cfg(feature = "qlog")]
         let offset = stream.recv.off_front();
 
@@ -3627,7 +3631,12 @@ impl Connection {
                     self.streams.collect(stream_id, local);
                 }
 
-                self.streams.mark_readable(stream_id, false);
+                self.streams.mark_readable(
+                    stream_id,
+                    urgency,
+                    incremental,
+                    false,
+                );
                 return Err(e);
             },
         };
@@ -3643,7 +3652,8 @@ impl Connection {
         }
 
         if !readable {
-            self.streams.mark_readable(stream_id, false);
+            self.streams
+                .mark_readable(stream_id, urgency, incremental, false);
         }
 
         if complete {
@@ -3755,6 +3765,9 @@ impl Connection {
         // Get existing stream or create a new one.
         let stream = self.get_or_create_stream(stream_id, true)?;
 
+        let urgency = stream.urgency;
+        let incremental = stream.incremental;
+
         #[cfg(feature = "qlog")]
         let offset = stream.send.off_back();
 
@@ -3764,7 +3777,12 @@ impl Connection {
             Ok(v) => v,
 
             Err(e) => {
-                self.streams.mark_writable(stream_id, false);
+                self.streams.mark_writable(
+                    stream_id,
+                    urgency,
+                    incremental,
+                    false,
+                );
                 return Err(e);
             },
         };
@@ -3800,7 +3818,8 @@ impl Connection {
         }
 
         if !writable {
-            self.streams.mark_writable(stream_id, false);
+            self.streams
+                .mark_writable(stream_id, urgency, incremental, false);
         }
 
         self.tx_cap -= sent;
@@ -3885,6 +3904,9 @@ impl Connection {
         // Get existing stream.
         let stream = self.streams.get_mut(stream_id).ok_or(Error::Done)?;
 
+        let urgency = stream.urgency;
+        let incremental = stream.incremental;
+
         match direction {
             Shutdown::Read => {
                 stream.recv.shutdown()?;
@@ -3894,7 +3916,12 @@ impl Connection {
                 }
 
                 // Once shutdown, the stream is guaranteed to be non-readable.
-                self.streams.mark_readable(stream_id, false);
+                self.streams.mark_readable(
+                    stream_id,
+                    urgency,
+                    incremental,
+                    false,
+                );
             },
 
             Shutdown::Write => {
@@ -3910,7 +3937,12 @@ impl Connection {
                 self.streams.mark_reset(stream_id, true, err, final_size);
 
                 // Once shutdown, the stream is guaranteed to be non-writable.
-                self.streams.mark_writable(stream_id, false);
+                self.streams.mark_writable(
+                    stream_id,
+                    urgency,
+                    incremental,
+                    false,
+                );
             },
         }
 
@@ -5115,6 +5147,9 @@ impl Connection {
 
                 let was_readable = stream.is_readable();
 
+                let urgency = stream.urgency;
+                let incremental = stream.incremental;
+
                 let max_off_delta =
                     stream.recv.reset(error_code, final_size)? as u64;
 
@@ -5123,7 +5158,12 @@ impl Connection {
                 }
 
                 if !was_readable && stream.is_readable() {
-                    self.streams.mark_readable(stream_id, true);
+                    self.streams.mark_readable(
+                        stream_id,
+                        urgency,
+                        incremental,
+                        true,
+                    );
                 }
 
                 self.rx_data += max_off_delta;
@@ -5160,6 +5200,9 @@ impl Connection {
 
                 let was_writable = stream.is_writable();
 
+                let urgency = stream.urgency;
+                let incremental = stream.incremental;
+
                 // Try stopping the stream.
                 if let Ok((final_size, unsent)) = stream.send.stop(error_code) {
                     // Claw back some flow control allowance from data that was
@@ -5174,7 +5217,12 @@ impl Connection {
                         .mark_reset(stream_id, true, error_code, final_size);
 
                     if !was_writable {
-                        self.streams.mark_writable(stream_id, true);
+                        self.streams.mark_writable(
+                            stream_id,
+                            urgency,
+                            incremental,
+                            true,
+                        );
                     }
                 }
             },
@@ -5242,10 +5290,18 @@ impl Connection {
 
                 let was_readable = stream.is_readable();
 
+                let urgency = stream.urgency;
+                let incremental = stream.incremental;
+
                 stream.recv.write(data)?;
 
                 if !was_readable && stream.is_readable() {
-                    self.streams.mark_readable(stream_id, true);
+                    self.streams.mark_readable(
+                        stream_id,
+                        urgency,
+                        incremental,
+                        true,
+                    );
                 }
 
                 self.rx_data += max_off_delta;
@@ -5289,6 +5345,9 @@ impl Connection {
 
                 let writable = stream.is_writable();
 
+                let urgency = stream.urgency;
+                let incremental = stream.incremental;
+
                 // If the stream is now flushable push it to the flushable queue,
                 // but only if it wasn't already queued.
                 if stream.is_flushable() && !was_flushable {
@@ -5298,7 +5357,12 @@ impl Connection {
                 }
 
                 if writable {
-                    self.streams.mark_writable(stream_id, true);
+                    self.streams.mark_writable(
+                        stream_id,
+                        urgency,
+                        incremental,
+                        true,
+                    );
                 }
             },
 

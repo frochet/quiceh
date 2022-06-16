@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use std::collections::hash_map;
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::BinaryHeap;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -91,6 +91,61 @@ type BuildStreamIdHasher = std::hash::BuildHasherDefault<StreamIdHasher>;
 pub type StreamIdHashMap<V> = HashMap<u64, V, BuildStreamIdHasher>;
 pub type StreamIdHashSet = HashSet<u64, BuildStreamIdHasher>;
 
+pub type StreamPrioritySet = BTreeSet<StreamPriorityKey>;
+
+#[derive(Clone, Copy, Debug, Eq)]
+pub struct StreamPriorityKey {
+    pub stream_id: u64,
+    pub urgency: u8,
+    pub incremental: bool,
+}
+
+impl PartialEq for StreamPriorityKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.stream_id == other.stream_id
+    }
+}
+
+impl PartialOrd for StreamPriorityKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        // Ignore priority if ID matches.
+        if self.stream_id == other.stream_id {
+            return Some(std::cmp::Ordering::Equal);
+        }
+
+        // First, order by urgency...
+        if self.urgency != other.urgency {
+            return self.urgency.partial_cmp(&other.urgency);
+        }
+
+        // ...when the urgency is the same, and both are not incremental, order
+        // by stream ID...
+        if !self.incremental && !other.incremental {
+            return self.stream_id.partial_cmp(&other.stream_id);
+        }
+
+        // ...non-incremental takes priority over incremental...
+        if self.incremental && !other.incremental {
+            return Some(std::cmp::Ordering::Greater);
+        }
+        if !self.incremental && other.incremental {
+            return Some(std::cmp::Ordering::Less);
+        }
+
+        // ...finally, when both are incremental, `other` takes precedence (so
+        // `self` is always sorted after other same-urgency incremental
+        // entries).
+        Some(std::cmp::Ordering::Greater)
+    }
+}
+
+impl Ord for StreamPriorityKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // `partial_cmp()` never returns `None`, so this should be safe.
+        self.partial_cmp(other).unwrap()
+    }
+}
+
 /// Keeps track of QUIC streams and enforces stream limits.
 #[derive(Default)]
 pub struct StreamMap {
@@ -141,18 +196,18 @@ pub struct StreamMap {
     /// same urgency level Non-incremental streams are scheduled first, in the
     /// order of their stream IDs, and incremental streams are scheduled in a
     /// round-robin fashion after all non-incremental streams have been flushed.
-    flushable: BTreeMap<u8, (BinaryHeap<std::cmp::Reverse<u64>>, VecDeque<u64>)>,
+    flushable: StreamPrioritySet,
 
     /// Set of stream IDs corresponding to streams that have outstanding data
     /// to read. This is used to generate a `StreamIter` of streams without
     /// having to iterate over the full list of streams.
-    readable: StreamIdHashSet,
+    readable: StreamPrioritySet,
 
     /// Set of stream IDs corresponding to streams that have enough flow control
     /// capacity to be written to, and is not finished. This is used to generate
     /// a `StreamIter` of streams without having to iterate over the full list
     /// of streams.
-    writable: StreamIdHashSet,
+    writable: StreamPrioritySet,
 
     /// Set of stream IDs corresponding to streams that are almost out of flow
     /// control credit and need to send MAX_STREAM_DATA. This is used to
@@ -329,7 +384,13 @@ impl StreamMap {
 
         // Stream might already be writable due to initial flow control limits.
         if stream.is_writable() {
-            self.writable.insert(id);
+            let k = StreamPriorityKey {
+                stream_id: id,
+                urgency: stream.urgency,
+                incremental: stream.incremental,
+            };
+
+            self.writable.insert(k);
         }
 
         Ok(stream)
@@ -344,21 +405,14 @@ impl StreamMap {
     /// Queueing a stream multiple times simultaneously means that it might be
     /// unfairly scheduled more often than other streams, and might also cause
     /// spurious cycles through the queue, so it should be avoided.
-    pub fn push_flushable(&mut self, stream_id: u64, urgency: u8, incr: bool) {
-        // Push the element to the back of the queue corresponding to the given
-        // urgency. If the queue doesn't exist yet, create it first.
-        let queues = self
-            .flushable
-            .entry(urgency)
-            .or_insert_with(|| (BinaryHeap::new(), VecDeque::new()));
-
-        if !incr {
-            // Non-incremental streams are scheduled in order of their stream ID.
-            queues.0.push(std::cmp::Reverse(stream_id))
-        } else {
-            // Incremental streams are scheduled in a round-robin fashion.
-            queues.1.push_back(stream_id)
-        };
+    pub fn push_flushable(
+        &mut self, stream_id: u64, urgency: u8, incremental: bool,
+    ) {
+        self.flushable.insert(StreamPriorityKey {
+            stream_id,
+            urgency,
+            incremental,
+        });
     }
 
     /// Removes and returns the first stream ID from the flushable streams
@@ -367,59 +421,47 @@ impl StreamMap {
     /// Note that if the stream is still flushable after sending some of its
     /// outstanding data, it needs to be added back to the queue.
     pub fn pop_flushable(&mut self) -> Option<u64> {
-        // Remove the first element from the queue corresponding to the lowest
-        // urgency that has elements.
-        let (node, clear) =
-            if let Some((urgency, queues)) = self.flushable.iter_mut().next() {
-                let node = if !queues.0.is_empty() {
-                    queues.0.pop().map(|x| x.0)
-                } else {
-                    queues.1.pop_front()
-                };
-
-                let clear = if queues.0.is_empty() && queues.1.is_empty() {
-                    Some(*urgency)
-                } else {
-                    None
-                };
-
-                (node, clear)
-            } else {
-                (None, None)
-            };
-
-        // Remove the queue from the list of queues if it is now empty, so that
-        // the next time `pop_flushable()` is called the next queue with elements
-        // is used.
-        if let Some(urgency) = &clear {
-            self.flushable.remove(urgency);
-        }
-
-        node
+        self.flushable.pop_first().map(|k| k.stream_id)
     }
 
     /// Adds or removes the stream ID to/from the readable streams set.
     ///
     /// If the stream was already in the list, this does nothing.
-    pub fn mark_readable(&mut self, stream_id: u64, readable: bool) {
+    pub fn mark_readable(
+        &mut self, stream_id: u64, urgency: u8, incremental: bool, readable: bool,
+    ) {
+        let k = StreamPriorityKey {
+            stream_id,
+            urgency,
+            incremental,
+        };
+
         if readable {
-            self.readable.insert(stream_id);
+            self.readable.insert(k);
         } else {
-            self.readable.remove(&stream_id);
+            self.readable.remove(&k);
         }
     }
 
-    /// Adds or removes the stream ID to/from the writable streams set.
+    /// Adds the stream ID to/from the writable streams set.
     ///
     /// This should also be called anytime a new stream is created, in addition
     /// to when an existing stream becomes writable (or stops being writable).
     ///
     /// If the stream was already in the list, this does nothing.
-    pub fn mark_writable(&mut self, stream_id: u64, writable: bool) {
+    pub fn mark_writable(
+        &mut self, stream_id: u64, urgency: u8, incremental: bool, writable: bool,
+    ) {
+        let k = StreamPriorityKey {
+            stream_id,
+            urgency,
+            incremental,
+        };
+
         if writable {
-            self.writable.insert(stream_id);
+            self.writable.insert(k);
         } else {
-            self.writable.remove(&stream_id);
+            self.writable.remove(&k);
         }
     }
 
@@ -544,17 +586,17 @@ impl StreamMap {
 
     /// Creates an iterator over streams that have outstanding data to read.
     pub fn readable(&self) -> StreamIter {
-        StreamIter::from(&self.readable)
+        StreamIter::from(self.readable.iter().map(|v| &v.stream_id))
     }
 
     /// Creates an iterator over streams that can be written to.
     pub fn writable(&self) -> StreamIter {
-        StreamIter::from(&self.writable)
+        StreamIter::from(self.writable.iter().map(|v| &v.stream_id))
     }
 
     /// Creates an iterator over streams that need to send MAX_STREAM_DATA.
     pub fn almost_full(&self) -> StreamIter {
-        StreamIter::from(&self.almost_full)
+        StreamIter::from(self.almost_full.iter())
     }
 
     /// Creates an iterator over streams that need to send STREAM_DATA_BLOCKED.
@@ -734,11 +776,11 @@ pub struct StreamIter {
     streams: VecDeque<u64>,
 }
 
-impl StreamIter {
+impl<'a> StreamIter {
     #[inline]
-    fn from(streams: &StreamIdHashSet) -> Self {
+    fn from<I: Iterator<Item = &'a u64>>(streams: I) -> Self {
         StreamIter {
-            streams: streams.iter().copied().collect(),
+            streams: streams.copied().collect(),
         }
     }
 }
@@ -3313,5 +3355,255 @@ mod tests {
                 .err(),
             Some(Error::StreamLimit)
         );
+    }
+
+    #[test]
+    fn stream_priority_key() {
+        // Ignore priority if stream ID matches.
+        let a = StreamPriorityKey {
+            stream_id: 0,
+            urgency: 0,
+            incremental: false,
+        };
+        let b = StreamPriorityKey {
+            stream_id: 0,
+            urgency: 100,
+            incremental: true,
+        };
+        assert_eq!(a, b);
+        assert_eq!(b, a);
+
+        // Order by urgency.
+        let a = StreamPriorityKey {
+            stream_id: 8,
+            urgency: 0,
+            incremental: false,
+        };
+        let b = StreamPriorityKey {
+            stream_id: 0,
+            urgency: 100,
+            incremental: false,
+        };
+        assert!(a < b);
+        assert!(b > a);
+
+        // Order by stream ID.
+        let a = StreamPriorityKey {
+            stream_id: 0,
+            urgency: 100,
+            incremental: false,
+        };
+        let b = StreamPriorityKey {
+            stream_id: 8,
+            urgency: 100,
+            incremental: false,
+        };
+        assert!(a < b);
+        assert!(b > a);
+
+        // Order by incremental.
+        let a = StreamPriorityKey {
+            stream_id: 0,
+            urgency: 100,
+            incremental: true,
+        };
+        let b = StreamPriorityKey {
+            stream_id: 8,
+            urgency: 100,
+            incremental: false,
+        };
+        assert!(a > b);
+        assert!(b < a);
+
+        // Order by incremental.
+        let a = StreamPriorityKey {
+            stream_id: 0,
+            urgency: 100,
+            incremental: true,
+        };
+        let b = StreamPriorityKey {
+            stream_id: 8,
+            urgency: 100,
+            incremental: true,
+        };
+        assert!(a > b);
+        assert!(b > a);
+
+        // s.insert(a);
+        // s.insert(b);
+    }
+
+    #[test]
+    fn stream_priority_set() {
+        let mut s = StreamPrioritySet::new();
+
+        let a = StreamPriorityKey {
+            stream_id: 8,
+            urgency: 0,
+            incremental: false,
+        };
+        s.insert(a.clone());
+
+        assert_eq!(
+            s.get(&StreamPriorityKey {
+                stream_id: 8,
+                urgency: 255,
+                incremental: true
+            }),
+            Some(&a),
+        );
+
+        assert_eq!(
+            s.get(&StreamPriorityKey {
+                stream_id: 0,
+                urgency: 255,
+                incremental: false
+            }),
+            None,
+        );
+
+        assert_eq!(
+            s.remove(&StreamPriorityKey {
+                stream_id: 8,
+                urgency: 127,
+                incremental: true
+            }),
+            true,
+        );
+
+        let entries = vec![
+            // First entry.
+            StreamPriorityKey {
+                stream_id: 64,
+                urgency: 127,
+                incremental: false,
+            },
+            // Lower stream ID, but higher urgency.
+            StreamPriorityKey {
+                stream_id: 0,
+                urgency: 200,
+                incremental: false,
+            },
+            // Higher stream ID, but lower urgency.
+            StreamPriorityKey {
+                stream_id: 12,
+                urgency: 10,
+                incremental: false,
+            },
+            // First entry again, but higher urgency.
+            StreamPriorityKey {
+                stream_id: 64,
+                urgency: 129,
+                incremental: false,
+            },
+            // Block of same-urgency, incremental entries.
+            StreamPriorityKey {
+                stream_id: 24,
+                urgency: 15,
+                incremental: true,
+            },
+            StreamPriorityKey {
+                stream_id: 16,
+                urgency: 15,
+                incremental: true,
+            },
+            StreamPriorityKey {
+                stream_id: 20,
+                urgency: 15,
+                incremental: true,
+            },
+            // Same urgency, but not incremental.
+            StreamPriorityKey {
+                stream_id: 28,
+                urgency: 15,
+                incremental: false,
+            },
+            // Another block of same-urgency, incremental entries.
+            StreamPriorityKey {
+                stream_id: 32,
+                urgency: 25,
+                incremental: true,
+            },
+            StreamPriorityKey {
+                stream_id: 40,
+                urgency: 25,
+                incremental: true,
+            },
+            StreamPriorityKey {
+                stream_id: 36,
+                urgency: 25,
+                incremental: true,
+            },
+            // Same urgency, but not incremental.
+            StreamPriorityKey {
+                stream_id: 44,
+                urgency: 25,
+                incremental: false,
+            },
+        ];
+
+        for k in &entries {
+            s.insert(*k);
+        }
+
+        let ordered = vec![
+            StreamPriorityKey {
+                stream_id: 12,
+                urgency: 10,
+                incremental: false,
+            },
+            StreamPriorityKey {
+                stream_id: 28,
+                urgency: 15,
+                incremental: false,
+            },
+            StreamPriorityKey {
+                stream_id: 24,
+                urgency: 15,
+                incremental: true,
+            },
+            StreamPriorityKey {
+                stream_id: 16,
+                urgency: 15,
+                incremental: true,
+            },
+            StreamPriorityKey {
+                stream_id: 20,
+                urgency: 15,
+                incremental: true,
+            },
+            StreamPriorityKey {
+                stream_id: 44,
+                urgency: 25,
+                incremental: false,
+            },
+            StreamPriorityKey {
+                stream_id: 32,
+                urgency: 25,
+                incremental: true,
+            },
+            StreamPriorityKey {
+                stream_id: 40,
+                urgency: 25,
+                incremental: true,
+            },
+            StreamPriorityKey {
+                stream_id: 36,
+                urgency: 25,
+                incremental: true,
+            },
+            StreamPriorityKey {
+                stream_id: 64,
+                urgency: 129,
+                incremental: false,
+            },
+            StreamPriorityKey {
+                stream_id: 0,
+                urgency: 200,
+                incremental: false,
+            },
+        ];
+
+        assert_eq!(s.into_iter().collect::<Vec<StreamPriorityKey>>(), ordered);
     }
 }
