@@ -365,8 +365,6 @@ pub fn run(
                         }
                     },
 
-                    Ok((_flow_id, quiche::h3::Event::Datagram)) => (),
-
                     Ok((_, quiche::h3::Event::PriorityUpdate)) => (),
 
                     Ok((_goaway_id, quiche::h3::Event::GoAway)) => (),
