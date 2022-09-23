@@ -12,9 +12,6 @@ fuzzing = ["quiche/fuzzing"]
 # Enable qlog support.
 qlog = ["quiche/qlog"]
 
-# Use BoringSSL provided by the boring crate.
-boringssl-boring-crate = ["quiche/boringssl-boring-crate"]
-
 # Enable sfv support.
 sfv = ["quiche/sfv"]
 

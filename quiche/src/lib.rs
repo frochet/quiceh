@@ -323,12 +323,6 @@
 //! quiche defines a number of [feature flags] to reduce the amount of compiled
 //! code and dependencies:
 //!
-//! * `boringssl-vendored` (default): Build the vendored BoringSSL library.
-//!
-//! * `boringssl-boring-crate`: Use the BoringSSL library provided by the
-//!   [boring] crate. It takes precedence over `boringssl-vendored` if both
-//!   features are enabled.
-//!
 //! * `pkg-config-meta`: Generate pkg-config metadata file for libquiche.
 //!
 //! * `ffi`: Build and expose the FFI API.
@@ -702,8 +696,6 @@ impl Config {
     /// [`SslContext`].
     ///
     /// [`SslContext`]: https://docs.rs/boring/latest/boring/ssl/struct.SslContext.html
-    #[cfg(feature = "boringssl-boring-crate")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "boringssl-boring-crate")))]
     pub fn with_boring_ssl_ctx(
         version: u32, tls_ctx: boring::ssl::SslContext,
     ) -> Result<Config> {
@@ -13159,7 +13151,6 @@ mod tests {
         assert_eq!(pipe.advance(), Ok(()));
     }
 
-    #[cfg(feature = "boringssl-boring-crate")]
     #[test]
     fn user_provided_boring_ctx() -> Result<()> {
         // Manually construct boring ssl ctx for server
