@@ -24,6 +24,8 @@
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+#![feature(map_first_last)]
+
 //! 🥧 Savoury implementation of the QUIC transport protocol and HTTP/3.
 //!
 //! [quiche] is an implementation of the QUIC transport protocol and HTTP/3 as
