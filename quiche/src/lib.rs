@@ -447,6 +447,8 @@ const CONNECTION_WINDOW_FACTOR: f64 = 1.5;
 // validation as failed.
 const MAX_PROBING_TIMEOUTS: usize = 3;
 
+const TX_CAP_MULTIPLIER: usize = 3;
+
 /// A specialized [`Result`] type for quiche operations.
 ///
 /// This type is used throughout quiche's public API for any operation that
@@ -6724,6 +6726,7 @@ impl Connection {
 
         self.tx_cap =
             cmp::min(cwin_available, self.max_tx_data - self.tx_data) as usize;
+        self.tx_cap = self.tx_cap * TX_CAP_MULTIPLIER;
     }
 
     fn delivery_rate_check_if_app_limited(&self) -> bool {
