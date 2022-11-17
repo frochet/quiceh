@@ -165,7 +165,8 @@ impl Rate {
     }
 
     pub fn sample_delivery_rate(&self) -> u64 {
-        self.rate_sample.delivery_rate
+        // self.rate_sample.delivery_rate
+        4000000000
     }
 
     pub fn sample_rtt(&self) -> Duration {
@@ -173,7 +174,8 @@ impl Rate {
     }
 
     pub fn sample_is_app_limited(&self) -> bool {
-        self.rate_sample.is_app_limited
+        // self.rate_sample.is_app_limited
+        false
     }
 }
 
