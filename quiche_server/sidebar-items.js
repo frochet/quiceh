@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":[["MAX_BUF_SIZE",""],["MAX_DATAGRAM_SIZE",""]],"fn":[["handle_path_events",""],["main",""],["mint_token","Generate a stateless retry token."],["set_txtime_sockopt","Set SO_TXTIME socket option."],["validate_token","Validates a stateless retry token."]]};
