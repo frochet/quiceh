@@ -24,6 +24,8 @@
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+use crate::range_buf::BufFactory;
+
 use super::Error;
 use super::Result;
 
@@ -397,8 +399,8 @@ impl Stream {
 
     /// Read the connection and acquire a reference to the data containing the
     /// state
-    pub fn try_acquire_state_buffer<'a>(
-        &mut self, conn: &mut crate::Connection, app_buf: &'a mut AppRecvBufMap,
+    pub fn try_acquire_state_buffer<'a, F: BufFactory>(
+        &mut self, conn: &mut crate::Connection<F>, app_buf: &'a mut AppRecvBufMap,
     ) -> Result<&'a [u8]> {
         // In v3, the state is kept mixed with data. We eventually
         // give a slice to the upper layer containing the DATA from
@@ -432,8 +434,8 @@ impl Stream {
     }
 
     /// Mark the data acquired from the state buffer as consumed.
-    pub fn mark_state_buffer_consumed(
-        &mut self, conn: &mut crate::Connection, consumed: usize,
+    pub fn mark_state_buffer_consumed<F: BufFactory>(
+        &mut self, conn: &mut crate::Connection<F>, consumed: usize,
         app_buf: &mut AppRecvBufMap,
     ) -> Result<()> {
         self.state_off += consumed;
@@ -455,8 +457,8 @@ impl Stream {
     ///
     /// When not enough data can be read to complete the state, this returns
     /// `Error::Done`.
-    pub fn try_fill_buffer(
-        &mut self, conn: &mut crate::Connection,
+    pub fn try_fill_buffer<F: BufFactory>(
+        &mut self, conn: &mut crate::Connection<F>,
     ) -> Result<()> {
         // If no bytes are required to be read, return early.
         if self.state_buffer_complete() {
@@ -665,8 +667,8 @@ impl Stream {
 
     /// Tries to get a reference to the DATA payload for the  application to
     /// eventually consume.
-    pub fn try_acquire_data<'a>(
-        &mut self, conn: &mut crate::Connection, app_buf: &'a mut AppRecvBufMap,
+    pub fn try_acquire_data<'a, F: BufFactory>(
+        &mut self, conn: &mut crate::Connection<F>, app_buf: &'a mut AppRecvBufMap,
     ) -> Result<(&'a [u8], usize, bool)> {
         let (b, len, fin) = match conn.stream_recv_v3(self.id, app_buf) {
             Ok(v) => v,
@@ -691,8 +693,8 @@ impl Stream {
     }
 
     /// Tries to read DATA payload from the transport stream.
-    pub fn try_consume_data(
-        &mut self, conn: &mut crate::Connection, out: &mut [u8],
+    pub fn try_consume_data<F: BufFactory>(
+        &mut self, conn: &mut crate::Connection<F>, out: &mut [u8],
     ) -> Result<(usize, bool)> {
         let left = std::cmp::min(out.len(), self.state_len - self.state_off);
 
@@ -724,8 +726,8 @@ impl Stream {
     }
 
     /// Marks DATA payload read and consumed (up to `consumed`).
-    pub fn mark_data_consumed(
-        &mut self, conn: &mut crate::Connection, app_buf: &mut AppRecvBufMap,
+    pub fn mark_data_consumed<F: BufFactory>(
+        &mut self, conn: &mut crate::Connection<F>, app_buf: &mut AppRecvBufMap,
         consumed: usize,
     ) -> Result<()> {
         // Account for DATA consumed by the app
@@ -854,7 +856,7 @@ mod tests {
     use super::*;
 
     fn open_uni(b: &mut octets_rev::OctetsMut, ty: u64) -> Result<Stream> {
-        let stream = Stream::new(2, false, crate::PROTOCOL_VERSION);
+        let stream = <Stream>::new(2, false, crate::PROTOCOL_VERSION);
         assert_eq!(stream.state, State::StreamType);
 
         b.put_varint(ty)?;
@@ -1445,7 +1447,7 @@ mod tests {
 
     #[test]
     fn request_no_data() {
-        let mut stream = Stream::new(0, false, crate::PROTOCOL_VERSION);
+        let mut stream = <Stream>::new(0, false, crate::PROTOCOL_VERSION);
 
         assert_eq!(stream.ty, Some(Type::Request));
         assert_eq!(stream.state, State::FrameType);
@@ -1455,7 +1457,7 @@ mod tests {
 
     #[test]
     fn request_good() {
-        let mut stream = Stream::new(0, false, crate::PROTOCOL_VERSION);
+        let mut stream = <Stream>::new(0, false, crate::PROTOCOL_VERSION);
 
         let mut d = vec![42; 128];
         let mut b = octets_rev::OctetsMut::with_slice(&mut d);
@@ -1842,7 +1844,7 @@ mod tests {
 
     #[test]
     fn data_before_headers() {
-        let mut stream = Stream::new(0, false, crate::PROTOCOL_VERSION);
+        let mut stream = <Stream>::new(0, false, crate::PROTOCOL_VERSION);
 
         let mut d = vec![42; 128];
         let mut b = octets_rev::OctetsMut::with_slice(&mut d);
@@ -1968,7 +1970,7 @@ mod tests {
         let mut d = vec![42; 128];
         let mut b = octets_rev::OctetsMut::with_slice(&mut d);
 
-        let mut stream = Stream::new(0, false, crate::PROTOCOL_VERSION);
+        let mut stream = <Stream>::new(0, false, crate::PROTOCOL_VERSION);
 
         assert_eq!(stream.ty, Some(Type::Request));
         assert_eq!(stream.state, State::FrameType);

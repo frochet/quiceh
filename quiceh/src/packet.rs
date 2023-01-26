@@ -1197,7 +1197,7 @@ impl PktNumSpace {
 
             crypto_0rtt_open: None,
 
-            crypto_stream: stream::Stream::new(
+            crypto_stream: <stream::Stream>::new(
                 0, // dummy
                 u64::MAX,
                 u64::MAX,
@@ -1211,7 +1211,7 @@ impl PktNumSpace {
     }
 
     pub fn clear(&mut self) {
-        self.crypto_stream = stream::Stream::new(
+        self.crypto_stream = <stream::Stream>::new(
             0, // dummy
             u64::MAX,
             u64::MAX,

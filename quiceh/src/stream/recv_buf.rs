@@ -35,7 +35,7 @@ use crate::Result;
 
 use crate::flowcontrol;
 
-use super::RangeBuf;
+use crate::range_buf::RangeBuf;
 use super::RecvBufInfo;
 use super::DEFAULT_STREAM_WINDOW;
 use std::collections::btree_map;
@@ -548,6 +548,7 @@ impl RecvBuf {
 mod tests {
     use super::*;
     use crate::stream::app_recv_buf::AppRecvBuf;
+    use crate::range_buf::DefaultBufFactory;
 
     #[test]
     fn empty_read() {
@@ -591,7 +592,7 @@ mod tests {
                 (app_buf.read_mut(&mut recv).unwrap().len(), recv.is_fin()),
                 (5, false)
             );
-            assert!(app_buf.has_consumed(None, 5).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 5).is_ok());
         }
 
         // Don't store non-fin empty buffer.
@@ -921,7 +922,7 @@ mod tests {
             assert_eq!(recv.off, 0);
             assert_eq!(recv.heap.len(), 0);
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 9);
-            assert!(app_buf.has_consumed(None, 9).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 9).is_ok());
             assert_eq!(recv.is_fin(), false);
         }
 
@@ -1002,7 +1003,7 @@ mod tests {
             assert_eq!(recv.off, 0);
             assert_eq!(recv.heap.len(), 0);
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 9);
-            assert!(app_buf.has_consumed(None, 9).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 9).is_ok());
             assert_eq!(recv.heap.len(), 0);
         }
         assert_eq!(recv.len, 9);
@@ -1058,7 +1059,7 @@ mod tests {
             assert_eq!(recv.off, 0);
             assert!(app_buf.advance_if_possible(&mut recv).is_ok());
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 9);
-            assert!(app_buf.has_consumed(None, 9).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 9).is_ok());
             assert!(!recv.is_fin());
             assert_eq!(recv.heap.len(), 0);
         }
@@ -1117,7 +1118,7 @@ mod tests {
             assert_eq!(recv.heap.len(), 1);
             assert!(app_buf.advance_if_possible(&mut recv).is_ok());
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 9);
-            assert!(app_buf.has_consumed(None, 9).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 9).is_ok());
             assert_eq!(recv.heap.len(), 0);
         }
 
@@ -1188,7 +1189,7 @@ mod tests {
             assert_eq!(recv.heap.len(), 2);
             assert!(app_buf.advance_if_possible(&mut recv).is_ok());
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 18);
-            assert!(app_buf.has_consumed(None, 18).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 18).is_ok());
             assert_eq!(recv.heap.len(), 0);
         }
         assert_eq!(recv.len, 18);
@@ -1247,7 +1248,7 @@ mod tests {
             assert_eq!(recv.off, 0);
             assert_eq!(recv.heap.len(), 0);
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 9);
-            assert!(app_buf.has_consumed(None, 9).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 9).is_ok());
             assert!(!recv.is_fin());
             assert_eq!(recv.len, 9);
             assert_eq!(recv.off, 9);
@@ -1302,7 +1303,7 @@ mod tests {
             assert_eq!(recv.heap.len(), 1);
             assert!(app_buf.advance_if_possible(&mut recv).is_ok());
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 12);
-            assert!(app_buf.has_consumed(None, 12).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 12).is_ok());
             assert!(recv.is_fin());
         }
         assert_eq!(recv.len, 12);
@@ -1383,7 +1384,7 @@ mod tests {
             assert_eq!(recv.off, 0);
             assert_eq!(recv.heap.len(), 2);
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 2);
-            assert!(app_buf.has_consumed(None, 2).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 2).is_ok());
             assert!(!recv.is_fin());
         }
 
@@ -1462,7 +1463,7 @@ mod tests {
             assert_eq!(recv.off, 0);
             assert_eq!(recv.heap.len(), 2);
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 5);
-            assert!(app_buf.has_consumed(None, 5).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 5).is_ok());
             assert!(!recv.is_fin());
             assert_eq!(recv.len, 16);
             assert_eq!(recv.off, 5);
@@ -1531,7 +1532,7 @@ mod tests {
             assert_eq!(recv.heap.len(), 2);
             assert!(app_buf.advance_if_possible(&mut recv).is_ok());
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 15);
-            assert!(app_buf.has_consumed(None, 15).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 15).is_ok());
             assert!(recv.is_fin());
         }
         assert_eq!(recv.len, 15);
@@ -1636,7 +1637,7 @@ mod tests {
             assert_eq!(recv.heap.len(), 5);
             assert!(app_buf.advance_if_possible(&mut recv).is_ok());
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 14);
-            assert!(app_buf.has_consumed(None, 14).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 14).is_ok());
             assert!(!recv.is_fin());
             assert_eq!(recv.heap.len(), 0);
         }

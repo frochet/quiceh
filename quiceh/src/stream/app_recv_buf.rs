@@ -1,3 +1,4 @@
+use crate::BufFactory;
 use super::recv_buf::RecvBuf;
 use super::Stream;
 use super::DEFAULT_STREAM_WINDOW;
@@ -151,8 +152,8 @@ impl AppRecvBufMap {
         }
     }
 
-    pub(crate) fn read_mut(
-        &mut self, stream_id: u64, stream: &mut Stream,
+    pub(crate) fn read_mut<F: BufFactory>(
+        &mut self, stream_id: u64, stream: &mut Stream<F>,
     ) -> Result<&mut [u8]> {
         let buf = match self.buffers.entry(stream_id) {
             hash_map::Entry::Vacant(_v) => {
@@ -164,8 +165,8 @@ impl AppRecvBufMap {
         Ok(buf)
     }
 
-    pub(crate) fn advance_if_possible(
-        &mut self, stream_id: u64, stream: &mut Stream,
+    pub(crate) fn advance_if_possible<F: BufFactory>(
+        &mut self, stream_id: u64, stream: &mut Stream<F>,
     ) -> Result<()> {
         match self.buffers.entry(stream_id) {
             hash_map::Entry::Vacant(_v) => Err(Error::AppRecvBufNotFound),
@@ -174,8 +175,8 @@ impl AppRecvBufMap {
         }
     }
 
-    pub(crate) fn has_consumed(
-        &mut self, stream_id: u64, stream: Option<&Stream>, consumed: usize,
+    pub(crate) fn has_consumed<F: BufFactory>(
+        &mut self, stream_id: u64, stream: Option<&Stream<F>>, consumed: usize,
     ) -> Result<usize> {
         match self.buffers.entry(stream_id) {
             hash_map::Entry::Occupied(v) => {
@@ -382,8 +383,8 @@ impl AppRecvBuf {
     /// has been consumed by the application. It returns whether the buffer
     /// can be collected, and how many bytes are available for read.
     #[inline]
-    pub fn has_consumed(
-        &mut self, stream: Option<&Stream>, consumed: usize,
+    pub fn has_consumed<F: BufFactory>(
+        &mut self, stream: Option<&Stream<F>>, consumed: usize,
     ) -> Result<(bool, usize)> {
         self.consumed = self.consumed.saturating_add(consumed);
         if let Some(stream) = stream {
