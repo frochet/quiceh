@@ -323,6 +323,7 @@ impl Context {
         // false -> 0x00 SSL_VERIFY_NONE
         let mode = i32::from(verify);
 
+        #[cfg(not(feature = "openssl"))]
         unsafe {
             SSL_CTX_set_verify(self.as_mut_ptr(), mode, ptr::null());
         }
@@ -374,9 +375,9 @@ impl Context {
     pub fn set_early_data_enabled(&mut self, enabled: bool) {
         let enabled = i32::from(enabled);
 
-        unsafe {
-            SSL_CTX_set_early_data_enabled(self.as_mut_ptr(), enabled);
-        }
+        // unsafe {
+        //     SSL_CTX_set_early_data_enabled(self.as_mut_ptr(), enabled);
+        // }
     }
 
     fn as_mut_ptr(&mut self) -> *mut SSL_CTX {
@@ -474,11 +475,12 @@ impl Handshake {
 
     pub fn set_quic_early_data_context(&mut self, context: &[u8]) -> Result<()> {
         map_result(unsafe {
-            SSL_set_quic_early_data_context(
-                self.as_mut_ptr(),
-                context.as_ptr(),
-                context.len(),
-            )
+            1
+            // SSL_set_quic_early_data_context(
+            //     self.as_mut_ptr(),
+            //     context.as_ptr(),
+            //     context.len(),
+            // )
         })
     }
 
@@ -573,8 +575,8 @@ impl Handshake {
                 return Err(Error::TlsFail);
             }
 
-            let session =
-                SSL_SESSION_from_bytes(session.as_ptr(), session.len(), ctx);
+            let session = ptr::null_mut() as *mut SSL_SESSION;
+                // SSL_SESSION_from_bytes(session.as_ptr(), session.len(), ctx);
 
             if session.is_null() {
                 return Err(Error::TlsFail);
@@ -628,7 +630,7 @@ impl Handshake {
     }
 
     pub fn reset_early_data_reject(&mut self) {
-        unsafe { SSL_reset_early_data_reject(self.as_mut_ptr()) };
+        // unsafe { SSL_reset_early_data_reject(self.as_mut_ptr()) };
     }
 
     pub fn write_level(&self) -> crypto::Level {
@@ -643,6 +645,7 @@ impl Handshake {
     }
 
     pub fn curve(&self) -> Option<String> {
+        #[cfg(not(feature = "openssl"))]
         let curve = unsafe {
             let curve_id = SSL_get_curve_id(self.as_ptr());
             if curve_id == 0 {
@@ -657,10 +660,14 @@ impl Handshake {
             }
         };
 
+        #[cfg(feature = "openssl")]
+        let curve = "";
+
         Some(curve.to_string())
     }
 
     pub fn sigalg(&self) -> Option<String> {
+        #[cfg(not(feature = "openssl"))]
         let sigalg = unsafe {
             let sigalg_id = SSL_get_peer_signature_algorithm(self.as_ptr());
             if sigalg_id == 0 {
@@ -675,64 +682,69 @@ impl Handshake {
             }
         };
 
+        #[cfg(feature = "openssl")]
+        let sigalg = "";
+
         Some(sigalg.to_string())
     }
 
     pub fn peer_cert_chain(&self) -> Option<Vec<&[u8]>> {
-        let cert_chain = unsafe {
-            let chain =
-                map_result_ptr(SSL_get0_peer_certificates(self.as_ptr())).ok()?;
+        // let cert_chain = unsafe {
+        //     let chain =
+        //         map_result_ptr(SSL_get0_peer_certificates(self.as_ptr())).ok()?;
 
-            let num = sk_num(chain);
-            if num <= 0 {
-                return None;
-            }
+        //     let num = sk_num(chain);
+        //     if num <= 0 {
+        //         return None;
+        //     }
 
-            let mut cert_chain = vec![];
-            for i in 0..num {
-                let buffer =
-                    map_result_ptr(sk_value(chain, i) as *const CRYPTO_BUFFER)
-                        .ok()?;
+        //     let mut cert_chain = vec![];
+        //     for i in 0..num {
+        //         let buffer =
+        //             map_result_ptr(sk_value(chain, i) as *const CRYPTO_BUFFER)
+        //                 .ok()?;
 
-                let out_len = CRYPTO_BUFFER_len(buffer);
-                if out_len == 0 {
-                    return None;
-                }
+        //         let out_len = CRYPTO_BUFFER_len(buffer);
+        //         if out_len == 0 {
+        //             return None;
+        //         }
 
-                let out = CRYPTO_BUFFER_data(buffer);
-                let slice = slice::from_raw_parts(out, out_len);
+        //         let out = CRYPTO_BUFFER_data(buffer);
+        //         let slice = slice::from_raw_parts(out, out_len);
 
-                cert_chain.push(slice);
-            }
+        //         cert_chain.push(slice);
+        //     }
 
-            cert_chain
-        };
+        //     cert_chain
+        // };
 
-        Some(cert_chain)
+        // Some(cert_chain)
+        None
     }
 
     pub fn peer_cert(&self) -> Option<&[u8]> {
-        let peer_cert = unsafe {
-            let chain =
-                map_result_ptr(SSL_get0_peer_certificates(self.as_ptr())).ok()?;
-            if sk_num(chain) <= 0 {
-                return None;
-            }
+        None
+        // let peer_cert = unsafe {
+        //     let chain =
+        //         map_result_ptr(SSL_get0_peer_certificates(self.as_ptr())).ok()?;
+        //     if sk_num(chain) <= 0 {
+        //         return None;
+        //     }
 
-            let buffer =
-                map_result_ptr(sk_value(chain, 0) as *const CRYPTO_BUFFER)
-                    .ok()?;
+        //     let buffer =
+        //         map_result_ptr(sk_value(chain, 0) as *const CRYPTO_BUFFER)
+        //             .ok()?;
 
-            let out_len = CRYPTO_BUFFER_len(buffer);
-            if out_len == 0 {
-                return None;
-            }
+        //     let out_len = CRYPTO_BUFFER_len(buffer);
+        //     if out_len == 0 {
+        //         return None;
+        //     }
 
-            let out = CRYPTO_BUFFER_data(buffer);
-            slice::from_raw_parts(out, out_len)
-        };
+        //     let out = CRYPTO_BUFFER_data(buffer);
+        //     slice::from_raw_parts(out, out_len)
+        // };
 
-        Some(peer_cert)
+        // Some(peer_cert)
     }
 
     #[cfg(test)]
@@ -789,7 +801,11 @@ impl Handshake {
     }
 
     pub fn is_in_early_data(&self) -> bool {
+        #[cfg(not(feature = "openssl"))]
         unsafe { SSL_in_early_data(self.as_ptr()) == 1 }
+
+        #[cfg(feature = "openssl")]
+        false
     }
 
     pub fn clear(&mut self) -> Result<()> {
@@ -1174,9 +1190,9 @@ extern fn new_session(ssl: *mut SSL, session: *mut SSL_SESSION) -> c_int {
         let mut out: *mut u8 = std::ptr::null_mut();
         let mut out_len: usize = 0;
 
-        if SSL_SESSION_to_bytes(session, &mut out, &mut out_len) == 0 {
+        // if SSL_SESSION_to_bytes(session, &mut out, &mut out_len) == 0 {
             return 0;
-        }
+        // }
 
         let session_bytes = std::slice::from_raw_parts(out, out_len).to_vec();
         OPENSSL_free(out as *mut c_void);
@@ -1283,6 +1299,7 @@ extern {
         ctx: *mut SSL_CTX, cb: extern fn(ssl: *mut SSL, line: *const c_char),
     );
 
+    #[cfg(not(feature = "openssl"))]
     fn SSL_CTX_set_tlsext_ticket_keys(
         ctx: *mut SSL_CTX, key: *const u8, key_len: usize,
     ) -> c_int;
@@ -1306,6 +1323,7 @@ extern {
 
     fn SSL_CTX_set_early_data_enabled(ctx: *mut SSL_CTX, enabled: i32);
 
+    #[cfg(not(feature = "openssl"))]
     fn SSL_CTX_set_session_cache_mode(ctx: *mut SSL_CTX, mode: c_int) -> c_int;
 
     fn SSL_CTX_sess_set_new_cb(
@@ -1313,7 +1331,13 @@ extern {
         cb: extern fn(ssl: *mut SSL, session: *mut SSL_SESSION) -> c_int,
     );
 
+    #[cfg(feature = "openssl")]
+    fn SSL_CTX_ctrl(
+        ctx: *mut SSL_CTX, cmd: c_int, larg: c_long, parg: *mut c_void,
+    ) -> c_long;
+
     // SSL
+    #[cfg(not(feature = "openssl"))]
     fn SSL_get_ex_new_index(
         argl: c_long, argp: *const c_void, unused: *const c_void,
         dup_unused: *const c_void, free_func: *const c_void,
@@ -1333,10 +1357,14 @@ extern {
 
     fn SSL_get_current_cipher(ssl: *const SSL) -> *const SSL_CIPHER;
 
+    #[cfg(not(feature = "openssl"))]
     fn SSL_get_curve_id(ssl: *const SSL) -> u16;
+    #[cfg(not(feature = "openssl"))]
     fn SSL_get_curve_name(curve: u16) -> *const c_char;
 
+    #[cfg(not(feature = "openssl"))]
     fn SSL_get_peer_signature_algorithm(ssl: *const SSL) -> u16;
+    #[cfg(not(feature = "openssl"))]
     fn SSL_get_signature_algorithm_name(
         sigalg: u16, include_curve: i32,
     ) -> *const c_char;
@@ -1347,11 +1375,14 @@ extern {
 
     fn SSL_get0_peer_certificates(ssl: *const SSL) -> *const STACK_OF;
 
+    #[cfg(not(feature = "openssl"))]
     fn SSL_set_min_proto_version(ssl: *mut SSL, version: u16);
+    #[cfg(not(feature = "openssl"))]
     fn SSL_set_max_proto_version(ssl: *mut SSL, version: u16);
 
     fn SSL_set_quiet_shutdown(ssl: *mut SSL, mode: c_int);
 
+    #[cfg(not(feature = "openssl"))]
     fn SSL_set_tlsext_host_name(ssl: *mut SSL, name: *const c_char) -> c_int;
 
     fn SSL_set_quic_transport_params(
@@ -1364,6 +1395,7 @@ extern {
 
     fn SSL_set_quic_use_legacy_codepoint(ssl: *mut SSL, use_legacy: c_int);
 
+    #[cfg(not(feature = "openssl"))]
     fn SSL_set_quic_early_data_context(
         ssl: *mut SSL, context: *const u8, context_len: usize,
     ) -> c_int;
@@ -1404,6 +1436,11 @@ extern {
 
     fn SSL_in_early_data(ssl: *const SSL) -> c_int;
 
+    #[cfg(feature = "openssl")]
+    fn SSL_ctrl(
+        ssl: *mut SSL, cmd: c_int, larg: c_long, parg: *mut c_void,
+    ) -> c_long;
+
     fn SSL_clear(ssl: *mut SSL) -> c_int;
 
     fn SSL_free(ssl: *mut SSL);
@@ -1412,10 +1449,12 @@ extern {
     fn SSL_CIPHER_get_id(cipher: *const SSL_CIPHER) -> c_uint;
 
     // SSL_SESSION
+    #[cfg(not(feature = "openssl"))]
     fn SSL_SESSION_to_bytes(
         session: *const SSL_SESSION, out: *mut *mut u8, out_len: *mut usize,
     ) -> c_int;
 
+    #[cfg(not(feature = "openssl"))]
     fn SSL_SESSION_from_bytes(
         input: *const u8, input_len: usize, ctx: *const SSL_CTX,
     ) -> *mut SSL_SESSION;
@@ -1452,4 +1491,99 @@ extern {
 
     // OPENSSL
     fn OPENSSL_free(ptr: *mut c_void);
+
+    // CRYPTO
+    #[cfg(feature = "openssl")]
+    fn CRYPTO_get_ex_new_index(
+        class_index: c_int, argl: c_long, argp: *const c_void,
+        new_func: *const c_void, dup_func: *const c_void,
+        free_func: *const c_void,
+    ) -> c_int;
+}
+
+// OpenSSL compatibility functions.
+//
+// These don't 100% follow the OpenSSL API (e.g. some arguments have slightly
+// different types) in order to make them compatible with the BoringSSL API.
+
+#[cfg(feature = "openssl")]
+#[allow(non_snake_case)]
+unsafe fn SSL_CTX_set_session_cache_mode(ctx: *mut SSL_CTX, mode: c_int) -> c_int {
+    const SSL_CTRL_SET_SESS_CACHE_MODE: c_int = 44;
+
+    SSL_CTX_ctrl(
+        ctx,
+        SSL_CTRL_SET_SESS_CACHE_MODE,
+        mode as c_long,
+        ptr::null_mut(),
+    ) as c_int
+}
+
+#[cfg(feature = "openssl")]
+#[allow(non_snake_case)]
+    unsafe fn SSL_CTX_set_tlsext_ticket_keys(
+        ctx: *mut SSL_CTX, key: *const u8, key_len: usize,
+    ) -> c_int {
+    const SSL_CTRL_SET_TLSEXT_TICKET_KEYS: c_int = 59;
+
+    SSL_CTX_ctrl(
+        ctx,
+        SSL_CTRL_SET_TLSEXT_TICKET_KEYS,
+        key_len as c_long,
+        key as *mut c_void,
+    ) as c_int
+
+    }
+
+#[cfg(feature = "openssl")]
+#[allow(non_snake_case)]
+unsafe fn SSL_set_min_proto_version(s: *mut SSL, version: u16) {
+    const SSL_CTRL_SET_MIN_PROTO_VERSION: c_int = 123;
+
+    SSL_ctrl(
+        s,
+        SSL_CTRL_SET_MIN_PROTO_VERSION,
+        version as c_long,
+        ptr::null_mut(),
+    );
+}
+
+#[cfg(feature = "openssl")]
+#[allow(non_snake_case)]
+unsafe fn SSL_set_max_proto_version(s: *mut SSL, version: u16) {
+    const SSL_CTRL_SET_MAX_PROTO_VERSION: c_int = 124;
+
+    SSL_ctrl(
+        s,
+        SSL_CTRL_SET_MAX_PROTO_VERSION,
+        version as c_long,
+        ptr::null_mut(),
+    );
+}
+
+#[cfg(feature = "openssl")]
+#[allow(non_snake_case)]
+unsafe fn SSL_set_tlsext_host_name(s: *mut SSL, name: *const c_char) -> c_int {
+    const SSL_CTRL_SET_TLSEXT_HOSTNAME: c_int = 55;
+
+    #[allow(non_upper_case_globals)]
+    const TLSEXT_NAMETYPE_host_name: c_long = 0;
+
+    SSL_ctrl(
+        s,
+        SSL_CTRL_SET_TLSEXT_HOSTNAME,
+        TLSEXT_NAMETYPE_host_name,
+        name as *mut c_void,
+    ) as c_int
+}
+
+#[cfg(feature = "openssl")]
+#[allow(non_snake_case)]
+unsafe fn SSL_get_ex_new_index(
+    argl: c_long, argp: *const c_void, newf: *const c_void, dupf: *const c_void,
+    freef: *const c_void,
+) -> c_int {
+    const CRYPTO_EX_INDEX_SSL: c_int = 0;
+
+    CRYPTO_get_ex_new_index(CRYPTO_EX_INDEX_SSL, argl, argp, newf, dupf, freef)
 }

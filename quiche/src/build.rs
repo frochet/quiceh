@@ -217,7 +217,8 @@ fn target_dir_path() -> std::path::PathBuf {
 
 fn main() {
     if cfg!(feature = "boringssl-vendored") &&
-        !cfg!(feature = "boringssl-boring-crate")
+        !cfg!(feature = "boringssl-boring-crate") &&
+        !cfg!(feature = "openssl")
     {
         let bssl_dir = std::env::var("QUICHE_BSSL_PATH").unwrap_or_else(|_| {
             let mut cfg = get_boringssl_cmake_config();
@@ -256,6 +257,14 @@ fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
     if target_os == "macos" {
         println!("cargo:rustc-cdylib-link-arg=-Wl,-undefined,dynamic_lookup");
+    }
+
+    if cfg!(feature = "openssl") {
+        #[cfg(feature = "openssl")]
+        pkg_config::probe_library("libcrypto").unwrap();
+
+        #[cfg(feature = "openssl")]
+        pkg_config::probe_library("libssl").unwrap();
     }
 
     if cfg!(feature = "pkg-config-meta") {

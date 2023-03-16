@@ -73,10 +73,10 @@ pub enum Algorithm {
 impl Algorithm {
     fn get_evp_aead(self) -> *const EVP_AEAD {
         match self {
-            Algorithm::AES128_GCM => unsafe { EVP_aead_aes_128_gcm() },
-            Algorithm::AES256_GCM => unsafe { EVP_aead_aes_256_gcm() },
+            Algorithm::AES128_GCM => unsafe { EVP_aes_128_gcm() },
+            Algorithm::AES256_GCM => unsafe { EVP_aes_256_gcm() },
             Algorithm::ChaCha20_Poly1305 => unsafe {
-                EVP_aead_chacha20_poly1305()
+                EVP_chacha20_poly1305()
             },
         }
     }
@@ -501,6 +501,28 @@ fn make_aead_ctx(alg: Algorithm, key: &[u8]) -> Result<EVP_AEAD_CTX> {
     Ok(ctx)
 }
 
+fn make_evp_cipher_ctx(alg: Algorithm, key: &[u8], enc: u32) -> Result<EVP_CIPHER_CTX> {
+    let ctx = unsafe {
+        let aead = alg.get_evp_aead();
+
+        let ctx = EVP_CIPHER_CTX_new();
+
+    // TagLength = CXPLAT_IV_LENGTH;
+    // AlgParam[0] = OSSL_PARAM_construct_size_t("ivlen", &TagLength);
+    // AlgParam[1] = OSSL_PARAM_construct_end();
+
+    //     let rc = EVP_CipherInit_ex2(ctx, aead, key, ptr::null(), enc, AlgParam);
+
+    //     if rc != 1 {
+    //         return Err(Error::CryptoFail);
+    //     }
+
+        EVP_CIPHER_CTX(ctx)
+    };
+
+    Ok(ctx)
+}
+
 fn hkdf_expand_label(
     prk: &hkdf::Prk, label: &[u8], out: &mut [u8],
 ) -> Result<()> {
@@ -560,11 +582,11 @@ struct EVP_AEAD_CTX {
 
 extern {
     // EVP_AEAD
-    fn EVP_aead_aes_128_gcm() -> *const EVP_AEAD;
+    fn EVP_aes_128_gcm() -> *const EVP_AEAD;
 
-    fn EVP_aead_aes_256_gcm() -> *const EVP_AEAD;
+    fn EVP_aes_256_gcm() -> *const EVP_AEAD;
 
-    fn EVP_aead_chacha20_poly1305() -> *const EVP_AEAD;
+    fn EVP_chacha20_poly1305() -> *const EVP_AEAD;
 
     // EVP_AEAD_CTX
     fn EVP_AEAD_CTX_init(
@@ -584,6 +606,22 @@ extern {
         nonce_len: usize, inp: *const u8, in_len: usize, extra_in: *const u8,
         extra_in_len: usize, ad: *const u8, ad_len: usize,
     ) -> c_int;
+}
+
+#[allow(non_camel_case_types)]
+#[repr(transparent)]
+struct EVP_CIPHER_CTX(c_void);
+
+impl Drop for EVP_CIPHER_CTX {
+    fn drop(&mut self) {
+        unsafe { EVP_CIPHER_CTX_free(self) }
+    }
+}
+
+extern {
+    // EVP_CIPHER_CTX
+    fn EVP_CIPHER_CTX_new() -> *mut EVP_CIPHER_CTX;
+    fn EVP_CIPHER_CTX_free(ctx: *mut EVP_CIPHER_CTX);
 }
 
 #[cfg(test)]
