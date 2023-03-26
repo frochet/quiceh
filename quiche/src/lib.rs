@@ -9838,15 +9838,28 @@ mod tests {
         let mut pipe = testing::Pipe::new().unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
 
-        let frames = [
+        let frames1 = [
             frame::Frame::Stream {
                 stream_id: 0,
                 data: stream::RangeBuf::from(b"aaaaa", 0, false),
             },
+            //frame::Frame::Stream {
+                //stream_id: 0,
+                //data: stream::RangeBuf::from(b"bbbbb", 3, false),
+            //},
+            //frame::Frame::Stream {
+                //stream_id: 0,
+                //data: stream::RangeBuf::from(b"ccccc", 6, false),
+            //},
+        ];
+
+        let frames2 = [
             frame::Frame::Stream {
                 stream_id: 0,
                 data: stream::RangeBuf::from(b"bbbbb", 3, false),
             },
+        ];
+        let frames3 = [
             frame::Frame::Stream {
                 stream_id: 0,
                 data: stream::RangeBuf::from(b"ccccc", 6, false),
@@ -9854,7 +9867,9 @@ mod tests {
         ];
 
         let pkt_type = packet::Type::Short;
-        assert!(pipe.send_pkt_to_server(pkt_type, &frames, &mut buf).is_ok());
+        assert!(pipe.send_pkt_to_server(pkt_type, &frames1, &mut buf).is_ok());
+        assert!(pipe.send_pkt_to_server(pkt_type, &frames2, &mut buf).is_ok());
+        assert!(pipe.send_pkt_to_server(pkt_type, &frames3, &mut buf).is_ok());
 
         let mut b = [0; 15];
         assert_eq!(pipe.server.stream_recv(0, &mut b), Ok((11, false)));
