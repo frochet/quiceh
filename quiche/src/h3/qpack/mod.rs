@@ -73,8 +73,8 @@ impl std::error::Error for Error {
     }
 }
 
-impl std::convert::From<octets::BufferTooShortError> for Error {
-    fn from(_err: octets::BufferTooShortError) -> Self {
+impl std::convert::From<octets::BufferError> for Error {
+    fn from(_err: octets::BufferError) -> Self {
         Error::BufferTooShort
     }
 }

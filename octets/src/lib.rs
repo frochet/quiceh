@@ -27,26 +27,34 @@
 /// Zero-copy abstraction for parsing and constructing network packets.
 use std::mem;
 use std::ptr;
+use likely_stable::if_unlikely;
 
 /// A specialized [`Result`] type for [`OctetsMut`] operations.
 ///
 /// [`Result`]: https://doc.rust-lang.org/std/result/enum.Result.html
 /// [`OctetsMut`]: struct.OctetsMut.html
-pub type Result<T> = std::result::Result<T, BufferTooShortError>;
+pub type Result<T> = std::result::Result<T, BufferError>;
 
 /// An error indicating that the provided [`OctetsMut`] is not big enough.
 ///
 /// [`OctetsMut`]: struct.OctetsMut.html
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BufferTooShortError;
 
-impl std::fmt::Display for BufferTooShortError {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BufferError {
+    BufferTooShortError,
+    BufferProtocolError,
+}
+
+impl std::fmt::Display for BufferError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "BufferTooShortError")
+        match self {
+            BufferError::BufferTooShortError => write!(f, "BufferTooShortError"),
+            BufferError::BufferProtocolError => write!(f, "BufferProtocolError"),
+        }
     }
 }
 
-impl std::error::Error for BufferTooShortError {
+impl std::error::Error for BufferError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         None
     }
@@ -58,7 +66,7 @@ macro_rules! peek_u {
         let src = &$b.buf[$b.off..];
 
         if src.len() < len {
-            return Err(BufferTooShortError);
+            return Err(BufferError::BufferTooShortError);
         }
 
         let mut out: $ty = 0;
@@ -73,6 +81,25 @@ macro_rules! peek_u {
     }};
 }
 
+macro_rules! peek_u_buflen_guaranteed {
+    ($b:expr, $ty:ty, $len:expr) => {{
+        let len = $len;
+        let src = &$b.buf[$b.off..];
+
+        let mut out: $ty = 0;
+        // XXX Todo - fix this with a byte-by-byte copy instead
+        unsafe {
+            let dst = &mut out as *mut $ty as *mut u8;
+            let off = (mem::size_of::<$ty>() - len) as isize;
+
+            ptr::copy_nonoverlapping(src.as_ptr(), dst.offset(off), len);
+        };
+
+        Ok(<$ty>::from_be(out))
+    }};
+}
+
+
 macro_rules! get_u {
     ($b:expr, $ty:ty, $len:expr) => {{
         let out = peek_u!($b, $ty, $len);
@@ -83,12 +110,48 @@ macro_rules! get_u {
     }};
 }
 
+macro_rules! peek_u_reverse {
+    ($b:expr, $ty:ty, $len:expr) => {{
+        if_unlikely!{ $b.off < $len => {
+            return Err(BufferError::BufferProtocolError);
+        } else {
+            $b.off -= $len;
+            let out = peek_u_buflen_guaranteed!($b, $ty, $len);
+            $b.off += $len;
+            return out;
+        }};
+    }};
+}
+
+/// The set of [..]_reverse() functions uses this macro to read the buffer
+/// in the reverse direction, from the end to the beginning, like reading
+/// a Manga.
+///
+/// For example, we start at offset = buf.len(); then rewind 1 byte to read 1 byte.
+/// The buffer offset keeps moving backward while reading information with the set of
+/// [..]_reverse() functions.
+macro_rules! get_u_reverse {
+    ($b:expr, $ty:ty, $len:expr) => {{
+        if_unlikely!{ $b.off < $len => {
+            // This is protocol-level bug -- Could happen if received frames
+            // are missing elements.
+            // Or if we're reading things we should not. In that case, it is
+            // a simple bug.
+            return Err(BufferError::BufferProtocolError);
+        } else {
+            $b.off -= $len;
+            let out = peek_u_buflen_guaranteed!($b, $ty, $len);
+            return out;
+        }};
+    }};
+}
+
 macro_rules! put_u {
     ($b:expr, $ty:ty, $v:expr, $len:expr) => {{
         let len = $len;
 
         if $b.buf.len() < $b.off + len {
-            return Err(BufferTooShortError);
+            return Err(BufferError::BufferTooShortError);
         }
 
         let v = $v;
@@ -139,10 +202,19 @@ impl<'a> Octets<'a> {
         get_u!(self, u8, 1)
     }
 
+    /// Decreases the buffer's offset by 1 and reads an unsigned 8-bit integer
+    pub fn get_u8_reverse(&mut self) -> Result<u8> {
+        get_u_reverse!(self, u8, 1);
+    }
+
     /// Reads an unsigned 8-bit integer from the current offset without
     /// advancing the buffer.
     pub fn peek_u8(&mut self) -> Result<u8> {
         peek_u!(self, u8, 1)
+    }
+
+    pub fn peek_u8_reverse(&mut self) -> Result<u8> {
+        peek_u_reverse!(self, u8, 1)
     }
 
     /// Reads an unsigned 16-bit integer in network byte-order from the current
@@ -151,10 +223,19 @@ impl<'a> Octets<'a> {
         get_u!(self, u16, 2)
     }
 
+    /// Decreases the buffer's offset by 2 and reads an unsigned 16-bit integer
+    pub fn get_u16_reverse(&mut self) -> Result<u16> {
+        get_u_reverse!(self, u16, 2)
+    }
+
     /// Reads an unsigned 24-bit integer in network byte-order from the current
     /// offset and advances the buffer.
     pub fn get_u24(&mut self) -> Result<u32> {
         get_u!(self, u32, 3)
+    }
+
+    pub fn get_u24_reverse(&mut self) -> Result<u32> {
+        get_u_reverse!(self, u32, 3)
     }
 
     /// Reads an unsigned 32-bit integer in network byte-order from the current
@@ -163,10 +244,18 @@ impl<'a> Octets<'a> {
         get_u!(self, u32, 4)
     }
 
+    pub fn get_u32_reverse(&mut self) -> Result<u32> {
+        get_u_reverse!(self, u32, 4)
+    }
+
     /// Reads an unsigned 64-bit integer in network byte-order from the current
     /// offset and advances the buffer.
     pub fn get_u64(&mut self) -> Result<u64> {
         get_u!(self, u64, 8)
+    }
+
+    pub fn get_u64_reverse(&mut self) -> Result<u64> {
+        get_u_reverse!(self, u64, 8)
     }
 
     /// Reads an unsigned variable-length integer in network byte-order from
@@ -177,11 +266,11 @@ impl<'a> Octets<'a> {
         let len = varint_parse_len(first);
 
         if len > self.cap() {
-            return Err(BufferTooShortError);
+            return Err(BufferError::BufferTooShortError);
         }
 
         let out = match len {
-            1 => u64::from(self.get_u8()?),
+            1 => u64::from(self.get_u8()? & 0x3f),
 
             2 => u64::from(self.get_u16()? & 0x3fff),
 
@@ -195,11 +284,39 @@ impl<'a> Octets<'a> {
         Ok(out)
     }
 
+    /// On PROTOCOL_VERSION_V3, variable length integers also need to be "reversed", with the
+    /// 2-bits length indicator at the end of the last byte.
+    pub fn get_varint_reverse(&mut self) -> Result<u64> {
+        if_unlikely!{ self.off == 0 => {
+            return Err(BufferError::BufferProtocolError);
+        } else {
+            self.off -= 1;
+            // This checks buffer size while we don't need it.
+            let last = self.peek_u8()?;
+            let len = varint_parse_len_reverse(last);
+            // Parse the whole varint and remove the last two bits
+            self.off += 1;
+
+            let out = match len {
+                1 => u64::from(self.get_u8_reverse()? >> 2),
+
+                2 => u64::from(self.get_u16_reverse()? >> 2),
+
+                4 => u64::from(self.get_u32_reverse()? >> 2),
+
+                8 => self.get_u64_reverse()? >> 2,
+
+                _ => unreachable!(),
+            };
+            return Ok(out);
+        }};
+    }
+
     /// Reads `len` bytes from the current offset without copying and advances
     /// the buffer.
     pub fn get_bytes(&mut self, len: usize) -> Result<Octets<'a>> {
         if self.cap() < len {
-            return Err(BufferTooShortError);
+            return Err(BufferError::BufferTooShortError);
         }
 
         let out = Octets {
@@ -212,11 +329,33 @@ impl<'a> Octets<'a> {
         Ok(out)
     }
 
-    /// Reads `len` bytes from the current offset without copying and advances
+    /// Rewind the buffer of  `len` bytes from the current offset and then
+    /// read without copying.
+    pub fn get_bytes_reverse(&mut self, len: usize) -> Result<Octets<'a>> {
+        if_unlikely!{ self.off < len => {
+            return Err(BufferError::BufferProtocolError);
+        } else {
+            self.off -= len;
+            let out = Octets {
+                buf: &self.buf[self.off..self.off + len],
+                off: 0,
+            };
+
+            return Ok(out);
+        }};
+    }
+
+    /// Reads `len` + 1 bytes from the current offset without copying and advances
     /// the buffer, where `len` is an unsigned 8-bit integer prefix.
     pub fn get_bytes_with_u8_length(&mut self) -> Result<Octets<'a>> {
         let len = self.get_u8()?;
         self.get_bytes(len as usize)
+    }
+
+    /// Rewind the buffer of `len` bytes and read `len` bytes  without copying.
+    pub fn get_bytes_with_u8_length_reverse(&mut self) -> Result<Octets<'a>> {
+        let len = self.get_u8_reverse()?;
+        self.get_bytes_reverse(len as usize)
     }
 
     /// Reads `len` bytes from the current offset without copying and advances
@@ -227,6 +366,12 @@ impl<'a> Octets<'a> {
         self.get_bytes(len as usize)
     }
 
+    /// Rewind the buffer of `len`+ 2 bytes and read `len` bytes  without copying.
+    pub fn get_bytes_with_u16_length_reverse(&mut self) -> Result<Octets<'a>> {
+        let len = self.get_u16_reverse()?;
+        self.get_bytes_reverse(len as usize)
+    }
+
     /// Reads `len` bytes from the current offset without copying and advances
     /// the buffer, where `len` is an unsigned variable-length integer prefix
     /// in network byte-order.
@@ -235,11 +380,17 @@ impl<'a> Octets<'a> {
         self.get_bytes(len as usize)
     }
 
+    /// Rewind the buffer of `len`+ varint bytes and read `len` bytes without copying.
+    pub fn get_bytes_with_varint_length_reverse(&mut self) -> Result<Octets<'a>> {
+        let len = self.get_varint_reverse()?;
+        self.get_bytes_reverse(len as usize)
+    }
+
     /// Reads `len` bytes from the current offset without copying and without
     /// advancing the buffer.
     pub fn peek_bytes(&self, len: usize) -> Result<Octets<'a>> {
         if self.cap() < len {
-            return Err(BufferTooShortError);
+            return Err(BufferError::BufferTooShortError);
         }
 
         let out = Octets {
@@ -253,7 +404,7 @@ impl<'a> Octets<'a> {
     /// Returns a slice of `len` elements from the current offset.
     pub fn slice(&self, len: usize) -> Result<&'a [u8]> {
         if len > self.cap() {
-            return Err(BufferTooShortError);
+            return Err(BufferError::BufferTooShortError);
         }
 
         Ok(&self.buf[self.off..self.off + len])
@@ -262,7 +413,7 @@ impl<'a> Octets<'a> {
     /// Returns a slice of `len` elements from the end of the buffer.
     pub fn slice_last(&self, len: usize) -> Result<&'a [u8]> {
         if len > self.cap() {
-            return Err(BufferTooShortError);
+            return Err(BufferError::BufferTooShortError);
         }
 
         let cap = self.cap();
@@ -272,7 +423,7 @@ impl<'a> Octets<'a> {
     /// Advances the buffer's offset.
     pub fn skip(&mut self, skip: usize) -> Result<()> {
         if skip > self.cap() {
-            return Err(BufferTooShortError);
+            return Err(BufferError::BufferTooShortError);
         }
 
         self.off += skip;
@@ -283,6 +434,12 @@ impl<'a> Octets<'a> {
     /// Returns the remaining capacity in the buffer.
     pub fn cap(&self) -> usize {
         self.buf.len() - self.off
+    }
+
+    /// Returns the remaining capacity in the buffer while reading
+    /// it on PROTOCOL_VERSION_V3.
+    pub fn cap_reverse(&self) -> usize {
+        self.off
     }
 
     /// Returns the total length of the buffer.
@@ -409,7 +566,7 @@ impl<'a> OctetsMut<'a> {
         let len = varint_parse_len(first);
 
         if len > self.cap() {
-            return Err(BufferTooShortError);
+            return Err(BufferError::BufferTooShortError);
         }
 
         let out = match len {
@@ -439,7 +596,7 @@ impl<'a> OctetsMut<'a> {
         &mut self, v: u64, len: usize,
     ) -> Result<&mut [u8]> {
         if self.cap() < len {
-            return Err(BufferTooShortError);
+            return Err(BufferError::BufferTooShortError);
         }
 
         let buf = match len {
@@ -469,11 +626,53 @@ impl<'a> OctetsMut<'a> {
         Ok(buf)
     }
 
+    /// Variable-Length Integer where the length information are located
+    /// in the two least significant bits.
+    #[inline]
+    pub fn put_varint_reverse(&mut self, v: u64) -> Result<&mut [u8]> {
+        self.put_varint_with_len_reverse(v, varint_len(v))
+    }
+
+    #[inline]
+    pub fn put_varint_with_len_reverse(
+        &mut self, v: u64, len: usize,
+    ) -> Result<&mut [u8]> {
+
+        if self.cap() < len {
+            return Err(BufferError::BufferTooShortError);
+        }
+
+        let buf = match len {
+            1 => {
+                self.put_u8((v<<2) as u8)?
+            },
+
+            2 => {
+                let buf = self.put_u16((v<<2) as u16)?;
+                buf[1] |= 0x1;
+                buf
+            },
+            4 => {
+                let buf = self.put_u32((v<<2) as u32)?;
+                buf[3] |= 0x2;
+                buf
+            }
+            8 => {
+                let buf = self.put_u64(v<<2)?;
+                buf[7] |= 0x3;
+                buf
+            },
+            _ => panic!("value is too large for varint"),
+        };
+
+        Ok(buf)
+    }
+
     /// Reads `len` bytes from the current offset without copying and advances
     /// the buffer.
     pub fn get_bytes(&mut self, len: usize) -> Result<Octets> {
         if self.cap() < len {
-            return Err(BufferTooShortError);
+            return Err(BufferError::BufferTooShortError);
         }
 
         let out = Octets {
@@ -490,7 +689,7 @@ impl<'a> OctetsMut<'a> {
     /// the buffer.
     pub fn get_bytes_mut(&mut self, len: usize) -> Result<OctetsMut> {
         if self.cap() < len {
-            return Err(BufferTooShortError);
+            return Err(BufferError::BufferTooShortError);
         }
 
         let out = OctetsMut {
@@ -530,7 +729,7 @@ impl<'a> OctetsMut<'a> {
     /// advancing the buffer.
     pub fn peek_bytes(&mut self, len: usize) -> Result<Octets> {
         if self.cap() < len {
-            return Err(BufferTooShortError);
+            return Err(BufferError::BufferTooShortError);
         }
 
         let out = Octets {
@@ -545,7 +744,7 @@ impl<'a> OctetsMut<'a> {
     /// advancing the buffer.
     pub fn peek_bytes_mut(&mut self, len: usize) -> Result<OctetsMut> {
         if self.cap() < len {
-            return Err(BufferTooShortError);
+            return Err(BufferError::BufferTooShortError);
         }
 
         let out = OctetsMut {
@@ -562,7 +761,7 @@ impl<'a> OctetsMut<'a> {
         let len = v.len();
 
         if self.cap() < len {
-            return Err(BufferTooShortError);
+            return Err(BufferError::BufferTooShortError);
         }
 
         if len == 0 {
@@ -579,7 +778,7 @@ impl<'a> OctetsMut<'a> {
     /// Splits the buffer in two at the given absolute offset.
     pub fn split_at(&mut self, off: usize) -> Result<(OctetsMut, OctetsMut)> {
         if self.len() < off {
-            return Err(BufferTooShortError);
+            return Err(BufferError::BufferTooShortError);
         }
 
         let (left, right) = self.buf.split_at_mut(off);
@@ -594,7 +793,7 @@ impl<'a> OctetsMut<'a> {
     /// Returns a slice of `len` elements from the current offset.
     pub fn slice(&'a mut self, len: usize) -> Result<&'a mut [u8]> {
         if len > self.cap() {
-            return Err(BufferTooShortError);
+            return Err(BufferError::BufferTooShortError);
         }
 
         Ok(&mut self.buf[self.off..self.off + len])
@@ -603,7 +802,7 @@ impl<'a> OctetsMut<'a> {
     /// Returns a slice of `len` elements from the end of the buffer.
     pub fn slice_last(&'a mut self, len: usize) -> Result<&'a mut [u8]> {
         if len > self.cap() {
-            return Err(BufferTooShortError);
+            return Err(BufferError::BufferTooShortError);
         }
 
         let cap = self.cap();
@@ -613,7 +812,7 @@ impl<'a> OctetsMut<'a> {
     /// Advances the buffer's offset.
     pub fn skip(&mut self, skip: usize) -> Result<()> {
         if skip > self.cap() {
-            return Err(BufferTooShortError);
+            return Err(BufferError::BufferTooShortError);
         }
 
         self.off += skip;
@@ -621,9 +820,26 @@ impl<'a> OctetsMut<'a> {
         Ok(())
     }
 
+    /// Rewind the buffer's offset.
+    pub fn rewind(&mut self, rewind: usize) -> Result<()> {
+        if self.off < rewind {
+            return Err(BufferError::BufferTooShortError);
+        }
+
+        self.off -= rewind;
+
+        Ok(())
+    }
+
     /// Returns the remaining capacity in the buffer.
     pub fn cap(&self) -> usize {
         self.buf.len() - self.off
+    }
+
+    /// Returns the remaining capacity in the buffer for the reverse
+    /// frame processing.
+    pub fn cap_reverse(&self) -> usize {
+        self.off
     }
 
     /// Returns the total length of the buffer.
@@ -683,6 +899,17 @@ pub const fn varint_len(v: u64) -> usize {
 /// Returns how long the variable-length integer is, given its first byte.
 pub const fn varint_parse_len(first: u8) -> usize {
     match first >> 6 {
+        0 => 1,
+        1 => 2,
+        2 => 4,
+        3 => 8,
+        _ => unreachable!(),
+    }
+}
+
+/// The length is encoded within the last two bits of the last byte.
+pub const fn varint_parse_len_reverse(last: u8) -> usize {
+    match last & !0xfc {
         0 => 1,
         1 => 2,
         2 => 4,
@@ -933,6 +1160,33 @@ mod tests {
     }
 
     #[test]
+    fn get_varint_reverse() {
+        let d = [0x24];
+        let mut b = Octets::with_slice(&d);
+        b.skip(1).expect("skip issue");
+        assert_eq!(b.get_varint_reverse().unwrap(), 9);
+        assert_eq!(b.off(), 0);
+
+        let d = [0x25, 0x25];
+        let mut b = Octets::with_slice(&d);
+        b.skip(2).expect("skip issue");
+        assert_eq!(b.get_varint_reverse().unwrap(), 2377);
+        assert_eq!(b.off(), 0);
+
+        let d = [0x7b, 0x9d, 0x25, 0x16];
+        let mut b = Octets::with_slice(&d);
+        b.skip(4).expect("skip issue");
+        assert_eq!(b.get_varint_reverse().unwrap(), 518474053);
+        assert_eq!(b.off(), 0);
+
+        let d = [0x19, 0xc2, 0x5e, 0x7b, 0x9d, 0x25, 0x16, 0x17];
+        let mut b = Octets::with_slice(&d);
+        b.skip(8).expect("skip issue");
+        assert_eq!(b.get_varint_reverse().unwrap(), 464037470360126853);
+        assert_eq!(b.off(), 0);
+
+    }
+    #[test]
     fn get_varint_mut() {
         let mut d = [0xc2, 0x19, 0x7c, 0x5e, 0xff, 0x14, 0xe8, 0x8c];
         let mut b = OctetsMut::with_slice(&mut d);
@@ -1015,6 +1269,49 @@ mod tests {
             assert_eq!(b.off(), 0);
         }
         let exp = [0; 3];
+        assert_eq!(&d, &exp);
+    }
+
+    #[test]
+    fn put_varint_reverse() {
+        let mut d = [0; 1];
+        {
+            let mut b = OctetsMut::with_slice(&mut d);
+            assert!(b.put_varint_reverse(9).is_ok());
+            assert_eq!(b.cap(), 0);
+            assert_eq!(b.off(), 1);
+        }
+        let exp = [0x24];
+        assert_eq!(&d, &exp);
+
+        let mut d = [0; 2];
+        {
+            let mut b = OctetsMut::with_slice(&mut d);
+            assert!(b.put_varint_reverse(2377).is_ok());
+            assert_eq!(b.cap(), 0);
+            assert_eq!(b.off(), 2);
+        }
+        let exp = [0x25, 0x25];
+        assert_eq!(&d, &exp);
+
+        let mut d = [0; 4];
+        {
+            let mut b = OctetsMut::with_slice(&mut d);
+            assert!(b.put_varint_reverse(518474053).is_ok());
+            assert_eq!(b.cap(), 0);
+            assert_eq!(b.off(), 4);
+        }
+        let exp = [0x7b, 0x9d, 0x25, 0x16];
+        assert_eq!(&d, &exp);
+
+        let mut d = [0; 8];
+        {
+            let mut b = OctetsMut::with_slice(&mut d);
+            assert!(b.put_varint_reverse(464037470360126853).is_ok());
+            assert_eq!(b.cap(), 0);
+            assert_eq!(b.off(), 8);
+        }
+        let exp = [0x19, 0xc2, 0x5e, 0x7b, 0x9d, 0x25, 0x16, 0x17];
         assert_eq!(&d, &exp);
     }
 
