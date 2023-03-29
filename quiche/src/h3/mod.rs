@@ -360,6 +360,9 @@ pub enum Error {
     /// The provided buffer is too short.
     BufferTooShort,
 
+    /// Internal error in the QUIC protocol
+    BufferProtocolError,
+
     /// Internal error in the HTTP/3 stack.
     InternalError,
 
@@ -437,6 +440,7 @@ impl Error {
             Error::MissingSettings => 0x10A,
             Error::QpackDecompressionFailed => 0x200,
             Error::BufferTooShort => 0x999,
+            Error::BufferProtocolError => 0xFF,
             Error::TransportError { .. } => 0xFF,
             Error::StreamBlocked => 0xFF,
             Error::SettingsError => 0x109,
@@ -500,9 +504,12 @@ impl std::convert::From<super::Error> for Error {
     }
 }
 
-impl std::convert::From<octets::BufferTooShortError> for Error {
-    fn from(_err: octets::BufferTooShortError) -> Self {
-        Error::BufferTooShort
+impl std::convert::From<octets::BufferError> for Error {
+    fn from(err: octets::BufferError) -> Self {
+        match err {
+            octets::BufferError::BufferTooShortError => Error::BufferTooShort,
+            octets::BufferError::BufferProtocolError => Error::BufferProtocolError,
+        }
     }
 }
 
@@ -5043,10 +5050,17 @@ mod tests {
         }];
 
         let pkt_type = crate::packet::Type::Short;
-        assert_eq!(
-            s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
-            Ok(39),
-        );
+        if s.pipe.client.version == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                Ok(48),
+            );
+        } else {
+            assert_eq!(
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                Ok(39),
+            );
+        }
 
         let sent = s
             .server
@@ -6290,20 +6304,34 @@ mod tests {
         }];
 
         let pkt_type = crate::packet::Type::Short;
-        assert_eq!(
-            s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
-            Ok(39)
-        );
+        if s.pipe.client.version == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                Ok(48)
+            );
+        } else {
+            assert_eq!(
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                Ok(39)
+            );
+        }
 
         // Server issues Reset event for the stream.
         assert_eq!(s.poll_server(), Ok((stream, Event::Reset(42))));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
         // Sending RESET_STREAM again shouldn't trigger another Reset event.
-        assert_eq!(
-            s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
-            Ok(39)
-        );
+        if s.pipe.client.version == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                Ok(48)
+            );
+        } else {
+            assert_eq!(
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                Ok(39)
+            );
+        }
 
         assert_eq!(s.poll_server(), Err(Error::Done));
     }
@@ -6411,10 +6439,17 @@ mod tests {
         }];
 
         let pkt_type = crate::packet::Type::Short;
-        assert_eq!(
-            s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
-            Ok(39)
-        );
+        if s.pipe.client.version == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                Ok(48)
+            );
+        } else {
+            assert_eq!(
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                Ok(39)
+            );
+        }
 
         assert_eq!(s.pipe.advance(), Ok(()));
 
