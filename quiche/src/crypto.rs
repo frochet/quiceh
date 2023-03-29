@@ -218,6 +218,19 @@ impl Open {
         Ok(mask)
     }
 
+    pub fn new_mask_13(&self, sample: &[u8]) -> Result<[u8; 13]> {
+        if cfg!(feature = "fuzzing") {
+            return Ok(<[u8; 13]>::default());
+        }
+
+        let mask = self
+            .header
+            .hpk
+            .new_mask_13(sample)
+            .map_err(|_| Error::CryptoFail)?;
+        Ok(mask)
+    }
+
     pub fn alg(&self) -> Algorithm {
         self.alg
     }
@@ -346,6 +359,19 @@ impl Seal {
             .new_mask(sample)
             .map_err(|_| Error::CryptoFail)?;
 
+        Ok(mask)
+    }
+
+    pub fn new_mask_13(&self, sample: &[u8]) -> Result<[u8; 13]> {
+        if cfg!(feature = "fuzzing") {
+            return Ok(<[u8; 13]>::default());
+        }
+
+        let mask = self
+            .header
+            .hpk
+            .new_mask_13(sample)
+            .map_err(|_| Error::CryptoFail)?;
         Ok(mask)
     }
 

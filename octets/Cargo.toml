@@ -8,3 +8,6 @@ repository = "https://github.com/cloudflare/quiche"
 keywords = ["quic", "http3"]
 categories = ["network-programming"]
 license = "BSD-2-Clause"
+
+[dependencies]
+likely_stable = "0.1.2"

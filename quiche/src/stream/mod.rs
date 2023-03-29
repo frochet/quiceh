@@ -644,6 +644,11 @@ impl StreamMap {
     pub fn len(&self) -> usize {
         self.streams.len()
     }
+    //TODO PROTOCOL_REVERSO
+    /// Rewind the Stream_id's receive buffer of num bytes
+    pub fn rewind_recv_buf(&mut self, _stream_id: u64, _num: usize) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// A QUIC stream.
@@ -737,6 +742,13 @@ impl Stream {
             // to check the receive side for completion.
             (false, false) => self.recv.is_fin(),
         }
+    }
+    //TODO
+    pub fn get_monotonic_offset(&self) -> u64 {
+        42
+    }
+    #[allow(dead_code)]
+    pub fn update_monotonic_offset(&mut self, _offset: u64) {
     }
 }
 

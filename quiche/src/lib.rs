@@ -416,12 +416,16 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 
 use smallvec::SmallVec;
+use likely_stable::if_likely;
+
 
 /// The current QUIC wire version.
-pub const PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_V1;
+pub const PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_V3;
 
 /// Supported QUIC versions.
 const PROTOCOL_VERSION_V1: u32 = 0x0000_0001;
+/// QUIC version supporting Contiguous Zero-copy receiver.
+const PROTOCOL_VERSION_V3: u32 = 0x0000_0003;
 
 /// The maximum length of a connection ID.
 pub const MAX_CONN_ID_LEN: usize = crate::packet::MAX_CID_LEN as usize;
@@ -431,12 +435,18 @@ pub const MIN_CLIENT_INITIAL_LEN: usize = 1200;
 
 #[cfg(not(feature = "fuzzing"))]
 const PAYLOAD_MIN_LEN: usize = 4;
+#[cfg(not(feature = "fuzzing"))]
+const PAYLOAD_MIN_LEN_V3: usize = 12;
+
+
 
 #[cfg(feature = "fuzzing")]
 // Due to the fact that in fuzzing mode we use a zero-length AEAD tag (which
 // would normally be 16 bytes), we need to adjust the minimum payload size to
 // account for that.
 const PAYLOAD_MIN_LEN: usize = 20;
+#[cfg(feature = "fuzzing")]
+const PAYLOAD_MIN_LEN_V3: usize = 28;
 
 // PATH_CHALLENGE (9 bytes) + AEAD tag (16 bytes).
 const MIN_PROBING_SIZE: usize = 25;
@@ -505,6 +515,9 @@ pub enum Error {
 
     /// The provided buffer is too short.
     BufferTooShort,
+
+    /// Protocol Reverso technique could read too much in reverse and throw this.
+    BufferProtocolError,
 
     /// The provided packet cannot be parsed because its version is unknown.
     UnknownVersion,
@@ -589,23 +602,24 @@ impl Error {
         match self {
             Error::Done => -1,
             Error::BufferTooShort => -2,
-            Error::UnknownVersion => -3,
-            Error::InvalidFrame => -4,
-            Error::InvalidPacket => -5,
-            Error::InvalidState => -6,
-            Error::InvalidStreamState(_) => -7,
-            Error::InvalidTransportParam => -8,
-            Error::CryptoFail => -9,
-            Error::TlsFail => -10,
-            Error::FlowControl => -11,
-            Error::StreamLimit => -12,
-            Error::FinalSize => -13,
-            Error::CongestionControl => -14,
-            Error::StreamStopped { .. } => -15,
-            Error::StreamReset { .. } => -16,
-            Error::IdLimit => -17,
-            Error::OutOfIdentifiers => -18,
-            Error::KeyUpdate => -19,
+            Error::BufferProtocolError => -3,
+            Error::UnknownVersion => -4,
+            Error::InvalidFrame => -5,
+            Error::InvalidPacket => -6,
+            Error::InvalidState => -7,
+            Error::InvalidStreamState(_) => -8,
+            Error::InvalidTransportParam => -9,
+            Error::CryptoFail => -10,
+            Error::TlsFail => -11,
+            Error::FlowControl => -12,
+            Error::StreamLimit => -13,
+            Error::FinalSize => -14,
+            Error::CongestionControl => -15,
+            Error::StreamStopped { .. } => -16,
+            Error::StreamReset { .. } => -17,
+            Error::IdLimit => -18,
+            Error::OutOfIdentifiers => -19,
+            Error::KeyUpdate => -20,
         }
     }
 }
@@ -622,9 +636,12 @@ impl std::error::Error for Error {
     }
 }
 
-impl std::convert::From<octets::BufferTooShortError> for Error {
-    fn from(_err: octets::BufferTooShortError) -> Self {
-        Error::BufferTooShort
+impl std::convert::From<octets::BufferError> for Error {
+    fn from(_err: octets::BufferError) -> Self {
+        match _err {
+            octets::BufferError::BufferTooShortError => Error::BufferTooShort,
+            octets::BufferError::BufferProtocolError => Error::BufferProtocolError,
+        }
     }
 }
 
@@ -1371,7 +1388,6 @@ pub struct Connection {
 
     /// Idle timeout expiration time.
     idle_timer: Option<time::Instant>,
-
     /// Draining timeout expiration time.
     draining_timer: Option<time::Instant>,
 
@@ -1380,6 +1396,12 @@ pub struct Connection {
 
     /// The negotiated ALPN protocol.
     alpn: Vec<u8>,
+
+    /// The length of the expected stream_id in the packet being sent
+    expected_stream_id_len: usize,
+
+    /// The length of the expected offset in the packet being sent
+    expected_offset_len: usize,
 
     /// Whether this is a server-side connection.
     is_server: bool,
@@ -1625,7 +1647,66 @@ pub fn retry(
 /// Returns true if the given protocol version is supported.
 #[inline]
 pub fn version_is_supported(version: u32) -> bool {
-    matches!(version, PROTOCOL_VERSION_V1)
+    matches!(version, PROTOCOL_VERSION_V1 | PROTOCOL_VERSION_V3)
+}
+
+/// Push frames to the output packet. Frames in $frames should already have their
+/// wire_len() reserved.
+///
+/// Frames such as Stream, Crypto, etc. have already been written into the buffer
+/// at their intended position.
+macro_rules! push_frames_to_pkt {
+    ($out:expr, $frames:expr, $ver:expr) => {{
+        for frame in $frames.iter() {
+            match frame {
+                /*
+                 * Some frames have been already been encoded to avoid a copy from
+                 * frame.to_bytes(). We just need to $out.skip them.
+                 **/
+                frame::Frame::StreamHeader { stream_id, offset, length, ..} => {
+                    let hdr_len = 1 + // frame type
+                        octets::varint_len(*stream_id) + // stream_id
+                        octets::varint_len(*offset) + // offset
+                        2; // length, always encode as 2-byte varint
+                    // this has already been added to the buffer.
+                    $out.skip(length + hdr_len)?;
+                },
+                frame::Frame::DatagramHeader { length } => {
+                    let hdr_len = 1 + // frame type
+                        2; // length, always encode as 2-byte varint
+                    $out.skip(length + hdr_len)?;
+                },
+                frame::Frame::CryptoHeader { offset, length } => {
+                    let hdr_len = 1 + // frame type
+                        octets::varint_len(*offset) + // offset
+                        2; // length, always encode as 2-byte varint
+                    $out.skip(length + hdr_len)?;
+                }
+                _ => {
+                    frame.to_bytes(&mut $out,  $ver)?;
+                },
+            }
+        }
+    }};
+}
+
+/// Reserve space within the output packet.
+///
+/// If the frame cannot be added, this returns false. True otherwise.
+macro_rules! push_frame_to_vec {
+    ($frames:expr, $frame:expr, $left:expr, $cumul:expr) => {{
+        if $frame.wire_len() <= $left {
+            let wire_len = $frame.wire_len();
+            $left -= wire_len;
+            $cumul += wire_len;
+
+            $frames.push($frame);
+
+            true
+        } else {
+            false
+        }
+    }};
 }
 
 /// Pushes a frame to the output packet if there is enough space.
@@ -1634,11 +1715,11 @@ pub fn version_is_supported(version: u32) -> bool {
 /// there is no room to add the frame in the packet. You may retry to add the
 /// frame later.
 macro_rules! push_frame_to_pkt {
-    ($out:expr, $frames:expr, $frame:expr, $left:expr) => {{
+    ($out:expr, $frames:expr, $frame:expr, $left:expr, $ver:expr) => {{
         if $frame.wire_len() <= $left {
             $left -= $frame.wire_len();
 
-            $frame.to_bytes(&mut $out)?;
+            $frame.to_bytes(&mut $out, $ver)?;
 
             $frames.push($frame);
 
@@ -1841,6 +1922,10 @@ impl Connection {
 
             is_server,
 
+            expected_stream_id_len: 1,
+
+            expected_offset_len: 1,
+
             derived_initial_secrets: false,
 
             did_version_negotiation: false,
@@ -1912,7 +1997,7 @@ impl Connection {
         conn.handshake.init(is_server)?;
 
         conn.handshake
-            .use_legacy_codepoint(config.version != PROTOCOL_VERSION_V1);
+            .use_legacy_codepoint(config.version > PROTOCOL_VERSION_V3);
 
         conn.encode_transport_params()?;
 
@@ -2285,7 +2370,6 @@ impl Connection {
         let buf_len = buf.len();
 
         let mut b = octets::OctetsMut::with_slice(buf);
-
         let mut hdr = Header::from_bytes(&mut b, self.source_id().len())
             .map_err(|e| {
                 drop_pkt_on_err(
@@ -2295,7 +2379,6 @@ impl Connection {
                     &self.trace_id,
                 )
             })?;
-
         if hdr.ty == packet::Type::VersionNegotiation {
             // Version negotiation packets can only be sent by the server.
             if self.is_server {
@@ -2340,7 +2423,7 @@ impl Connection {
                 found_version = true;
 
                 // The final version takes precedence over draft ones.
-                if v == PROTOCOL_VERSION_V1 {
+                if v == crate::PROTOCOL_VERSION {
                     self.version = v;
                     break;
                 }
@@ -2379,7 +2462,7 @@ impl Connection {
                 Some(aead_seal);
 
             self.handshake
-                .use_legacy_codepoint(self.version != PROTOCOL_VERSION_V1);
+                .use_legacy_codepoint(self.version > PROTOCOL_VERSION_V3);
 
             // Encode transport parameters again, as the new version might be
             // using a different format.
@@ -2455,7 +2538,7 @@ impl Connection {
             self.did_version_negotiation = true;
 
             self.handshake
-                .use_legacy_codepoint(self.version != PROTOCOL_VERSION_V1);
+                .use_legacy_codepoint(self.version > PROTOCOL_VERSION_V3);
 
             // Encode transport parameters again, as the new version might be
             // using a different format.
@@ -2542,7 +2625,6 @@ impl Connection {
                     self.undecryptable_pkts.push_back((pkt, *info));
                     return Ok(pkt_len);
                 }
-
                 let e = drop_pkt_on_err(
                     Error::CryptoFail,
                     self.recv_count,
@@ -2556,7 +2638,7 @@ impl Connection {
 
         let aead_tag_len = aead.alg().tag_len();
 
-        packet::decrypt_hdr(&mut b, &mut hdr, aead).map_err(|e| {
+        packet::decrypt_hdr(&mut b, &mut hdr, aead, self.version).map_err(|e| {
             drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
         })?;
 
@@ -2567,6 +2649,31 @@ impl Connection {
         );
 
         let pn_len = hdr.pkt_num_len;
+        let mut enc_hdr_len = pn_len;
+        let offset = if_likely!{self.version == PROTOCOL_VERSION_V3 => {
+            // let's use this control flow to also add the true enc_hdr_len
+            // on V3.
+            enc_hdr_len += hdr.expected_stream_id_len;
+            enc_hdr_len += hdr.expected_offset_len;
+
+            // A stream_id 0 indicates no stream frame encrypted.
+            if hdr.expected_stream_id > 0 {
+                let mut monotonic_offset = match
+                    self.streams.get(hdr.expected_stream_id) {
+                        Some(s) => s.get_monotonic_offset(),
+                        None => 0, // This could have been touch by someone on the network.
+                                   // We should not create a stream now, and wait for valid
+                                   // decryption.
+                    };
+                monotonic_offset = packet::decode_pkt_offset(monotonic_offset, hdr.expected_offset, hdr.expected_offset_len);
+                monotonic_offset
+            }
+            else {
+                0
+            }
+        } else {
+            0
+        }};
 
         trace!(
             "{} rx pkt {:?} len={} pn={} {}",
@@ -2618,18 +2725,39 @@ impl Connection {
             }
         }
 
-        let mut payload = packet::decrypt_pkt(
-            &mut b,
-            pn,
-            pn_len,
-            payload_len,
-            aead,
-        )
-        .map_err(|e| {
-            drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
-        })?;
+        // update payload_len too, removing the QUIC AES-ECB header
+        let (mut payload, payload_len) = if_likely!{self.version == PROTOCOL_VERSION_V3 => {
+            packet::decrypt_pkt_v3(
+                &mut b,
+                pn,
+                enc_hdr_len,
+                payload_len,
+                hdr.expected_stream_id,
+                offset,
+                aead,
+            )
+            .map_err(|e| {
+                drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
+            })?
+        } else {
+            packet::decrypt_pkt(
+                &mut b,
+                pn,
+                enc_hdr_len,
+                payload_len,
+                aead,
+            )
+            .map_err(|e| {
+                drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
+            })?
+        }};
 
         if self.pkt_num_spaces[epoch].recv_pkt_num.contains(pn) {
+
+            if_likely!{self.version == PROTOCOL_VERSION_V3 => {
+                // Rewind the appropriate buffer if the streamid != 0
+                self.streams.rewind_recv_buf(hdr.expected_stream_id, payload_len)?;
+            }};
             trace!("{} ignored duplicate packet {}", self.trace_id, pn);
             return Err(Error::Done);
         }
@@ -2756,27 +2884,56 @@ impl Connection {
         let mut probing = true;
 
         // Process packet payload.
-        while payload.cap() > 0 {
-            let frame = frame::Frame::from_bytes(&mut payload, hdr.ty)?;
+        if_likely!{ self.version == PROTOCOL_VERSION_V3 => {
+            //set the offset at the end
+            let payload_start_offset = payload.off();
+            payload.skip(payload_len)?;
+            // start reverse buffer processing
+            while payload.off() > payload_start_offset {
+                let frame = frame::Frame::from_bytes(&mut payload, hdr.ty, self.version)?;
+                qlog_with_type!(QLOG_PACKET_RX, self.qlog, _q, {
+                    qlog_frames.push(frame.to_qlog());
+                });
 
-            qlog_with_type!(QLOG_PACKET_RX, self.qlog, _q, {
-                qlog_frames.push(frame.to_qlog());
-            });
+                if frame.ack_eliciting() {
+                    ack_elicited = true;
+                }
 
-            if frame.ack_eliciting() {
-                ack_elicited = true;
+                if !frame.probing() {
+                    probing = false;
+                }
+
+                if let Err(e) = self.process_frame(frame, &hdr, recv_pid, epoch, now)
+                {
+                    frame_processing_err = Some(e);
+                    break;
+                }
             }
+            // XXX We need to advance the offset to the end
+            // of the stream data if any.
+        } else {
+            while payload.cap() > 0 {
+                let frame = frame::Frame::from_bytes(&mut payload, hdr.ty, self.version)?;
 
-            if !frame.probing() {
-                probing = false;
-            }
+                qlog_with_type!(QLOG_PACKET_RX, self.qlog, _q, {
+                    qlog_frames.push(frame.to_qlog());
+                });
 
-            if let Err(e) = self.process_frame(frame, &hdr, recv_pid, epoch, now)
-            {
-                frame_processing_err = Some(e);
-                break;
+                if frame.ack_eliciting() {
+                    ack_elicited = true;
+                }
+
+                if !frame.probing() {
+                    probing = false;
+                }
+
+                if let Err(e) = self.process_frame(frame, &hdr, recv_pid, epoch, now)
+                {
+                    frame_processing_err = Some(e);
+                    break;
+                }
             }
-        }
+        }};
 
         qlog_with_type!(QLOG_PACKET_RX, self.qlog, q, {
             let packet_size = b.len();
@@ -3300,6 +3457,13 @@ impl Connection {
         &mut self, out: &mut [u8], send_pid: usize, has_initial: bool,
         now: time::Instant,
     ) -> Result<(packet::Type, usize)> {
+
+        let payload_min_len = if_likely!{self.version == PROTOCOL_VERSION_V3 => {
+            PAYLOAD_MIN_LEN_V3
+        } else {
+            PAYLOAD_MIN_LEN
+        }};
+
         if out.is_empty() {
             return Err(Error::BufferTooShort);
         }
@@ -3453,7 +3617,6 @@ impl Connection {
             dcid,
             scid,
 
-            pkt_num: 0,
             pkt_num_len: pn_len,
 
             // Only clone token for Initial packets, as other packets don't have
@@ -3464,9 +3627,8 @@ impl Connection {
             } else {
                 None
             },
-
-            versions: None,
             key_phase: self.key_phase,
+            ..Default::default()
         };
 
         hdr.to_bytes(&mut b)?;
@@ -3492,7 +3654,16 @@ impl Connection {
 
         // Calculate the space required for the packet, including the header
         // the payload length, the packet number and the AEAD overhead.
-        let mut overhead = b.off() + pn_len + crypto_overhead;
+        // On V3:
+        // Assume 8 bytes overhead for the streamid and adjust "left" when
+        // we know. This may cause to trigger path.recovery.update_app_limited
+        // while we have just the right space left to send this packet.
+        // XXX Do we care?
+        let mut overhead = if_likely! {self.version == PROTOCOL_VERSION_V3 => { 
+            b.off() + pn_len + crypto_overhead + 8
+        } else {
+            b.off() + pn_len + crypto_overhead
+        }};
 
         // We assume that the payload length, which is only present in long
         // header packets, can always be encoded with a 2-byte varint.
@@ -3516,12 +3687,10 @@ impl Connection {
             },
         }
 
-        // Make sure there is enough space for the minimum payload length.
-        if left < PAYLOAD_MIN_LEN {
+        if left < payload_min_len {
             path.recovery.update_app_limited(false);
             return Err(Error::Done);
         }
-
         let mut frames: SmallVec<[frame::Frame; 1]> = SmallVec::new();
 
         let mut ack_eliciting = false;
@@ -3531,8 +3700,9 @@ impl Connection {
         // Whether or not we should explicitly elicit an ACK via PING frame if we
         // implicitly elicit one otherwise.
         let ack_elicit_required = path.recovery.should_elicit_ack(epoch);
-
-        let header_offset = b.off();
+        // we need to remember this in case this is not a short packet, to
+        // write the length later
+        let header_offset_for_length = b.off();
 
         // Reserve space for payload length in advance. Since we don't yet know
         // what the final length will be, we reserve 2 bytes in all cases.
@@ -3542,9 +3712,31 @@ impl Connection {
             b.skip(PAYLOAD_LENGTH_LEN)?;
         }
 
-        packet::encode_pkt_num(pn, &mut b)?;
+        // We need to remember this in case we use Protocol Reverso
+        let header_offset = b.off();
 
-        let payload_offset = b.off();
+        // TODO open question: even encrypted, distinguishing dgrams from reliable QUIC
+        // packets becomes possible with DPI, as the AES-ECB mask isn't CPA-Secure.
+        //
+        // Note. It is already possible to observe and distinguish retransmissions, even
+        // if those are fresh re-encryption.
+        // Double check: The only point of doing AES-ECB and xoring
+        // it to this info is to make it bytewise uniformly random, and prevent ossification.
+        // Unpredictable header is not needed.
+        if_likely!{ self.version == PROTOCOL_VERSION_V3  => {
+            packet::encode_u64_num_and_nextelem_len(pn, 1, &mut b)?;
+            packet::encode_u64_num_and_nextelem_len(0, 1, &mut b)?;
+            packet::encode_offset_num(0, &mut b)?;
+        } else {
+            packet::encode_pkt_num(pn, &mut b)?;
+        }};
+        // We have encoded the quic header in b.
+        let mut payload_offset = b.off();
+
+        // Remember how much bytes should be added to buf from the control frames before adding the
+        // stream frame (in V3, we wait to know whether a Stream frame or Datagram frame is part
+        // of the packet before encoding control frames).
+        let mut cumul = 0;
 
         let cwnd_available =
             path.recovery.cwnd_available().saturating_sub(overhead);
@@ -3586,7 +3778,7 @@ impl Connection {
                 // ACK-only packets are not congestion controlled so ACKs must
                 // be bundled considering the buffer capacity only, and not the
                 // available cwnd.
-                if push_frame_to_pkt!(b, frames, frame, left) {
+                if push_frame_to_vec!(frames, frame, left, cumul) {
                     pkt_space.ack_elicited = false;
                 }
             }
@@ -3607,7 +3799,7 @@ impl Connection {
             while let Some(challenge) = path.pop_received_challenge() {
                 let frame = frame::Frame::PathResponse { data: challenge };
 
-                if push_frame_to_pkt!(b, frames, frame, left) {
+                if push_frame_to_vec!(frames, frame, left, cumul) {
                     ack_eliciting = true;
                     in_flight = true;
                 } else {
@@ -3624,7 +3816,8 @@ impl Connection {
 
                 let frame = frame::Frame::PathChallenge { data };
 
-                if push_frame_to_pkt!(b, frames, frame, left) {
+                //if push_frame_to_pkt!(b, frames, frame, left, self.version) {
+                if push_frame_to_vec!(frames, frame, left, cumul) {
                     // Let's notify the path once we know the packet size.
                     challenge_data = Some(data);
 
@@ -3643,7 +3836,7 @@ impl Connection {
             while let Some(seq_num) = self.ids.next_advertise_new_scid_seq() {
                 let frame = self.ids.get_new_connection_id_frame_for(seq_num)?;
 
-                if push_frame_to_pkt!(b, frames, frame, left) {
+                if push_frame_to_vec!(frames, frame, left, cumul) {
                     self.ids.mark_advertise_new_scid_seq(seq_num, false);
 
                     ack_eliciting = true;
@@ -3663,7 +3856,7 @@ impl Connection {
             {
                 let frame = frame::Frame::HandshakeDone;
 
-                if push_frame_to_pkt!(b, frames, frame, left) {
+                if push_frame_to_vec!(frames, frame, left, cumul) {
                     self.handshake_done_sent = true;
 
                     ack_eliciting = true;
@@ -3677,7 +3870,7 @@ impl Connection {
                     max: self.streams.max_streams_bidi_next(),
                 };
 
-                if push_frame_to_pkt!(b, frames, frame, left) {
+                if push_frame_to_vec!(frames, frame, left, cumul) {
                     self.streams.update_max_streams_bidi();
 
                     ack_eliciting = true;
@@ -3691,7 +3884,8 @@ impl Connection {
                     max: self.streams.max_streams_uni_next(),
                 };
 
-                if push_frame_to_pkt!(b, frames, frame, left) {
+                //if push_frame_to_pkt!(b, frames, frame, left, self.version) {
+                if push_frame_to_vec!(frames, frame, left, cumul) {
                     self.streams.update_max_streams_uni();
 
                     ack_eliciting = true;
@@ -3703,7 +3897,7 @@ impl Connection {
             if let Some(limit) = self.blocked_limit {
                 let frame = frame::Frame::DataBlocked { limit };
 
-                if push_frame_to_pkt!(b, frames, frame, left) {
+                if push_frame_to_vec!(frames, frame, left, cumul) {
                     self.blocked_limit = None;
 
                     ack_eliciting = true;
@@ -3732,7 +3926,7 @@ impl Connection {
                     max: stream.recv.max_data_next(),
                 };
 
-                if push_frame_to_pkt!(b, frames, frame, left) {
+                if push_frame_to_vec!(frames, frame, left, cumul) {
                     let recv_win = stream.recv.window();
 
                     stream.recv.update_max_data(now);
@@ -3765,7 +3959,7 @@ impl Connection {
                     max: flow_control.max_data_next(),
                 };
 
-                if push_frame_to_pkt!(b, frames, frame, left) {
+                if push_frame_to_vec!(frames, frame, left, cumul) {
                     self.almost_full = false;
 
                     // Commits the new max_rx_data limit.
@@ -3788,7 +3982,7 @@ impl Connection {
                     error_code,
                 };
 
-                if push_frame_to_pkt!(b, frames, frame, left) {
+                if push_frame_to_vec!(frames, frame, left, cumul) {
                     self.streams.remove_stopped(stream_id);
 
                     ack_eliciting = true;
@@ -3809,7 +4003,7 @@ impl Connection {
                     final_size,
                 };
 
-                if push_frame_to_pkt!(b, frames, frame, left) {
+                if push_frame_to_vec!(frames, frame, left, cumul) {
                     self.streams.remove_reset(stream_id);
 
                     ack_eliciting = true;
@@ -3826,7 +4020,7 @@ impl Connection {
             {
                 let frame = frame::Frame::StreamDataBlocked { stream_id, limit };
 
-                if push_frame_to_pkt!(b, frames, frame, left) {
+                if push_frame_to_vec!(frames, frame, left, cumul) {
                     self.streams.remove_blocked(stream_id);
 
                     ack_eliciting = true;
@@ -3847,7 +4041,7 @@ impl Connection {
 
                 let frame = frame::Frame::RetireConnectionId { seq_num };
 
-                if push_frame_to_pkt!(b, frames, frame, left) {
+                if push_frame_to_vec!(frames, frame, left, cumul) {
                     self.ids.mark_retire_dcid_seq(seq_num, false);
 
                     ack_eliciting = true;
@@ -3870,7 +4064,7 @@ impl Connection {
                             reason: conn_err.reason.clone(),
                         };
 
-                        if push_frame_to_pkt!(b, frames, frame, left) {
+                        if push_frame_to_vec!(frames, frame, left, cumul) {
                             let pto = path.recovery.pto();
                             self.draining_timer = Some(now + (pto * 3));
 
@@ -3886,7 +4080,7 @@ impl Connection {
                         reason: conn_err.reason.clone(),
                     };
 
-                    if push_frame_to_pkt!(b, frames, frame, left) {
+                    if push_frame_to_vec!(frames, frame, left, cumul) {
                         let pto = path.recovery.pto();
                         self.draining_timer = Some(now + (pto * 3));
 
@@ -3896,73 +4090,8 @@ impl Connection {
                 }
             }
         }
-
-        // Create CRYPTO frame.
-        if pkt_space.crypto_stream.is_flushable() &&
-            left > frame::MAX_CRYPTO_OVERHEAD &&
-            !is_closing &&
-            path.active()
-        {
-            let crypto_off = pkt_space.crypto_stream.send.off_front();
-
-            // Encode the frame.
-            //
-            // Instead of creating a `frame::Frame` object, encode the frame
-            // directly into the packet buffer.
-            //
-            // First we reserve some space in the output buffer for writing the
-            // frame header (we assume the length field is always a 2-byte
-            // varint as we don't know the value yet).
-            //
-            // Then we emit the data from the crypto stream's send buffer.
-            //
-            // Finally we go back and encode the frame header with the now
-            // available information.
-            let hdr_off = b.off();
-            let hdr_len = 1 + // frame type
-                octets::varint_len(crypto_off) + // offset
-                2; // length, always encode as 2-byte varint
-
-            if let Some(max_len) = left.checked_sub(hdr_len) {
-                let (mut crypto_hdr, mut crypto_payload) =
-                    b.split_at(hdr_off + hdr_len)?;
-
-                // Write stream data into the packet buffer.
-                let (len, _) = pkt_space
-                    .crypto_stream
-                    .send
-                    .emit(&mut crypto_payload.as_mut()[..max_len])?;
-
-                // Encode the frame's header.
-                //
-                // Due to how `OctetsMut::split_at()` works, `crypto_hdr` starts
-                // from the initial offset of `b` (rather than the current
-                // offset), so it needs to be advanced to the
-                // initial frame offset.
-                crypto_hdr.skip(hdr_off)?;
-
-                frame::encode_crypto_header(
-                    crypto_off,
-                    len as u64,
-                    &mut crypto_hdr,
-                )?;
-
-                // Advance the packet buffer's offset.
-                b.skip(hdr_len + len)?;
-
-                let frame = frame::Frame::CryptoHeader {
-                    offset: crypto_off,
-                    length: len,
-                };
-
-                if push_frame_to_pkt!(b, frames, frame, left) {
-                    ack_eliciting = true;
-                    in_flight = true;
-                    has_data = true;
-                }
-            }
-        }
-
+        // We need to know whether we're going to emit a dgram or a stream frame
+        // in advance.
         // The preference of data-bearing frame to include in a packet
         // is managed by `self.emit_dgram`. However, whether any frames
         // can be sent depends on the state of their buffers. In the case
@@ -3971,6 +4100,7 @@ impl Connection {
         let mut dgram_emitted = false;
         let dgrams_to_emit = max_dgram_len.is_some();
         let stream_to_emit = self.streams.has_flushable();
+        let mut has_fixed_overhead = false;
 
         let mut do_dgram = self.emit_dgram && dgrams_to_emit;
         let do_stream = !self.emit_dgram && stream_to_emit;
@@ -3978,7 +4108,6 @@ impl Connection {
         if !do_stream && dgrams_to_emit {
             do_dgram = true;
         }
-
         // Create DATAGRAM frame.
         if (pkt_type == packet::Type::Short || pkt_type == packet::Type::ZeroRTT) &&
             left > frame::MAX_DGRAM_OVERHEAD &&
@@ -3988,7 +4117,17 @@ impl Connection {
         {
             if let Some(max_dgram_payload) = max_dgram_len {
                 while let Some(len) = self.dgram_send_queue.peek_front_len() {
-                    let hdr_off = b.off();
+                    // Ok, so we're trying to send a Datagram. V3's header overhead for Datagram is
+                    // 2 bytes. We assumed it to be 8, we fix it now.
+                    let hdr_off = if_likely!{self.version == PROTOCOL_VERSION_V3 => {
+                        if !has_fixed_overhead {
+                            left += 6;
+                            has_fixed_overhead = true;
+                        }
+                        b.off()
+                    } else {
+                        b.off() + cumul
+                    }};
                     let hdr_len = 1 + // frame type
                         2; // length, always encode as 2-byte varint
 
@@ -4012,37 +4151,73 @@ impl Connection {
                                 //
                                 // Finally we go back and encode the frame
                                 // header with the now available information.
-                                let (mut dgram_hdr, mut dgram_payload) =
-                                    b.split_at(hdr_off + hdr_len)?;
+                                if_likely!{ self.version == PROTOCOL_VERSION_V3 => {
 
-                                dgram_payload.as_mut()[..len]
-                                    .copy_from_slice(&data);
+                                    // Write stream data into the packet buffer; normally right
+                                    // after the encrypted header.
+                                    b.as_mut()[..len].copy_from_slice(&data);
 
-                                // Encode the frame's header.
-                                //
-                                // Due to how `OctetsMut::split_at()` works,
-                                // `dgram_hdr` starts from the initial offset
-                                // of `b` (rather than the current offset), so
-                                // it needs to be advanced to the initial frame
-                                // offset.
-                                dgram_hdr.skip(hdr_off)?;
+                                    //Advance the buffer.
+                                    b.skip(len)?;
 
-                                frame::encode_dgram_header(
-                                    len as u64,
-                                    &mut dgram_hdr,
-                                )?;
+                                    // Encode the header reversed.
+                                    frame::encode_dgram_footer(
+                                        len as u64,
+                                        &mut b,
+                                    )?;
 
-                                // Advance the packet buffer's offset.
-                                b.skip(hdr_len + len)?;
+                                    // Back to the initial index.
+                                    b.rewind(len+hdr_len)?;
+
+                                } else {
+                                    let (mut dgram_hdr, mut dgram_payload) =
+                                        b.split_at(hdr_off + hdr_len)?;
+
+                                    dgram_payload.as_mut()[..len]
+                                        .copy_from_slice(&data);
+
+                                    // Encode the frame's header.
+                                    //
+                                    // Due to how `OctetsMut::split_at()` works,
+                                    // `dgram_hdr` starts from the initial offset
+                                    // of `b` (rather than the current offset), so
+                                    // it needs to be advanced to the initial frame
+                                    // offset.
+                                    dgram_hdr.skip(hdr_off)?;
+
+                                    frame::encode_dgram_header(
+                                        len as u64,
+                                        &mut dgram_hdr,
+                                        )?;
+                                }};
 
                                 let frame =
                                     frame::Frame::DatagramHeader { length: len };
 
-                                if push_frame_to_pkt!(b, frames, frame, left) {
+                                // We always write data a the beginning the packet.
+                                // If we use PROTOCOL_VERSION_V3, this can be leveraged to enable a
+                                // zero-copy contiguous application buffer. If we don't use V3,
+                                // it shouldn't matter where we put it in the packet.
+                                if_likely!{self.version == PROTOCOL_VERSION_V3 => {
+                                    // we already know that left > frame.wire_len()
+                                    let wire_len = frame.wire_len();
+                                    left -= wire_len;
+                                    // adjust left that was computed based on a 8 bytes overhead
+                                    cumul += wire_len;
+                                    frames.insert(0, frame);
                                     ack_eliciting = true;
                                     in_flight = true;
                                     dgram_emitted = true;
-                                }
+                                    // just one dgram per Quic packet to enable the zero-copy
+                                    // contiguous receiver
+                                    break;
+                                } else {
+                                    if push_frame_to_vec!(frames, frame, left, cumul) {
+                                        ack_eliciting = true;
+                                        in_flight = true;
+                                        dgram_emitted = true;
+                                    }
+                                }};
                             },
 
                             None => continue,
@@ -4051,6 +4226,11 @@ impl Connection {
                         // This dgram frame will never fit. Let's purge it.
                         self.dgram_send_queue.pop();
                     } else {
+                        // Revert back the fixed overhead. We might try to send a Stream Frame.
+                        if has_fixed_overhead {
+                            left -= 6;
+                            has_fixed_overhead = false;
+                        }
                         break;
                     }
                 }
@@ -4064,6 +4244,8 @@ impl Connection {
             path.active() &&
             !dgram_emitted
         {
+            let hdr_off = if_likely!{self.version == PROTOCOL_VERSION_V3 => { b.off() } else {
+                b.off() + cumul }};
             while let Some(priority_key) = self.streams.peek_flushable() {
                 let stream_id = priority_key.id;
                 let stream = match self.streams.get_mut(stream_id) {
@@ -4079,6 +4261,31 @@ impl Connection {
                 };
 
                 let stream_off = stream.send.off_front();
+                // if V3, we need to rewind a re-encode the QUIC header.
+                // b.off is currently at payload_offset.
+                let fixed_overhead = if_likely!{ self.version == PROTOCOL_VERSION_V3  => {
+                    b.rewind(payload_offset-header_offset)?;
+                    self.expected_stream_id_len = packet::num_len_to_encode(stream_id) + 1;
+                    packet::encode_u64_num_and_nextelem_len(pn, self.expected_stream_id_len, &mut b)?;
+                    self.expected_offset_len = packet::offset_len_to_encode(u64::from(stream_off as u32))?;
+                    packet::encode_u64_num_and_nextelem_len(stream_id, self.expected_offset_len,
+                                                            &mut b)?;
+                    packet::encode_offset_num(stream_off, &mut b)?;
+                    payload_offset = b.off();
+                    // adjust left that was computed based on a 8 bytes overhead
+                    let fixed = match 8_usize.checked_sub(self.expected_stream_id_len+self.expected_offset_len) {
+                        Some(v) => v,
+                        None => {
+                            trace!("checked_sub underflow. expected_stream_id_len is {0}, expected_offset_len is {1}",
+                                    self.expected_stream_id_len, self.expected_offset_len);
+                            // Should we panic?
+                            0
+                        }
+                    };
+                    left += fixed;
+                    has_fixed_overhead = true;
+                    fixed
+                } else { 0 }};
 
                 // Encode the frame.
                 //
@@ -4093,7 +4300,8 @@ impl Connection {
                 //
                 // Finally we go back and encode the frame header with the now
                 // available information.
-                let hdr_off = b.off();
+
+
                 let hdr_len = 1 + // frame type
                     octets::varint_len(stream_id) + // stream_id
                     octets::varint_len(stream_off) + // offset
@@ -4104,36 +4312,65 @@ impl Connection {
                     None => {
                         let priority_key = Arc::clone(&stream.priority_key);
                         self.streams.remove_flushable(&priority_key);
-
+                        if has_fixed_overhead {
+                            left -= fixed_overhead;
+                            has_fixed_overhead = false;
+                        }
+                        self.expected_stream_id_len = 1;
+                        self.expected_offset_len = 1;
                         continue;
                     },
                 };
 
-                let (mut stream_hdr, mut stream_payload) =
-                    b.split_at(hdr_off + hdr_len)?;
+                let (len, fin) = if_likely!{self.version == PROTOCOL_VERSION_V3 => {
 
-                // Write stream data into the packet buffer.
-                let (len, fin) =
-                    stream.send.emit(&mut stream_payload.as_mut()[..max_len])?;
+                    // Write stream data into the packet buffer; normally right after
+                    // the encrypted header.
+                    let (len, fin) =
+                        stream.send.emit(&mut b.as_mut()[..max_len])?;
+                    // Advance the buffer
+                    b.skip(len)?;
 
-                // Encode the frame's header.
-                //
-                // Due to how `OctetsMut::split_at()` works, `stream_hdr` starts
-                // from the initial offset of `b` (rather than the current
-                // offset), so it needs to be advanced to the initial frame
-                // offset.
-                stream_hdr.skip(hdr_off)?;
+                    // Encode the header reversed
+                    frame::encode_stream_footer(
+                        stream_id,
+                        stream_off,
+                        len as u64,
+                        fin,
+                        &mut b,
+                        )?;
 
-                frame::encode_stream_header(
-                    stream_id,
-                    stream_off,
-                    len as u64,
-                    fin,
-                    &mut stream_hdr,
-                )?;
+                    // back to the initial index.
+                    b.rewind(len+hdr_len)?;
 
-                // Advance the packet buffer's offset.
-                b.skip(hdr_len + len)?;
+                    (len, fin)
+                } else {
+
+                    let (mut stream_hdr, mut stream_payload) =
+                        b.split_at(hdr_off + hdr_len)?;
+
+                    // Write stream data into the packet buffer.
+                    let (len, fin) =
+                        stream.send.emit(&mut stream_payload.as_mut()[..max_len])?;
+
+                    // Encode the frame's header.
+                    //
+                    // Due to how `OctetsMut::split_at()` works, `stream_hdr` starts
+                    // from the initial offset of `b` (rather than the current
+                    // offset), so it needs to be advanced to the initial frame
+                    // offset.
+                    stream_hdr.skip(hdr_off)?;
+
+                    frame::encode_stream_header(
+                        stream_id,
+                        stream_off,
+                        len as u64,
+                        fin,
+                        &mut stream_hdr,
+                        )?;
+
+                    (len, fin)
+                }};
 
                 let frame = frame::Frame::StreamHeader {
                     stream_id,
@@ -4142,11 +4379,22 @@ impl Connection {
                     fin,
                 };
 
-                if push_frame_to_pkt!(b, frames, frame, left) {
+                if_likely!{self.version == PROTOCOL_VERSION_V3 => {
+                    // we already know that left > frame.wire_len()
+                    let wire_len = frame.wire_len();
+                    left -= wire_len;
+                    frames.insert(0, frame);
                     ack_eliciting = true;
                     in_flight = true;
                     has_data = true;
-                }
+                    cumul += wire_len;
+                } else {
+                    if push_frame_to_vec!(frames, frame, left, cumul) {
+                        ack_eliciting = true;
+                        in_flight = true;
+                        has_data = true;
+                    }
+                }};
 
                 let priority_key = Arc::clone(&stream.priority_key);
                 // If the stream is no longer flushable, remove it from the queue
@@ -4166,6 +4414,111 @@ impl Connection {
         // Alternate trying to send DATAGRAMs next time.
         self.emit_dgram = !dgram_emitted;
 
+        // Create CRYPTO frame.
+        if pkt_space.crypto_stream.is_flushable() &&
+           left > frame::MAX_CRYPTO_OVERHEAD &&
+           !is_closing &&
+           path.active()
+        {
+            let crypto_off = pkt_space.crypto_stream.send.off_front();
+
+            // Encode the frame.
+            //
+            // Instead of creating a `frame::Frame` object, encode the frame
+            // directly into the packet buffer.
+            //
+            // First we reserve some space in the output buffer for writing the
+            // frame header (we assume the length field is always a 2-byte
+            // varint as we don't know the value yet).
+            //
+            // Then we emit the data from the crypto stream's send buffer.
+            //
+            // Finally we go back and encode the frame header with the now
+            // available information.
+            let hdr_off = b.off() + cumul;
+            let hdr_len = 1 + // frame type
+                octets::varint_len(crypto_off) + // offset
+                2; // length, always encode as 2-byte varint
+            //The overhead depends on whether or not we're going
+            //to include a stream frame in this packet. We assumed yes, but maybe we don't.
+            if_likely! {self.version == PROTOCOL_VERSION_V3 => {
+                if !has_fixed_overhead {
+                    left += 6;
+                    has_fixed_overhead = true;
+                }
+            }};
+            if let Some(max_len) = left.checked_sub(hdr_len) {
+                let len = if_likely!{self.version == PROTOCOL_VERSION_V3 => {
+                    // located potentally after other control frames
+                    b.skip(cumul)?;
+                    let (len, _) = pkt_space
+                        .crypto_stream
+                        .send
+                        .emit(&mut b.as_mut()[..max_len])?;
+                    // this advances b to the Crypto Hdr expected location.
+                    b.skip(len)?;
+                    // Encode the header reversed
+                    frame::encode_crypto_footer(
+                        crypto_off,
+                        len as u64,
+                        &mut b,
+                    )?;
+                    // back to the initial index.
+                    b.rewind(len+hdr_len+cumul)?;
+                    len
+                } else {
+
+                    let (mut crypto_hdr, mut crypto_payload) =
+                        b.split_at(hdr_off + hdr_len)?;
+                    // Write stream data into the packet buffer.
+                    let (len, _) = pkt_space
+                        .crypto_stream
+                        .send
+                        .emit(&mut crypto_payload.as_mut()[..max_len])?;
+
+                    // Encode the frame's header.
+                    //
+                    // Due to how `OctetsMut::split_at()` works, `crypto_hdr` starts
+                    // from the initial offset of `b` (rather than the current
+                    // offset), so it needs to be advanced to the
+                    // initial frame offset.
+                    crypto_hdr.skip(hdr_off)?;
+
+                    frame::encode_crypto_header(
+                        crypto_off,
+                        len as u64,
+                        &mut crypto_hdr,
+                    )?;
+
+                    len
+                }};
+
+                let frame = frame::Frame::CryptoHeader {
+                    offset: crypto_off,
+                    length: len,
+                };
+
+                #[allow(unused_assignments)]
+                if push_frame_to_vec!(frames, frame, left, cumul) {
+                    ack_eliciting = true;
+                    in_flight = true;
+                    has_data = true;
+                }
+            }
+        }
+
+        if_likely!{self.version == PROTOCOL_VERSION_V3  => {
+            // Todo check interplay with CWND availability
+            if !has_fixed_overhead && left > 0 {
+                // we only had 2 bytes of overhead for a 0 streamid and 0 offset
+                // if no stream frame, instead of the potential 8 bytes.
+                left += 6;
+            }
+        }};
+
+        // Add the frames to the buffer.
+        push_frames_to_pkt!(b, frames, self.version);
+
         // If no other ack-eliciting frame is sent, include a PING frame
         // - if PTO probe needed; OR
         // - if we've sent too many non ack-eliciting packets without having
@@ -4178,7 +4531,7 @@ impl Connection {
         {
             let frame = frame::Frame::Ping;
 
-            if push_frame_to_pkt!(b, frames, frame, left) {
+            if push_frame_to_pkt!(b, frames, frame, left, self.version) {
                 ack_eliciting = true;
                 in_flight = true;
             }
@@ -4211,21 +4564,27 @@ impl Connection {
         {
             let frame = frame::Frame::Padding { len: left };
 
-            if push_frame_to_pkt!(b, frames, frame, left) {
+            if push_frame_to_pkt!(b, frames, frame, left, self.version) {
                 in_flight = true;
             }
         }
 
-        // Pad payload so that it's always at least 4 bytes.
-        if b.off() - payload_offset < PAYLOAD_MIN_LEN {
+        // Pad payload so that it's always at least 4 bytes if QUIC V1, or 12 bytes if QUIC V3.
+        if b.off() - payload_offset < payload_min_len {
             let payload_len = b.off() - payload_offset;
+            let len = payload_min_len- payload_len;
 
             let frame = frame::Frame::Padding {
-                len: PAYLOAD_MIN_LEN - payload_len,
+                len,
             };
-
+            if payload_len + frame.wire_len() > left {
+                // We need to bypass the cwnd restriction; or
+                // we can't send this packed normally containing
+                // an ack.
+                left = frame.wire_len();
+            }
             #[allow(unused_assignments)]
-            if push_frame_to_pkt!(b, frames, frame, left) {
+            if push_frame_to_pkt!(b, frames, frame, left, self.version) {
                 in_flight = true;
             }
         }
@@ -4234,9 +4593,13 @@ impl Connection {
 
         // Fill in payload length.
         if pkt_type != packet::Type::Short {
-            let len = pn_len + payload_len + crypto_overhead;
+            let len = if_likely!{self.version == crate::PROTOCOL_VERSION_V3 => {
+                pn_len + self.expected_stream_id_len + self.expected_offset_len + payload_len + crypto_overhead
+            } else {
+                pn_len + payload_len + crypto_overhead
+            }};
 
-            let (_, mut payload_with_len) = b.split_at(header_offset)?;
+            let (_, mut payload_with_len) = b.split_at(header_offset_for_length)?;
             payload_with_len
                 .put_varint_with_len(len as u64, PAYLOAD_LENGTH_LEN)?;
         }
@@ -4302,15 +4665,25 @@ impl Connection {
             None => return Err(Error::InvalidState),
         };
 
+        let enc_hdr_len = if_likely! {self.version == crate::PROTOCOL_VERSION_V3 => {
+            pn_len + self.expected_stream_id_len + self.expected_offset_len
+        } else {
+            pn_len
+        }};
+
         let written = packet::encrypt_pkt(
             &mut b,
             pn,
-            pn_len,
+            enc_hdr_len,
             payload_len,
             payload_offset,
             None,
             aead,
+            self.version,
         )?;
+
+        self.expected_stream_id_len = 1;
+        self.expected_offset_len = 1;
 
         let sent_pkt = recovery::Sent {
             pkt_num: pn,
@@ -5491,7 +5864,12 @@ impl Connection {
                 // (1 byte of pkt_len + len of dcid)
                 max_len = max_len.saturating_sub(1 + dcid.len());
                 // ...subtract the packet number (max len)...
-                max_len = max_len.saturating_sub(packet::MAX_PKT_NUM_LEN);
+                if self.version == crate::PROTOCOL_VERSION_V3 {
+                    // 1 byte for stream_id 0, and 1 bytes for offset 0.
+                    max_len = max_len.saturating_sub(packet::MAX_PKT_NUM_LEN_STREAMID_OFFSET_LEN_FOR_DGRAM);
+                } else {
+                    max_len = max_len.saturating_sub(packet::MAX_PKT_NUM_LEN);
+                }
                 // ...subtract the crypto overhead...
                 max_len = max_len.saturating_sub(
                     self.pkt_num_spaces[packet::Epoch::Application]
@@ -6453,7 +6831,6 @@ impl Connection {
         if self.handshake_completed {
             return self.handshake.process_post_handshake(&mut ex_data);
         }
-
         match self.handshake.do_handshake(&mut ex_data) {
             Ok(_) => (),
 
@@ -6465,7 +6842,6 @@ impl Connection {
                 // completed yet, though it's required to be able to send data
                 // in 0.5 RTT.
                 let raw_params = self.handshake.quic_transport_params();
-
                 if !self.parsed_peer_transport_params && !raw_params.is_empty() {
                     let peer_params =
                         TransportParams::decode(raw_params, self.is_server)?;
@@ -6795,6 +7171,7 @@ impl Connection {
 
             frame::Frame::Crypto { data } => {
                 // Push the data to the stream so it can be re-ordered.
+                // TODO Protocol Reverso: optimize away this buf allocation and 2 copies
                 self.pkt_num_spaces[epoch].crypto_stream.recv.write(data)?;
 
                 // Feed crypto data to the TLS state, if there's data
@@ -7513,7 +7890,6 @@ fn drop_pkt_on_err(
     if is_server && recv_count == 0 {
         return e;
     }
-
     trace!("{} dropped invalid packet", trace_id);
 
     // Ignore other invalid packets that haven't been authenticated to prevent
@@ -8451,30 +8827,61 @@ pub mod testing {
             scid: ConnectionId::from_ref(
                 conn.ids.get_scid(*active_scid_seq)?.cid.as_ref(),
             ),
-            pkt_num: 0,
             pkt_num_len: pn_len,
             token: conn.token.clone(),
             versions: None,
             key_phase: conn.key_phase,
+            ..Default::default()
         };
 
         hdr.to_bytes(&mut b)?;
 
         let payload_len = frames.iter().fold(0, |acc, x| acc + x.wire_len());
 
+        let hdr_enc_len = if conn.version == PROTOCOL_VERSION_V3 {
+            12
+        } else {
+            4
+        };
+
         if pkt_type != packet::Type::Short {
-            let len = pn_len + payload_len + space.crypto_overhead().unwrap();
+            let len = hdr_enc_len + payload_len + space.crypto_overhead().unwrap();
             b.put_varint(len as u64)?;
         }
 
-        // Always encode packet number in 4 bytes, to allow encoding packets
-        // with empty payloads.
-        b.put_u32(pn as u32)?;
+        if conn.version == PROTOCOL_VERSION_V3 {
+            // We need to encode the streamid if any; and the offset
+           let (stream_id, offset) = match frames.iter().find(|frame| matches!(frame, frame::Frame::Stream { .. })) {
+                Some(frame::Frame::Stream { stream_id, ..}) => (*stream_id, 0),
+                _ => (0, 0),
+           };
+           // 4 bytes pn, 4 bytes streamid and 4 bytes offset to not be bothered with
+           // padding.
+           // /!\
+           // Note, this hacky function will only work if pn and stream_id are both <= 63 in the
+           // tests.
+           //
+           // TODO improve this instead of being lazy.
+           conn.expected_stream_id_len = 4;
+           packet::encode_u64_num_and_nextelem_len(0, 4, &mut b)?;
+           b.put_u24(pn as u32)?;
+           conn.expected_offset_len = 4;
+           packet::encode_u64_num_and_nextelem_len(0, 4, &mut b)?;
+           b.put_u24(stream_id as u32)?;
+           b.put_u32(offset as u32)?;
+        }
+        else {
+            // Always encode packet number in 4 bytes, to allow encoding packets
+            // with empty payloads.
+            b.put_u32(pn as u32)?;
+        };
+
+
+
 
         let payload_offset = b.off();
-
         for frame in frames {
-            frame.to_bytes(&mut b)?;
+            frame.to_bytes(&mut b, conn.version)?;
         }
 
         let aead = match space.crypto_seal {
@@ -8485,11 +8892,12 @@ pub mod testing {
         let written = packet::encrypt_pkt(
             &mut b,
             pn,
-            pn_len,
+            hdr_enc_len,
             payload_len,
             payload_offset,
             None,
             aead,
+            conn.version,
         )?;
 
         space.next_pkt_num += 1;
@@ -8510,7 +8918,8 @@ pub mod testing {
 
         let payload_len = b.cap();
 
-        packet::decrypt_hdr(&mut b, &mut hdr, aead).unwrap();
+
+        packet::decrypt_hdr(&mut b, &mut hdr, aead, conn.version).unwrap();
 
         let pn = packet::decode_pkt_num(
             conn.pkt_num_spaces[epoch].largest_rx_pkt_num,
@@ -8518,16 +8927,61 @@ pub mod testing {
             hdr.pkt_num_len,
         );
 
-        let mut payload =
+        let pn_len = hdr.pkt_num_len;
+        let mut enc_hdr_len = pn_len;
+        let offset = if_likely!{conn.version == PROTOCOL_VERSION_V3 => {
+            // let's use this control flow to also add the true enc_hdr_len
+            // on V3
+            enc_hdr_len += hdr.expected_stream_id_len;
+            enc_hdr_len += hdr.expected_offset_len;
+
+            // A stream_id 0 indicates no stream frame encrypted.
+            if hdr.expected_stream_id > 0 {
+                let mut monotonic_offset = match
+                    conn.streams.get(hdr.expected_stream_id) {
+                        Some(s) => s.get_monotonic_offset(),
+                        None => 0, // This could have been touch by someone on the network.
+                                   // We should not create a stream now, and wait for valid
+                                   // decryption.
+                    };
+                monotonic_offset = packet::decode_pkt_offset(monotonic_offset, hdr.expected_offset, hdr.expected_offset_len);
+                monotonic_offset
+            }
+            else {
+                0
+            }
+        } else {
+            0
+        }};
+
+        let (mut payload, payload_len) = if_likely!{conn.version == PROTOCOL_VERSION_V3 => {
+            packet::decrypt_pkt_v3(&mut b,
+                                   pn,
+                                   enc_hdr_len,
+                                   payload_len,
+                                   hdr.expected_stream_id,
+                                   offset,
+                                   aead)
+                .unwrap()
+        } else {
             packet::decrypt_pkt(&mut b, pn, hdr.pkt_num_len, payload_len, aead)
-                .unwrap();
+                .unwrap()
+        }};
 
         let mut frames = Vec::new();
-
-        while payload.cap() > 0 {
-            let frame = frame::Frame::from_bytes(&mut payload, hdr.ty)?;
-            frames.push(frame);
-        }
+        if_likely!{ conn.version == PROTOCOL_VERSION_V3 => {
+            let payload_start_offset = payload.off();
+            payload.skip(payload_len)?;
+            while payload.off() > payload_start_offset {
+                let frame = frame::Frame::from_bytes(&mut payload, hdr.ty, conn.version)?;
+                frames.push(frame);
+            }
+        } else {
+            while payload.cap() > 0 {
+                let frame = frame::Frame::from_bytes(&mut payload, hdr.ty, conn.version)?;
+                frames.push(frame);
+            }
+        }};
 
         Ok(frames)
     }
@@ -9352,7 +9806,11 @@ mod tests {
         }];
 
         let pkt_type = packet::Type::Short;
-        assert_eq!(pipe.send_pkt_to_server(pkt_type, &frames, &mut buf), Ok(39));
+        if pipe.client.version == PROTOCOL_VERSION_V3 {
+            assert_eq!(pipe.send_pkt_to_server(pkt_type, &frames, &mut buf), Ok(48));
+        } else {
+            assert_eq!(pipe.send_pkt_to_server(pkt_type, &frames, &mut buf), Ok(39));
+        }
 
         let mut readable = pipe.server.readable();
         assert_eq!(readable.next(), Some(4));
@@ -9365,7 +9823,11 @@ mod tests {
         }];
 
         let pkt_type = packet::Type::Short;
-        assert_eq!(pipe.send_pkt_to_server(pkt_type, &frames, &mut buf), Ok(39));
+        if pipe.client.version == PROTOCOL_VERSION_V3 {
+            assert_eq!(pipe.send_pkt_to_server(pkt_type, &frames, &mut buf), Ok(48));
+        } else {
+            assert_eq!(pipe.send_pkt_to_server(pkt_type, &frames, &mut buf), Ok(39));
+        }
 
         let mut readable = pipe.server.readable();
         assert_eq!(readable.next(), Some(4));
@@ -9528,8 +9990,13 @@ mod tests {
             .paths
             .get_active()
             .expect("initial path not found");
-
-        assert_eq!(initial_path.max_send_bytes, 195);
+        if pipe.server.version == PROTOCOL_VERSION_V3 {
+            // + 8 bytes * MAX_AMPLIFICATION_FACTOR for V3.
+            assert_eq!(initial_path.max_send_bytes, 219);
+        }
+        else {
+            assert_eq!(initial_path.max_send_bytes, 195);
+        }
 
         // Force server to send a single PING frame.
         pipe.server
@@ -9648,17 +10115,33 @@ mod tests {
             testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
         let mut iter = frames.iter();
 
-        // Ignore ACK.
-        iter.next().unwrap();
+        if pipe.client.version == PROTOCOL_VERSION_V3 {
+            // Ignore padding
+            iter.next().unwrap();
 
-        assert_eq!(
-            iter.next(),
-            Some(&frame::Frame::MaxStreamData {
-                stream_id: 0,
-                max: 30
-            })
-        );
-        assert_eq!(iter.next(), Some(&frame::Frame::MaxData { max: 61 }));
+            assert_eq!(iter.next(), Some(&frame::Frame::MaxData { max: 61 }));
+            assert_eq!(
+                iter.next(),
+                Some(&frame::Frame::MaxStreamData {
+                    stream_id: 0,
+                    max: 30
+                })
+            );
+            // Ignore ack
+            iter.next().unwrap();
+        } else {
+            // Ignore ACK.
+            iter.next().unwrap();
+
+            assert_eq!(
+                iter.next(),
+                Some(&frame::Frame::MaxStreamData {
+                    stream_id: 0,
+                    max: 30
+                })
+            );
+            assert_eq!(iter.next(), Some(&frame::Frame::MaxData { max: 61 }));
+        }
     }
 
     #[test]
@@ -9766,6 +10249,10 @@ mod tests {
             testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
         let mut iter = frames.iter();
 
+        if pipe.client.version == PROTOCOL_VERSION_V3 {
+            // Ignore the padding
+            iter.next().unwrap();
+        }
         // Ignore ACK.
         iter.next().unwrap();
 
@@ -10254,7 +10741,18 @@ mod tests {
 
         let mut b = [0; 15];
         assert_eq!(pipe.server.stream_recv(0, &mut b), Ok((11, false)));
-        assert_eq!(&b[..11], b"aaaaabbbccc");
+        // TODO: ask whether this overlap logic is correct. As currently written in
+        // stream::RangeBuf::write(), the resulting emited buffer depends in which order frames are
+        // received, and should  therefore be not deterministic if overlapping frames are sent
+        // within different packets. We should probably better treat this as a protocol violation.
+        if pipe.client.version == PROTOCOL_VERSION_V3 {
+            // Stream frame are read from right to left in V3,
+            // and order matters for the overlap logic.
+            assert_eq!(&b[..11], b"aaabbbccccc");
+        }
+        else {
+            assert_eq!(&b[..11], b"aaaaabbbccc");
+        }
     }
 
     #[test]
@@ -10284,7 +10782,14 @@ mod tests {
 
         let mut b = [0; 15];
         assert_eq!(pipe.server.stream_recv(0, &mut b), Ok((11, false)));
-        assert_eq!(&b[..11], b"aaaaabccccc");
+        if pipe.client.version == PROTOCOL_VERSION_V3 {
+            // Stream frame are read from right to left in V3,
+            // and order matters for the overlap logic.
+            assert_eq!(&b[..11], b"aaabbbbbccc");
+        }
+        else {
+            assert_eq!(&b[..11], b"aaaaabccccc");
+        }
     }
 
     #[test]
@@ -10330,7 +10835,12 @@ mod tests {
         }];
 
         let pkt_type = packet::Type::Short;
-        assert_eq!(pipe.send_pkt_to_server(pkt_type, &frames, &mut buf), Ok(39));
+        if pipe.client.version == PROTOCOL_VERSION_V3 {
+            assert_eq!(pipe.send_pkt_to_server(pkt_type, &frames, &mut buf), Ok(48));
+        }
+        else {
+            assert_eq!(pipe.send_pkt_to_server(pkt_type, &frames, &mut buf), Ok(39));
+        }
 
         // Server is notified of stream readability, due to reset.
         let mut r = pipe.server.readable();
@@ -10395,7 +10905,11 @@ mod tests {
         }];
 
         let pkt_type = packet::Type::Short;
-        assert_eq!(pipe.send_pkt_to_server(pkt_type, &frames, &mut buf), Ok(39));
+        if pipe.client.version == PROTOCOL_VERSION_V3 {
+            assert_eq!(pipe.send_pkt_to_server(pkt_type, &frames, &mut buf), Ok(48));
+        } else {
+            assert_eq!(pipe.send_pkt_to_server(pkt_type, &frames, &mut buf), Ok(39));
+        }
 
         // Server is notified of stream readability, due to reset.
         let mut r = pipe.server.readable();
@@ -10410,7 +10924,11 @@ mod tests {
         assert!(pipe.server.stream_finished(0));
 
         // Sending RESET_STREAM again shouldn't make stream readable again.
-        assert_eq!(pipe.send_pkt_to_server(pkt_type, &frames, &mut buf), Ok(39));
+        if pipe.client.version == PROTOCOL_VERSION_V3 {
+            assert_eq!(pipe.send_pkt_to_server(pkt_type, &frames, &mut buf), Ok(48));
+        } else {
+            assert_eq!(pipe.send_pkt_to_server(pkt_type, &frames, &mut buf), Ok(39));
+        }
 
         let mut r = pipe.server.readable();
         assert_eq!(r.next(), None);
@@ -10499,7 +11017,13 @@ mod tests {
 
         let frames =
             testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
-        let mut iter = frames.iter();
+        let mut iter:  Box<dyn Iterator<Item=_>> = if pipe.client.version == PROTOCOL_VERSION_V3 {
+            // frames orders are reversed compared to V1
+            Box::new(frames.iter().rev())
+        }
+        else {
+            Box::new(frames.iter())
+        };
 
         // Ignore ACK.
         iter.next().unwrap();
@@ -10588,7 +11112,7 @@ mod tests {
 
     #[test]
     fn stop_sending() {
-        let mut b = [0; 15];
+        let mut b = [0; 25];
 
         let mut buf = [0; 65535];
 
@@ -10694,10 +11218,17 @@ mod tests {
 
         let frames =
             testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
+        let mut iter = frames.iter();
 
-        assert_eq!(frames.len(), 1);
+        if pipe.client.version == PROTOCOL_VERSION_V3 {
+            assert_eq!(frames.len(), 2);
+            // Ignore padding
+            iter.next().unwrap();
+        } else {
+            assert_eq!(frames.len(), 1);
+        }
 
-        match frames.first() {
+        match iter.next() {
             Some(frame::Frame::ACK { .. }) => (),
 
             f => panic!("expected ACK frame, got {:?}", f),
@@ -10758,8 +11289,7 @@ mod tests {
             testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
 
         let mut iter = frames.iter();
-
-        // Skip ACK frame.
+        // Skip ACK frame on V1. Skip Padding on V3.
         iter.next();
 
         assert_eq!(
@@ -10771,6 +11301,10 @@ mod tests {
             })
         );
 
+        if pipe.client.version == PROTOCOL_VERSION_V3 {
+            // Skip Ack frame
+            iter.next().unwrap();
+        }
         // No more frames are sent by the server.
         assert_eq!(iter.next(), None);
     }
@@ -10790,7 +11324,7 @@ mod tests {
         config
             .set_application_protos(&[b"proto1", b"proto2"])
             .unwrap();
-        config.set_initial_max_data(15);
+        config.set_initial_max_data(30);
         config.set_initial_max_stream_data_bidi_local(30);
         config.set_initial_max_stream_data_bidi_remote(30);
         config.set_initial_max_stream_data_uni(30);
@@ -10801,28 +11335,33 @@ mod tests {
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
 
-        // Client sends some data.
-        assert_eq!(pipe.client.stream_send(4, b"hello", true), Ok(5));
+        // Client sends some data. -- Note; changed to helloworld for avoiding
+        // sending padding bytes on V3 (as we need min 12 bytes payload).
+        assert_eq!(pipe.client.stream_send(4, b"helloworld", true), Ok(10));
         assert_eq!(pipe.advance(), Ok(()));
 
         let mut r = pipe.server.readable();
         assert_eq!(r.next(), Some(4));
         assert_eq!(r.next(), None);
 
-        let mut b = [0; 15];
-        assert_eq!(pipe.server.stream_recv(4, &mut b), Ok((5, true)));
+        let mut b = [0; 30];
+        assert_eq!(pipe.server.stream_recv(4, &mut b), Ok((10, true)));
 
         // Server sends some data.
-        assert_eq!(pipe.server.stream_send(4, b"hello", false), Ok(5));
+        assert_eq!(pipe.server.stream_send(4, b"helloworld", false), Ok(10));
         assert_eq!(pipe.advance(), Ok(()));
 
         // Server buffers some data, until send capacity limit reached.
-        assert_eq!(pipe.server.stream_send(4, b"hello", false), Ok(5));
-        assert_eq!(pipe.server.stream_send(4, b"hello", false), Ok(5));
+        assert_eq!(pipe.server.stream_send(4, b"helloworld", false), Ok(10));
+        assert_eq!(pipe.server.stream_send(4, b"helloworld", false), Ok(10));
         assert_eq!(
-            pipe.server.stream_send(4, b"hello", false),
+            pipe.server.stream_send(4, b"helloworld", false),
             Err(Error::Done)
         );
+        //assert_eq!(
+            //pipe.server.stream_send(8, b"helloworld", false),
+            //Err(Error::Done)
+        //);
 
         // Client sends STOP_SENDING.
         let frames = [frame::Frame::StopSending {
@@ -10835,13 +11374,13 @@ mod tests {
             .unwrap();
 
         // Server can now send more data (on a different stream).
-        assert_eq!(pipe.client.stream_send(8, b"hello", true), Ok(5));
+        assert_eq!(pipe.client.stream_send(8, b"helloworld", true), Ok(10));
         assert_eq!(pipe.advance(), Ok(()));
 
-        assert_eq!(pipe.server.stream_send(8, b"hello", false), Ok(5));
-        assert_eq!(pipe.server.stream_send(8, b"hello", false), Ok(5));
+        assert_eq!(pipe.server.stream_send(8, b"helloworld", false), Ok(10));
+        assert_eq!(pipe.server.stream_send(8, b"helloworld", false), Ok(10));
         assert_eq!(
-            pipe.server.stream_send(8, b"hello", false),
+            pipe.server.stream_send(8, b"helloworld", false),
             Err(Error::Done)
         );
         assert_eq!(pipe.advance(), Ok(()));
@@ -10878,6 +11417,16 @@ mod tests {
         let frames =
             testing::decode_pkt(&mut pipe.client, &mut dummy[..len]).unwrap();
         let mut iter = frames.iter();
+        // Stop Sending frame consumes 3 bytes. We need a payload of 12 bytes min on V3; so we
+        // should expect 9 bytes of padding.
+        if pipe.client.version == PROTOCOL_VERSION_V3 {
+            assert_eq!(
+                iter.next(),
+                Some(&frame::Frame::Padding {
+                    len: 9,
+                })
+            );
+        }
 
         assert_eq!(
             iter.next(),
@@ -11087,6 +11636,17 @@ mod tests {
             testing::decode_pkt(&mut pipe.client, &mut dummy[..len]).unwrap();
         let mut iter = frames.iter();
 
+        // ResetStream frame consumes 4 bytes. We need a payload of 12 bytes min on V3; so we
+        // should expect 8 bytes of padding.
+        if pipe.client.version == PROTOCOL_VERSION_V3 {
+            assert_eq!(
+                iter.next(),
+                Some(&frame::Frame::Padding {
+                    len: 8,
+                })
+            );
+        }
+
         assert_eq!(
             iter.next(),
             Some(&frame::Frame::ResetStream {
@@ -11213,9 +11773,10 @@ mod tests {
         let mut pipe = testing::Pipe::new().unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
 
-        assert_eq!(pipe.client.stream_send(8, b"aaaaa", false), Ok(5));
-        assert_eq!(pipe.client.stream_send(0, b"aaaaa", false), Ok(5));
-        assert_eq!(pipe.client.stream_send(4, b"aaaaa", false), Ok(5));
+        // Sending 7 bytes to avoid having padding in the way on V3.
+        assert_eq!(pipe.client.stream_send(8, b"aaaaaaa", false), Ok(7));
+        assert_eq!(pipe.client.stream_send(0, b"aaaaaaa", false), Ok(7));
+        assert_eq!(pipe.client.stream_send(4, b"aaaaaaa", false), Ok(7));
 
         let (len, _) = pipe.client.send(&mut buf).unwrap();
 
@@ -11231,7 +11792,7 @@ mod tests {
             iter.next(),
             Some(&frame::Frame::Stream {
                 stream_id: 8,
-                data: stream::RangeBuf::from(b"aaaaa", 0, false),
+                data: stream::RangeBuf::from(b"aaaaaaa", 0, false),
             })
         );
 
@@ -11244,7 +11805,7 @@ mod tests {
             frames.first(),
             Some(&frame::Frame::Stream {
                 stream_id: 0,
-                data: stream::RangeBuf::from(b"aaaaa", 0, false),
+                data: stream::RangeBuf::from(b"aaaaaaa", 0, false),
             })
         );
 
@@ -11257,7 +11818,7 @@ mod tests {
             frames.first(),
             Some(&frame::Frame::Stream {
                 stream_id: 4,
-                data: stream::RangeBuf::from(b"aaaaa", 0, false),
+                data: stream::RangeBuf::from(b"aaaaaaa", 0, false),
             })
         );
     }
@@ -11547,7 +12108,15 @@ mod tests {
         buf[written - 1] = !buf[written - 1];
 
         // Client will ignore invalid packet.
-        assert_eq!(pipe.client_recv(&mut buf[..written]), Ok(71));
+        if pipe.client.version == PROTOCOL_VERSION_V3 {
+            // 8 more bytes pushed by encode_pkt() for 4 bytes stream_id and
+            // 4 bytes offset
+            assert_eq!(pipe.client_recv(&mut buf[..written]), Ok(79));
+        }
+        else {
+            assert_eq!(pipe.client_recv(&mut buf[..written]), Ok(71));
+        }
+
 
         // The connection should be alive...
         assert!(!pipe.client.is_closed());
@@ -11578,11 +12147,9 @@ mod tests {
             version: pipe.client.version,
             dcid: ConnectionId::from_ref(&dcid),
             scid: ConnectionId::from_ref(&scid),
-            pkt_num: 0,
             pkt_num_len: pn_len,
             token: pipe.client.token.clone(),
-            versions: None,
-            key_phase: false,
+            ..Default::default()
         };
 
         hdr.to_bytes(&mut b).unwrap();
@@ -11600,7 +12167,7 @@ mod tests {
         let frames = [frame::Frame::Padding { len: 10 }];
 
         for frame in &frames {
-            frame.to_bytes(&mut b).unwrap();
+            frame.to_bytes(&mut b, pipe.client.version).unwrap();
         }
 
         let space = &mut pipe.client.pkt_num_spaces[epoch];
@@ -11618,6 +12185,7 @@ mod tests {
             payload_offset,
             None,
             aead,
+            pipe.client.version,
         )
         .unwrap();
 
@@ -11986,7 +12554,12 @@ mod tests {
         }];
 
         let pkt_type = packet::Type::Short;
-        assert_eq!(pipe.send_pkt_to_server(pkt_type, &frames, &mut buf), Ok(39));
+        if pipe.server.version == PROTOCOL_VERSION_V3 {
+            assert_eq!(pipe.send_pkt_to_server(pkt_type, &frames, &mut buf), Ok(48));
+        }
+        else {
+            assert_eq!(pipe.send_pkt_to_server(pkt_type, &frames, &mut buf), Ok(39));
+        }
     }
 
     #[test]
@@ -12291,7 +12864,7 @@ mod tests {
             Some(&frame::Frame::Stream {
                 stream_id: 8,
                 data: stream::RangeBuf::from(b"aaaaaaaaaa", 0, false),
-            })
+                })
         );
 
         assert_eq!(iter.next(), None);
@@ -12321,16 +12894,33 @@ mod tests {
 
         let mut iter = frames.iter();
 
-        // Skip ACK frame.
-        iter.next();
+        if pipe.client.version == PROTOCOL_VERSION_V3 {
+            // Because we read backward in V3, but kept the
+            // same order in frame encoding (except stream frames and datagrams
+            // which are always first), the order of control frames
+            // are reversed too.
+            assert_eq!(
+                iter.next(),
+                Some(&frame::Frame::StreamDataBlocked {
+                    stream_id: 0,
+                    limit: 15,
+                })
+            );
+            // Skip ACK frame.
+            iter.next();
 
-        assert_eq!(
-            iter.next(),
-            Some(&frame::Frame::StreamDataBlocked {
-                stream_id: 0,
-                limit: 15,
-            })
-        );
+        } else {
+            // Skip ACK frame.
+            iter.next();
+
+            assert_eq!(
+                iter.next(),
+                Some(&frame::Frame::StreamDataBlocked {
+                    stream_id: 0,
+                    limit: 15,
+                })
+            );
+        }
 
         assert_eq!(
             iter.next(),
@@ -12354,6 +12944,11 @@ mod tests {
 
         let mut iter = frames.iter();
 
+        if pipe.server.version == PROTOCOL_VERSION_V3 {
+            // Ignore padding
+            iter.next().unwrap();
+        }
+
         assert_eq!(
             iter.next(),
             Some(&frame::Frame::Stream {
@@ -12367,7 +12962,7 @@ mod tests {
         // Send again from blocked stream and make sure it is not marked as
         // blocked again.
         assert_eq!(
-            pipe.client.stream_send(0, b"aaaaaa", false),
+            pipe.client.stream_send(0, b"aaaaaaaa", false),
             Err(Error::Done)
         );
         assert_eq!(pipe.client.streams.blocked().len(), 0);
@@ -12576,9 +13171,17 @@ mod tests {
 
         let frames =
             testing::decode_pkt(&mut pipe.server, &mut buf[..sent]).unwrap();
-        assert_eq!(1, frames.len());
+        let mut iter = frames.iter();
+
+        if pipe.server.version == PROTOCOL_VERSION_V3 {
+            // removing padding.
+            iter.next().unwrap();
+        }
+        else {
+            assert_eq!(1, frames.len());
+        }
         assert!(
-            matches!(frames[0], frame::Frame::ACK { .. }),
+            matches!(iter.next(), Some(frame::Frame::ACK { .. })),
             "the packet sent by the client must be an ACK only packet"
         );
     }
@@ -12601,6 +13204,7 @@ mod tests {
         config.set_initial_max_data(50000);
         config.set_initial_max_stream_data_bidi_local(50000);
         config.set_initial_max_stream_data_bidi_remote(50000);
+        config.set_initial_max_stream_data_uni(50000);
         config.set_initial_max_streams_bidi(3);
         config.set_initial_max_streams_uni(3);
         config.set_max_recv_udp_payload_size(1200);
@@ -12612,7 +13216,7 @@ mod tests {
         // Client sends stream data bigger than cwnd (it will never arrive to the
         // server). This exhausts the congestion window.
         let send_buf1 = [0; 20000];
-        assert_eq!(pipe.client.stream_send(0, &send_buf1, false), Ok(12000));
+        assert_eq!(pipe.client.stream_send(2, &send_buf1, false), Ok(12000));
 
         testing::emit_flight(&mut pipe.client).ok();
 
@@ -12645,10 +13249,16 @@ mod tests {
             let frames =
                 testing::decode_pkt(&mut pipe.server, &mut buf[..sent]).unwrap();
 
-            assert_eq!(1, frames.len());
+            let mut iter = frames.iter();
 
+            if pipe.server.version == PROTOCOL_VERSION_V3 {
+                // Skip the padding
+                iter.next().unwrap();
+            } else {
+                assert_eq!(1, frames.len());
+            }
             assert!(
-                matches!(frames[0], frame::Frame::ACK { .. }),
+                matches!(iter.next(), Some(frame::Frame::ACK { .. })),
                 "the packet sent by the client must be an ACK only packet"
             );
         }
@@ -12841,8 +13451,9 @@ mod tests {
     #[test]
     /// Tests that streams are correctly scheduled based on their priority.
     fn stream_priority() {
-        // Limit 1-RTT packet size to avoid congestion control interference.
-        const MAX_TEST_PACKET_SIZE: usize = 540;
+        // Limit 1-RTT packet size to avoid congestion control interference. On V3, packets have
+        // a larger encrypted header, and we need a larger output buf to flush streams.
+        const MAX_TEST_PACKET_SIZE: usize = if PROTOCOL_VERSION == PROTOCOL_VERSION_V3 { 543 } else { 540 };
 
         let mut buf = [0; 65535];
 
@@ -13128,9 +13739,19 @@ mod tests {
 
         let frames =
             testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
+        let mut iter = frames.iter();
 
+        if pipe.client.version == PROTOCOL_VERSION_V3 {
+            // A minimum QUIC packet should have 12 bytes in the payload in V3.
+            assert_eq!(
+                iter.next(),
+                Some(&frame::Frame::Padding {
+                    len: 6,
+                })
+            );
+        }
         assert_eq!(
-            frames.first(),
+            iter.next(),
             Some(&frame::Frame::Stream {
                 stream_id: 8,
                 data: stream::RangeBuf::from(b"b", 0, false),
@@ -13142,9 +13763,18 @@ mod tests {
 
         let frames =
             testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
+        let mut iter = frames.iter();
 
+        if pipe.server.version == PROTOCOL_VERSION_V3 {
+            assert_eq!(
+                iter.next(),
+                Some(&frame::Frame::Padding {
+                    len: 6,
+                })
+            );
+        }
         assert_eq!(
-            frames.first(),
+            iter.next(),
             Some(&frame::Frame::Stream {
                 stream_id: 0,
                 data: stream::RangeBuf::from(b"b", 0, false),
@@ -13156,9 +13786,18 @@ mod tests {
 
         let frames =
             testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
+        let mut iter = frames.iter();
 
+        if pipe.server.version == PROTOCOL_VERSION_V3 {
+            assert_eq!(
+                iter.next(),
+                Some(&frame::Frame::Padding {
+                    len: 6,
+                })
+            );
+        }
         assert_eq!(
-            frames.first(),
+            iter.next(),
             Some(&frame::Frame::Stream {
                 stream_id: 12,
                 data: stream::RangeBuf::from(b"b", 0, false),
@@ -13169,9 +13808,19 @@ mod tests {
 
         let frames =
             testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
+        let mut iter = frames.iter();
+
+        if pipe.server.version == PROTOCOL_VERSION_V3 {
+            assert_eq!(
+                iter.next(),
+                Some(&frame::Frame::Padding {
+                    len: 6,
+                })
+            );
+        }
 
         assert_eq!(
-            frames.first(),
+            iter.next(),
             Some(&frame::Frame::Stream {
                 stream_id: 4,
                 data: stream::RangeBuf::from(b"b", 0, false),
@@ -13913,10 +14562,14 @@ mod tests {
         assert_eq!(pipe.handshake(), Ok(()));
 
         let max_dgram_size = pipe.client.dgram_max_writable_len().unwrap();
-
-        // Tests use a 16-byte connection ID, so the max datagram frame payload
-        // size is (1200 byte-long packet - 40 bytes overhead)
-        assert_eq!(max_dgram_size, 1160);
+        if pipe.client.version == PROTOCOL_VERSION_V3 {
+            // Tests use a 16-byte connection ID, so the max datagram frame payload
+            // size is (1200 byte-long packet - 42 bytes overhead)
+            assert_eq!(max_dgram_size, 1158);
+        } else {
+            // size is (1200 byte-long packet - 40 bytes overhead)
+            assert_eq!(max_dgram_size, 1160);
+        }
 
         let dgram_packet: Vec<u8> = vec![42; max_dgram_size];
 
@@ -14034,15 +14687,34 @@ mod tests {
 
         let frames =
             testing::decode_pkt(&mut pipe.server, &mut buf[..len]).unwrap();
-
-        assert_eq!(
-            frames.first(),
-            Some(&frame::Frame::ConnectionClose {
-                error_code: 0x1234,
-                frame_type: 0,
-                reason: b"hello?".to_vec(),
-            })
-        );
+        if pipe.server.version == PROTOCOL_VERSION_V3 {
+            // Since we need 12 bytes min on V3 payload,
+            // this test generates 2 padding bytes on V3.
+            assert_eq!(
+                frames[0],
+                frame::Frame::Padding {
+                    len: 1,
+                }
+            );
+            assert_eq!(
+                frames[1],
+                frame::Frame::ConnectionClose {
+                    error_code: 0x1234,
+                    frame_type: 0,
+                    reason: b"hello?".to_vec(),
+                }
+            );
+        }
+        else {
+            assert_eq!(
+                frames.first(),
+                Some(&frame::Frame::ConnectionClose {
+                    error_code: 0x1234,
+                    frame_type: 0,
+                    reason: b"hello?".to_vec(),
+                })
+            );
+        }
     }
 
     #[test]
@@ -14061,13 +14733,32 @@ mod tests {
         let frames =
             testing::decode_pkt(&mut pipe.server, &mut buf[..len]).unwrap();
 
-        assert_eq!(
-            frames.first(),
-            Some(&frame::Frame::ApplicationClose {
-                error_code: 0x1234,
-                reason: b"hello!".to_vec(),
-            })
-        );
+        if pipe.server.version == PROTOCOL_VERSION_V3 {
+            // Since we need 12 bytes min on V3 payload,
+            // this test generates 2 padding bytes on V3.
+            assert_eq!(
+                frames[0],
+                frame::Frame::Padding {
+                    len: 2,
+                }
+            );
+            assert_eq!(
+                frames[1],
+                frame::Frame::ApplicationClose {
+                    error_code: 0x1234,
+                    reason: b"hello!".to_vec(),
+                }
+            );
+        }
+        else {
+            assert_eq!(
+                frames.first(),
+                Some(&frame::Frame::ApplicationClose {
+                    error_code: 0x1234,
+                    reason: b"hello!".to_vec(),
+                })
+            );
+        }
     }
 
     #[test]
@@ -14196,7 +14887,12 @@ mod tests {
         assert!(pipe.client.is_established());
 
         // Client sends after connection is established.
-        pipe.client.stream_send(0, b"badauthtoken", true).unwrap();
+        if pipe.client.version == PROTOCOL_VERSION_V3 { 
+            pipe.client.stream_send(2, b"badauthtoken", true).unwrap();
+        }
+        else {
+            pipe.client.stream_send(0, b"badauthtoken", true).unwrap();
+        }
 
         let flight = testing::emit_flight(&mut pipe.client).unwrap();
         testing::process_flight(&mut pipe.server, flight).unwrap();
@@ -15944,12 +16640,22 @@ mod tests {
 
             let frames =
                 testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
-            assert!(
-                frames
-                    .iter()
-                    .all(|frame| matches!(frame, frame::Frame::ACK { .. })),
+            if pipe.client.version == PROTOCOL_VERSION_V3 {
+                assert!(
+                    frames
+                        .iter()
+                        .all(|frame| matches!(frame, frame::Frame::ACK { .. } |
+                                                     frame::Frame::Padding { .. })),
+                "ACK and Padding only"
+                );
+            } else {
+                assert!(
+                    frames
+                        .iter()
+                        .all(|frame| matches!(frame, frame::Frame::ACK { .. })),
                 "ACK only"
-            );
+                );
+            }
         }
 
         // After 24 non-ack-eliciting, an ACK is explicitly elicited with a PING
@@ -15984,6 +16690,10 @@ mod tests {
         let frames =
             testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
         let mut iter = frames.iter();
+        if pipe.client.version == PROTOCOL_VERSION_V3 {
+            // Skip the padding
+            iter.next().unwrap();
+        }
 
         assert_eq!(iter.next(), Some(&frame::Frame::Ping));
     }
@@ -16009,6 +16719,11 @@ mod tests {
             testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
         let mut iter = frames.iter();
 
+        if pipe.client.version == PROTOCOL_VERSION_V3 {
+            // Skip the padding comming with the lil' Stream frame
+            // to match the 12 payload bytes requirement.
+            iter.next().unwrap();
+        }
         assert!(matches!(
             iter.next(),
             Some(&frame::Frame::Stream {
@@ -16186,10 +16901,17 @@ mod tests {
 
         let frames =
             testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
+        let mut iter = frames.iter();
 
-        assert_eq!(frames.len(), 1);
+        if pipe.client.version == PROTOCOL_VERSION_V3 {
+            assert_eq!(frames.len(), 2);
+            iter.next().unwrap();
+        }
+        else {
+            assert_eq!(frames.len(), 1);
+        }
 
-        match frames.first() {
+        match iter.next() {
             Some(frame::Frame::ACK { .. }) => (),
 
             f => panic!("expected ACK frame, got {:?}", f),
@@ -16272,6 +16994,7 @@ mod tests {
             token: pipe.client.token.clone(),
             versions: None,
             key_phase: pipe.client.key_phase,
+            ..Default::default()
         };
         hdr.to_bytes(&mut b).expect("encode header");
         let payload_len = frames.iter().fold(0, |acc, x| acc + x.wire_len());
@@ -16280,7 +17003,7 @@ mod tests {
         let payload_offset = b.off();
 
         for frame in frames {
-            frame.to_bytes(&mut b).expect("encode frames");
+            frame.to_bytes(&mut b, pipe.client.version).expect("encode frames");
         }
 
         let aead = space.crypto_seal.as_ref().expect("crypto seal");
@@ -16293,6 +17016,7 @@ mod tests {
             payload_offset,
             None,
             aead,
+            pipe.client.version
         )
         .expect("packet encrypt");
         space.next_pkt_num += 1;
