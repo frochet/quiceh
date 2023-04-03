@@ -41,6 +41,9 @@
 use std::time::Duration;
 use std::time::Instant;
 
+/// Max pacing rate in bytes/sec.
+const MAX_PACING_RATE: u64 = 600_000_000;
+
 #[derive(Debug)]
 pub struct Pacer {
     /// Whether pacing is enabled.
@@ -119,7 +122,7 @@ impl Pacer {
 
         self.capacity = capacity;
 
-        self.rate = rate;
+        self.rate = rate.min(MAX_PACING_RATE);
     }
 
     /// Resets the pacer for the next burst.
