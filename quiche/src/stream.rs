@@ -37,6 +37,12 @@ use std::collections::VecDeque;
 
 use std::time;
 
+use intrusive_collections::intrusive_adapter;
+use intrusive_collections::rbtree;
+use intrusive_collections::KeyAdapter;
+use intrusive_collections::RBTree;
+use intrusive_collections::RBTreeAtomicLink;
+
 use smallvec::SmallVec;
 
 use crate::Error;
@@ -154,6 +160,8 @@ pub struct StreamMap {
     /// a `StreamIter` of streams without having to iterate over the full list
     /// of streams.
     pub writable: StreamIdHashSet,
+
+    writable_prio: RBTree<StreamPriorityAdapter>,
 
     /// Set of stream IDs corresponding to streams that are almost out of flow
     /// control credit and need to send MAX_STREAM_DATA. This is used to
@@ -335,6 +343,8 @@ impl StreamMap {
         // control limits.
         if is_new_and_writable {
             self.writable.insert(id);
+
+            self.writable_prio.insert(Arc::clone(&stream.priority_key));
         }
 
         Ok(stream)
@@ -421,11 +431,23 @@ impl StreamMap {
     /// to when an existing stream becomes writable (or stops being writable).
     ///
     /// If the stream was already in the list, this does nothing.
-    pub fn mark_writable(&mut self, stream_id: u64, writable: bool) {
+    pub fn mark_writable(
+        &mut self, stream_id: u64, priority_key: &Arc<StreamPriorityKey>,
+        writable: bool,
+    ) {
         if writable {
             self.writable.insert(stream_id);
+
+            self.writable_prio.insert(Arc::clone(priority_key));
         } else {
             self.writable.remove(&stream_id);
+
+            let mut c = {
+                let ptr = Arc::as_ptr(priority_key);
+                unsafe { self.writable_prio.cursor_mut_from_ptr(ptr) }
+            };
+
+            c.remove();
         }
     }
 
@@ -544,10 +566,15 @@ impl StreamMap {
             }
         }
 
-        self.mark_readable(stream_id, false);
-        self.mark_writable(stream_id, false);
+        let s = self.streams.remove(&stream_id).unwrap();
+        let was_linked = s.priority_key.writable.is_linked();
 
-        self.streams.remove(&stream_id);
+        self.mark_readable(stream_id, false);
+
+        if was_linked {
+            self.mark_writable(stream_id, &s.priority_key, false);
+        }
+
         self.collected.insert(stream_id);
     }
 
@@ -641,7 +668,6 @@ impl StreamMap {
 }
 
 /// A QUIC stream.
-#[derive(Default)]
 pub struct Stream {
     /// Receive-side stream buffer.
     pub recv: RecvBuf,
@@ -662,6 +688,8 @@ pub struct Stream {
 
     /// Whether the stream can be flushed incrementally. Default is `true`.
     pub incremental: bool,
+
+    pub priority_key: Arc<StreamPriorityKey>,
 }
 
 impl Stream {
@@ -678,6 +706,12 @@ impl Stream {
             local,
             urgency: DEFAULT_URGENCY,
             incremental: true,
+            priority_key: Arc::new(StreamPriorityKey {
+                stream_id: 0,
+                urgency: DEFAULT_URGENCY,
+                incremental: true,
+                writable: Default::default(),
+            }),
         }
     }
 
@@ -739,6 +773,73 @@ pub fn is_local(stream_id: u64, is_server: bool) -> bool {
 /// Returns true if the stream is bidirectional.
 pub fn is_bidi(stream_id: u64) -> bool {
     (stream_id & 0x2) == 0
+}
+
+#[derive(Clone, Debug)]
+pub struct StreamPriorityKey {
+    pub stream_id: u64,
+    pub urgency: u8,
+    pub incremental: bool,
+
+    pub writable: RBTreeAtomicLink,
+}
+
+impl PartialEq for StreamPriorityKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.stream_id == other.stream_id
+    }
+}
+
+impl Eq for StreamPriorityKey {}
+
+impl PartialOrd for StreamPriorityKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        // Ignore priority if ID matches.
+        if self.stream_id == other.stream_id {
+            return Some(std::cmp::Ordering::Equal);
+        }
+
+        // First, order by urgency...
+        if self.urgency != other.urgency {
+            return self.urgency.partial_cmp(&other.urgency);
+        }
+
+        // ...when the urgency is the same, and both are not incremental, order
+        // by stream ID...
+        if !self.incremental && !other.incremental {
+            return self.stream_id.partial_cmp(&other.stream_id);
+        }
+
+        // ...non-incremental takes priority over incremental...
+        if self.incremental && !other.incremental {
+            return Some(std::cmp::Ordering::Greater);
+        }
+        if !self.incremental && other.incremental {
+            return Some(std::cmp::Ordering::Less);
+        }
+
+        // ...finally, when both are incremental, `other` takes precedence (so
+        // `self` is always sorted after other same-urgency incremental
+        // entries).
+        Some(std::cmp::Ordering::Greater)
+    }
+}
+
+impl Ord for StreamPriorityKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // `partial_cmp()` never returns `None`, so this should be safe.
+        self.partial_cmp(other).unwrap()
+    }
+}
+
+intrusive_adapter!(StreamPriorityAdapter = Arc<StreamPriorityKey>: StreamPriorityKey { writable: RBTreeAtomicLink });
+
+impl<'a> KeyAdapter<'a> for StreamPriorityAdapter {
+    type Key = StreamPriorityKey;
+
+    fn get_key(&self, s: &StreamPriorityKey) -> Self::Key {
+        s.clone()
+    }
 }
 
 /// An iterator over QUIC streams.
