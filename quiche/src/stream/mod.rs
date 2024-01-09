@@ -160,7 +160,7 @@ pub struct StreamMap {
     stopped: StreamIdHashMap<u64>,
 
     /// The maximum size of a stream window.
-    max_stream_window: u64,
+    pub max_stream_window: u64,
 }
 
 impl StreamMap {
@@ -205,6 +205,7 @@ impl StreamMap {
     pub(crate) fn get_or_create(
         &mut self, id: u64, local_params: &crate::TransportParams,
         peer_params: &crate::TransportParams, local: bool, is_server: bool,
+        version: u32,
     ) -> Result<&mut Stream> {
         let (stream, is_new_and_writable) = match self.streams.entry(id) {
             hash_map::Entry::Vacant(v) => {
@@ -241,7 +242,16 @@ impl StreamMap {
                 // The two least significant bits from a stream id identify the
                 // type of stream. Truncate those bits to get the sequence for
                 // that stream type.
-                let stream_sequence = id >> 2;
+                // Note, in V3, client's bidi stream start at 4.
+                let stream_sequence = if version == crate::PROTOCOL_VERSION_V3 {
+                    if is_bidi(id) && is_even(id) {
+                        (id >> 2).saturating_sub(1)
+                    } else {
+                        id >> 2
+                    }
+                } else {
+                    id >> 2
+                };
 
                 // Enforce stream count limits.
                 match (is_local(id, is_server), is_bidi(id)) {
@@ -305,6 +315,7 @@ impl StreamMap {
                     is_bidi(id),
                     local,
                     self.max_stream_window,
+                    version,
                 );
 
                 let is_writable = s.is_writable();
@@ -551,6 +562,16 @@ impl StreamMap {
         self.collected.insert(stream_id);
     }
 
+    /// In case a stream is created before the packet could have been
+    /// authenticated; we need to collect it without remembering it.
+    pub fn collect_on_recv_error(&mut self, stream_id: u64) {
+        let s = self.streams.remove(&stream_id).unwrap();
+
+        self.remove_readable(&s.priority_key);
+        self.remove_writable(&s.priority_key);
+        self.remove_flushable(&s.priority_key);
+    }
+
     /// Creates an iterator over streams that have outstanding data to read.
     pub fn readable(&self) -> StreamIter {
         StreamIter {
@@ -644,9 +665,12 @@ impl StreamMap {
     pub fn len(&self) -> usize {
         self.streams.len()
     }
-    //TODO PROTOCOL_REVERSO
+
+    // TODO PROTOCOL_REVERSO
     /// Rewind the Stream_id's receive buffer of num bytes
-    pub fn rewind_recv_buf(&mut self, _stream_id: u64, _num: usize) -> Result<()> {
+    pub fn rewind_recv_buf(
+        &mut self, _stream_id: u64, _num: usize,
+    ) -> Result<()> {
         Ok(())
     }
 }
@@ -680,7 +704,7 @@ impl Stream {
     /// Creates a new stream with the given flow control limits.
     pub fn new(
         id: u64, max_rx_data: u64, max_tx_data: u64, bidi: bool, local: bool,
-        max_window: u64,
+        max_window: u64, version: u32,
     ) -> Stream {
         let priority_key = Arc::new(StreamPriorityKey {
             id,
@@ -688,7 +712,7 @@ impl Stream {
         });
 
         Stream {
-            recv: recv_buf::RecvBuf::new(max_rx_data, max_window),
+            recv: recv_buf::RecvBuf::new(max_rx_data, max_window, version),
             send: send_buf::SendBuf::new(max_tx_data),
             send_lowat: 1,
             bidi,
@@ -747,13 +771,6 @@ impl Stream {
             (false, false) => self.recv.is_fin(),
         }
     }
-    //TODO
-    pub fn get_monotonic_offset(&self) -> u64 {
-        42
-    }
-    #[allow(dead_code)]
-    pub fn update_monotonic_offset(&mut self, _offset: u64) {
-    }
 }
 
 /// Returns true if the stream was created locally.
@@ -764,6 +781,11 @@ pub fn is_local(stream_id: u64, is_server: bool) -> bool {
 /// Returns true if the stream is bidirectional.
 pub fn is_bidi(stream_id: u64) -> bool {
     (stream_id & 0x2) == 0
+}
+
+/// Returns true is the stream is even.
+pub fn is_even(stream_id: u64) -> bool {
+    (stream_id & 0x01) == 0
 }
 
 #[derive(Clone, Debug)]
@@ -905,6 +927,74 @@ impl ExactSizeIterator for StreamIter {
     }
 }
 
+/// TODO document
+#[derive(Clone, Eq, Debug)]
+pub struct RecvBufInfo {
+    start_off: u64,
+    len: usize,
+    fin: bool,
+    // Used in case of this data is received before
+    // the previous packet.
+    data: Option<Vec<u8>>,
+}
+
+impl RecvBufInfo {
+    pub fn from(start_off: u64, len: usize, fin: bool) -> RecvBufInfo {
+        RecvBufInfo {
+            start_off,
+            len,
+            fin,
+            data: None,
+        }
+    }
+
+    pub fn max_off(&self) -> u64 {
+        self.start_off + self.len as u64
+    }
+
+    pub fn fin(&self) -> bool {
+        self.fin
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn off(&self) -> u64 {
+        self.start_off
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn attach_data(&mut self, data: Vec<u8>) {
+        self.data = Some(data);
+    }
+
+    pub fn data(&self) -> Option<&[u8]> {
+        self.data.as_deref()
+    }
+}
+
+impl Ord for RecvBufInfo {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.start_off.cmp(&other.start_off)
+    }
+}
+
+impl PartialOrd for RecvBufInfo {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for RecvBufInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.start_off == other.start_off
+    }
+}
+
 /// Buffer holding data at a specific offset.
 ///
 /// The data is stored in a `Vec<u8>` in such a way that it can be shared
@@ -1043,27 +1133,51 @@ impl PartialEq for RangeBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use app_recv_buf::*;
 
     #[test]
     fn recv_flow_control() {
-        let mut stream = Stream::new(0, 15, 0, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            15,
+            0,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
         assert!(!stream.recv.almost_full());
 
         let mut buf = [0; 32];
 
         let first = RangeBuf::from(b"hello", 0, false);
+        let firstinfo = RecvBufInfo::from(0, 5, false);
         let second = RangeBuf::from(b"world", 5, false);
+        let secondinfo = RecvBufInfo::from(5, 5, false);
         let third = RangeBuf::from(b"something", 10, false);
+        let thirdinfo = RecvBufInfo::from(10, 9, false);
 
-        assert_eq!(stream.recv.write(second), Ok(()));
-        assert_eq!(stream.recv.write(first), Ok(()));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
+            assert_eq!(stream.recv.write(second), Ok(()));
+            assert_eq!(stream.recv.write(first), Ok(()));
+        } else {
+            assert_eq!(stream.recv.write_v3(secondinfo), Ok(()));
+            assert_eq!(stream.recv.write_v3(firstinfo), Ok(()));
+        }
         assert!(!stream.recv.almost_full());
 
-        assert_eq!(stream.recv.write(third), Err(Error::FlowControl));
-
-        let (len, fin) = stream.recv.emit(&mut buf).unwrap();
-        assert_eq!(&buf[..len], b"helloworld");
-        assert!(!fin);
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
+            assert_eq!(stream.recv.write(third), Err(Error::FlowControl));
+            let (len, fin) = stream.recv.emit(&mut buf).unwrap();
+            assert_eq!(&buf[..len], b"helloworld");
+            assert_eq!(fin, false);
+        } else {
+            assert_eq!(stream.recv.write_v3(thirdinfo), Err(Error::FlowControl));
+            assert_eq!(app_buf.read_mut(&mut stream.recv).unwrap().len(), 10);
+            assert!(app_buf.has_consumed(None, 10).is_ok());
+            assert!(!stream.recv.is_fin());
+        }
 
         assert!(stream.recv.almost_full());
 
@@ -1072,54 +1186,114 @@ mod tests {
         assert!(!stream.recv.almost_full());
 
         let third = RangeBuf::from(b"something", 10, false);
-        assert_eq!(stream.recv.write(third), Ok(()));
+        let thirdinfo = RecvBufInfo::from(10, 5, false);
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
+            assert_eq!(stream.recv.write(third), Ok(()));
+        } else {
+            assert_eq!(stream.recv.write_v3(thirdinfo), Ok(()));
+        }
     }
 
     #[test]
     fn recv_past_fin() {
-        let mut stream = Stream::new(0, 15, 0, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            15,
+            0,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
         assert!(!stream.recv.almost_full());
 
         let first = RangeBuf::from(b"hello", 0, true);
+        let firstinfo = RecvBufInfo::from(0, 5, true);
         let second = RangeBuf::from(b"world", 5, false);
+        let secondinfo = RecvBufInfo::from(5, 5, false);
 
-        assert_eq!(stream.recv.write(first), Ok(()));
-        assert_eq!(stream.recv.write(second), Err(Error::FinalSize));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
+            assert_eq!(stream.recv.write(first), Ok(()));
+            assert_eq!(stream.recv.write(second), Err(Error::FinalSize));
+        } else {
+            assert_eq!(stream.recv.write_v3(firstinfo), Ok(()));
+            assert_eq!(stream.recv.write_v3(secondinfo), Err(Error::FinalSize));
+        }
     }
 
     #[test]
     fn recv_fin_dup() {
-        let mut stream = Stream::new(0, 15, 0, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            15,
+            0,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
         assert!(!stream.recv.almost_full());
 
         let first = RangeBuf::from(b"hello", 0, true);
+        let firstinfo = RecvBufInfo::from(0, 5, false);
         let second = RangeBuf::from(b"hello", 0, true);
-
-        assert_eq!(stream.recv.write(first), Ok(()));
-        assert_eq!(stream.recv.write(second), Ok(()));
+        let secondinfo = RecvBufInfo::from(5, 5, true);
 
         let mut buf = [0; 32];
 
-        let (len, fin) = stream.recv.emit(&mut buf).unwrap();
-        assert_eq!(&buf[..len], b"hello");
-        assert!(fin);
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
+            assert_eq!(stream.recv.write(first), Ok(()));
+            assert_eq!(stream.recv.write(second), Ok(()));
+            let (len, fin) = stream.recv.emit(&mut buf).unwrap();
+            assert_eq!(fin, true);
+            assert_eq!(&buf[..len], b"hello");
+        } else {
+            assert_eq!(stream.recv.write_v3(firstinfo), Ok(()));
+            assert_eq!(stream.recv.write_v3(secondinfo), Ok(()));
+            assert_eq!(app_buf.read_mut(&mut stream.recv).unwrap().len(), 10);
+            assert!(stream.recv.is_fin());
+        }
     }
 
     #[test]
     fn recv_fin_change() {
-        let mut stream = Stream::new(0, 15, 0, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            15,
+            0,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
         assert!(!stream.recv.almost_full());
 
         let first = RangeBuf::from(b"hello", 0, true);
+        let firstinfo = RecvBufInfo::from(0, 5, true);
         let second = RangeBuf::from(b"world", 5, true);
+        let secondinfo = RecvBufInfo::from(5, 5, true);
 
-        assert_eq!(stream.recv.write(second), Ok(()));
-        assert_eq!(stream.recv.write(first), Err(Error::FinalSize));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
+            assert_eq!(stream.recv.write(second), Ok(()));
+            assert_eq!(stream.recv.write(first), Err(Error::FinalSize));
+        } else {
+            assert_eq!(stream.recv.write_v3(secondinfo), Ok(()));
+            assert_eq!(stream.recv.write_v3(firstinfo), Err(Error::FinalSize));
+        }
     }
 
     #[test]
     fn recv_fin_lower_than_received() {
-        let mut stream = Stream::new(0, 15, 0, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            15,
+            0,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
         assert!(!stream.recv.almost_full());
 
         let first = RangeBuf::from(b"hello", 0, true);
@@ -1131,67 +1305,137 @@ mod tests {
 
     #[test]
     fn recv_fin_flow_control() {
-        let mut stream = Stream::new(0, 15, 0, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            15,
+            0,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
         assert!(!stream.recv.almost_full());
 
         let mut buf = [0; 32];
 
         let first = RangeBuf::from(b"hello", 0, false);
+        let firstinfo = RecvBufInfo::from(0, 5, false);
         let second = RangeBuf::from(b"world", 5, true);
+        let secondinfo = RecvBufInfo::from(5, 5, true);
 
-        assert_eq!(stream.recv.write(first), Ok(()));
-        assert_eq!(stream.recv.write(second), Ok(()));
-
-        let (len, fin) = stream.recv.emit(&mut buf).unwrap();
-        assert_eq!(&buf[..len], b"helloworld");
-        assert!(fin);
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
+            assert_eq!(stream.recv.write(first), Ok(()));
+            assert_eq!(stream.recv.write(second), Ok(()));
+            let (len, fin) = stream.recv.emit(&mut buf).unwrap();
+            assert_eq!(&buf[..len], b"helloworld");
+            assert_eq!(fin, true);
+        } else {
+            assert_eq!(stream.recv.write_v3(firstinfo), Ok(()));
+            assert_eq!(stream.recv.write_v3(secondinfo), Ok(()));
+            assert_eq!(app_buf.read_mut(&mut stream.recv).unwrap().len(), 10);
+            assert!(stream.recv.is_fin());
+        }
 
         assert!(!stream.recv.almost_full());
     }
 
     #[test]
     fn recv_fin_reset_mismatch() {
-        let mut stream = Stream::new(0, 15, 0, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            15,
+            0,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
         assert!(!stream.recv.almost_full());
 
         let first = RangeBuf::from(b"hello", 0, true);
+        let firstinfo = RecvBufInfo::from(0, 5, true);
 
-        assert_eq!(stream.recv.write(first), Ok(()));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
+            assert_eq!(stream.recv.write(first), Ok(()));
+        } else {
+            assert_eq!(stream.recv.write_v3(firstinfo), Ok(()));
+        }
         assert_eq!(stream.recv.reset(0, 10), Err(Error::FinalSize));
     }
 
     #[test]
     fn recv_reset_dup() {
-        let mut stream = Stream::new(0, 15, 0, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            15,
+            0,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
         assert!(!stream.recv.almost_full());
 
         let first = RangeBuf::from(b"hello", 0, false);
+        let firstinfo = RecvBufInfo::from(0, 5, false);
 
-        assert_eq!(stream.recv.write(first), Ok(()));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
+            assert_eq!(stream.recv.write(first), Ok(()));
+        } else {
+            assert_eq!(stream.recv.write_v3(firstinfo), Ok(()));
+        }
         assert_eq!(stream.recv.reset(0, 5), Ok(0));
         assert_eq!(stream.recv.reset(0, 5), Ok(0));
     }
 
     #[test]
     fn recv_reset_change() {
-        let mut stream = Stream::new(0, 15, 0, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            15,
+            0,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
         assert!(!stream.recv.almost_full());
 
         let first = RangeBuf::from(b"hello", 0, false);
+        let firstinfo = RecvBufInfo::from(0, 5, false);
 
-        assert_eq!(stream.recv.write(first), Ok(()));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
+            assert_eq!(stream.recv.write(first), Ok(()));
+        } else {
+            assert_eq!(stream.recv.write_v3(firstinfo), Ok(()));
+        }
         assert_eq!(stream.recv.reset(0, 5), Ok(0));
         assert_eq!(stream.recv.reset(0, 10), Err(Error::FinalSize));
     }
 
     #[test]
     fn recv_reset_lower_than_received() {
-        let mut stream = Stream::new(0, 15, 0, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            15,
+            0,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
         assert!(!stream.recv.almost_full());
 
         let first = RangeBuf::from(b"hello", 0, false);
+        let firstinfo = RecvBufInfo::from(0, 5, false);
 
-        assert_eq!(stream.recv.write(first), Ok(()));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
+            assert_eq!(stream.recv.write(first), Ok(()));
+        } else {
+            assert_eq!(stream.recv.write_v3(firstinfo), Ok(()));
+        }
+
         assert_eq!(stream.recv.reset(0, 4), Err(Error::FinalSize));
     }
 
@@ -1199,7 +1443,15 @@ mod tests {
     fn send_flow_control() {
         let mut buf = [0; 25];
 
-        let mut stream = Stream::new(0, 0, 15, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            0,
+            15,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         let first = b"hello";
         let second = b"world";
@@ -1242,7 +1494,15 @@ mod tests {
 
     #[test]
     fn send_past_fin() {
-        let mut stream = Stream::new(0, 0, 15, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            0,
+            15,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         let first = b"hello";
         let second = b"world";
@@ -1258,7 +1518,15 @@ mod tests {
 
     #[test]
     fn send_fin_dup() {
-        let mut stream = Stream::new(0, 0, 15, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            0,
+            15,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         assert_eq!(stream.send.write(b"hello", true), Ok(5));
         assert!(stream.send.is_fin());
@@ -1269,7 +1537,15 @@ mod tests {
 
     #[test]
     fn send_undo_fin() {
-        let mut stream = Stream::new(0, 0, 15, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            0,
+            15,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         assert_eq!(stream.send.write(b"hello", true), Ok(5));
         assert!(stream.send.is_fin());
@@ -1284,7 +1560,15 @@ mod tests {
     fn send_fin_max_data_match() {
         let mut buf = [0; 15];
 
-        let mut stream = Stream::new(0, 0, 15, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            0,
+            15,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         let slice = b"hellohellohello";
 
@@ -1300,7 +1584,15 @@ mod tests {
     fn send_fin_zero_length() {
         let mut buf = [0; 5];
 
-        let mut stream = Stream::new(0, 0, 15, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            0,
+            15,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         assert_eq!(stream.send.write(b"hello", false), Ok(5));
         assert_eq!(stream.send.write(b"", true), Ok(0));
@@ -1316,7 +1608,15 @@ mod tests {
     fn send_ack() {
         let mut buf = [0; 5];
 
-        let mut stream = Stream::new(0, 0, 15, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            0,
+            15,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         assert_eq!(stream.send.write(b"hello", false), Ok(5));
         assert_eq!(stream.send.write(b"world", false), Ok(5));
@@ -1346,7 +1646,15 @@ mod tests {
     fn send_ack_reordering() {
         let mut buf = [0; 5];
 
-        let mut stream = Stream::new(0, 0, 15, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            0,
+            15,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         assert_eq!(stream.send.write(b"hello", false), Ok(5));
         assert_eq!(stream.send.write(b"world", false), Ok(5));
@@ -1383,30 +1691,54 @@ mod tests {
 
     #[test]
     fn recv_data_below_off() {
-        let mut stream = Stream::new(0, 15, 0, true, true, DEFAULT_STREAM_WINDOW);
+        // Receiving data below off() is a violation in V3. Indeed, this MUST not
+        // happen, or the stream would not be AE-Secure. In Quic V1, to
+        // maintain AE-Security, the receiver should always retain
+        // previous received packets and memcmp() to the content of the new one if
+        // below_off() is true (the overlap MUST be the same data). This is too
+        // expensive to be an thing, so we work around this in V3.
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
+            let mut stream = Stream::new(
+                0,
+                15,
+                0,
+                true,
+                true,
+                DEFAULT_STREAM_WINDOW,
+                crate::PROTOCOL_VERSION,
+            );
 
-        let first = RangeBuf::from(b"hello", 0, false);
+            let first = RangeBuf::from(b"hello", 0, false);
 
-        assert_eq!(stream.recv.write(first), Ok(()));
+            assert_eq!(stream.recv.write(first), Ok(()));
 
-        let mut buf = [0; 10];
+            let mut buf = [0; 10];
 
-        let (len, fin) = stream.recv.emit(&mut buf).unwrap();
-        assert_eq!(&buf[..len], b"hello");
-        assert!(!fin);
+            let (len, fin) = stream.recv.emit(&mut buf).unwrap();
+            assert_eq!(&buf[..len], b"hello");
+            assert!(!fin);
 
-        let first = RangeBuf::from(b"elloworld", 1, true);
-        assert_eq!(stream.recv.write(first), Ok(()));
+            let first = RangeBuf::from(b"elloworld", 1, true);
+            assert_eq!(stream.recv.write(first), Ok(()));
 
-        let (len, fin) = stream.recv.emit(&mut buf).unwrap();
-        assert_eq!(&buf[..len], b"world");
-        assert!(fin);
+            let (len, fin) = stream.recv.emit(&mut buf).unwrap();
+            assert_eq!(&buf[..len], b"world");
+            assert!(fin);
+        }
     }
 
     #[test]
     fn stream_complete() {
-        let mut stream =
-            Stream::new(0, 30, 30, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            30,
+            30,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
 
         assert_eq!(stream.send.write(b"hello", false), Ok(5));
         assert_eq!(stream.send.write(b"world", false), Ok(5));
@@ -1420,36 +1752,61 @@ mod tests {
         assert!(stream.send.is_fin());
 
         let buf = RangeBuf::from(b"hello", 0, true);
-        assert!(stream.recv.write(buf).is_ok());
+        let bufinfo = RecvBufInfo::from(0, 5, true);
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
+            assert!(stream.recv.write(buf).is_ok());
+        } else {
+            assert!(stream.recv.write_v3(bufinfo).is_ok());
+        }
         assert!(!stream.recv.is_fin());
 
         stream.send.ack(6, 4);
         assert!(!stream.send.is_complete());
 
         let mut buf = [0; 2];
-        assert_eq!(stream.recv.emit(&mut buf), Ok((2, false)));
-        assert!(!stream.recv.is_fin());
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
+            assert_eq!(stream.recv.emit(&mut buf), Ok((2, false)));
 
-        stream.send.ack(1, 5);
-        assert!(!stream.send.is_complete());
+            assert!(!stream.recv.is_fin());
 
-        stream.send.ack(0, 1);
-        assert!(stream.send.is_complete());
+            stream.send.ack(1, 5);
+            assert!(!stream.send.is_complete());
 
-        assert!(!stream.is_complete());
+            stream.send.ack(0, 1);
+            assert!(stream.send.is_complete());
 
-        let mut buf = [0; 3];
-        assert_eq!(stream.recv.emit(&mut buf), Ok((3, true)));
-        assert!(stream.recv.is_fin());
+            assert!(!stream.is_complete());
 
-        assert!(stream.is_complete());
+            let mut buf = [0; 3];
+            assert_eq!(stream.recv.emit(&mut buf), Ok((3, true)));
+            assert!(stream.recv.is_fin());
+
+            assert!(stream.is_complete());
+        } else {
+            app_buf.read_mut(&mut stream.recv).unwrap();
+
+            stream.send.ack(0, 6);
+            assert!(stream.send.is_complete());
+
+            assert!(stream.recv.is_fin());
+
+            assert!(stream.is_complete());
+        }
     }
 
     #[test]
     fn send_fin_zero_length_output() {
         let mut buf = [0; 5];
 
-        let mut stream = Stream::new(0, 0, 15, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            0,
+            15,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         assert_eq!(stream.send.write(b"hello", false), Ok(5));
         assert_eq!(stream.send.off_front(), 0);
@@ -1479,7 +1836,15 @@ mod tests {
     fn send_emit() {
         let mut buf = [0; 5];
 
-        let mut stream = Stream::new(0, 0, 20, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            0,
+            20,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         assert_eq!(stream.send.write(b"hello", false), Ok(5));
         assert_eq!(stream.send.write(b"world", false), Ok(5));
@@ -1531,7 +1896,15 @@ mod tests {
     fn send_emit_ack() {
         let mut buf = [0; 5];
 
-        let mut stream = Stream::new(0, 0, 20, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            0,
+            20,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         assert_eq!(stream.send.write(b"hello", false), Ok(5));
         assert_eq!(stream.send.write(b"world", false), Ok(5));
@@ -1598,7 +1971,15 @@ mod tests {
     fn send_emit_retransmit() {
         let mut buf = [0; 5];
 
-        let mut stream = Stream::new(0, 0, 20, true, true, DEFAULT_STREAM_WINDOW);
+        let mut stream = Stream::new(
+            0,
+            0,
+            20,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         assert_eq!(stream.send.write(b"hello", false), Ok(5));
         assert_eq!(stream.send.write(b"world", false), Ok(5));
@@ -1835,7 +2216,14 @@ mod tests {
         assert!(is_bidi(stream_id), "stream id is bidirectional");
         assert_eq!(
             streams
-                .get_or_create(stream_id, &local_tp, &peer_tp, false, true)
+                .get_or_create(
+                    stream_id,
+                    &local_tp,
+                    &peer_tp,
+                    false,
+                    true,
+                    crate::PROTOCOL_VERSION
+                )
                 .err(),
             Some(Error::StreamLimit),
             "stream limit should be exceeded"
@@ -1855,7 +2243,14 @@ mod tests {
             assert!(is_local(stream_id, false), "stream id is client initiated");
             assert!(is_bidi(stream_id), "stream id is bidirectional");
             assert!(streams
-                .get_or_create(stream_id, &local_tp, &peer_tp, false, true)
+                .get_or_create(
+                    stream_id,
+                    &local_tp,
+                    &peer_tp,
+                    false,
+                    true,
+                    crate::PROTOCOL_VERSION
+                )
                 .is_ok());
         }
     }
@@ -1869,16 +2264,38 @@ mod tests {
         let mut streams = StreamMap::new(3, 3, 3);
 
         // Highest permitted
-        let stream_id = 8;
+        let stream_id = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
+            8
+        } else {
+            12
+        };
         assert!(streams
-            .get_or_create(stream_id, &local_tp, &peer_tp, false, true)
+            .get_or_create(
+                stream_id,
+                &local_tp,
+                &peer_tp,
+                false,
+                true,
+                crate::PROTOCOL_VERSION
+            )
             .is_ok());
 
         // One more than highest permitted
-        let stream_id = 12;
+        let stream_id = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
+            12
+        } else {
+            16
+        };
         assert_eq!(
             streams
-                .get_or_create(stream_id, &local_tp, &peer_tp, false, true)
+                .get_or_create(
+                    stream_id,
+                    &local_tp,
+                    &peer_tp,
+                    false,
+                    true,
+                    crate::PROTOCOL_VERSION
+                )
                 .err(),
             Some(Error::StreamLimit)
         );
@@ -1900,9 +2317,16 @@ mod tests {
 
         let mut streams = StreamMap::new(100, 100, 100);
 
-        for id in [0, 4, 8, 12] {
+        for id in [4, 8, 12, 16] {
             assert!(streams
-                .get_or_create(id, &local_tp, &peer_tp, false, true)
+                .get_or_create(
+                    id,
+                    &local_tp,
+                    &peer_tp,
+                    false,
+                    true,
+                    crate::PROTOCOL_VERSION
+                )
                 .is_ok());
         }
 
@@ -1918,11 +2342,11 @@ mod tests {
 
         // All streams are non-incremental and same urgency by default. Multiple
         // visits shuffle their order.
-        assert_eq!(walk_1, vec![0, 4, 8, 12]);
-        assert_eq!(walk_2, vec![4, 8, 12, 0]);
-        assert_eq!(walk_3, vec![8, 12, 0, 4]);
-        assert_eq!(walk_4, vec![12, 0, 4, 8,]);
-        assert_eq!(walk_5, vec![0, 4, 8, 12]);
+        assert_eq!(walk_1, vec![4, 8, 12, 16]);
+        assert_eq!(walk_2, vec![8, 12, 16, 4]);
+        assert_eq!(walk_3, vec![12, 16, 4, 8]);
+        assert_eq!(walk_4, vec![16, 4, 8, 12,]);
+        assert_eq!(walk_5, vec![4, 8, 12, 16]);
     }
 
     #[test]
@@ -1938,9 +2362,16 @@ mod tests {
 
         // Inserting same-urgency incremental streams in a "random" order yields
         // same order to start with.
-        for id in [12, 4, 8, 0] {
+        for id in [16, 8, 12, 4] {
             assert!(streams
-                .get_or_create(id, &local_tp, &peer_tp, false, true)
+                .get_or_create(
+                    id,
+                    &local_tp,
+                    &peer_tp,
+                    false,
+                    true,
+                    crate::PROTOCOL_VERSION
+                )
                 .is_ok());
         }
 
@@ -1953,11 +2384,11 @@ mod tests {
         let walk_4: Vec<u64> = streams.writable().collect();
         cycle_stream_priority(*walk_4.first().unwrap(), &mut streams);
         let walk_5: Vec<u64> = streams.writable().collect();
-        assert_eq!(walk_1, vec![12, 4, 8, 0]);
-        assert_eq!(walk_2, vec![4, 8, 0, 12]);
-        assert_eq!(walk_3, vec![8, 0, 12, 4,]);
-        assert_eq!(walk_4, vec![0, 12, 4, 8]);
-        assert_eq!(walk_5, vec![12, 4, 8, 0]);
+        assert_eq!(walk_1, vec![16, 8, 12, 4]);
+        assert_eq!(walk_2, vec![8, 12, 4, 16]);
+        assert_eq!(walk_3, vec![12, 4, 16, 8,]);
+        assert_eq!(walk_4, vec![4, 16, 8, 12]);
+        assert_eq!(walk_5, vec![16, 8, 12, 4]);
     }
 
     #[test]
@@ -1974,24 +2405,31 @@ mod tests {
         // Streams where the urgency descends (becomes more important). No stream
         // shares an urgency.
         let input = vec![
-            (0, 100),
-            (4, 90),
-            (8, 80),
-            (12, 70),
-            (16, 60),
-            (20, 50),
-            (24, 40),
-            (28, 30),
-            (32, 20),
-            (36, 10),
-            (40, 0),
+            (4, 100),
+            (8, 90),
+            (12, 80),
+            (16, 70),
+            (20, 60),
+            (24, 50),
+            (28, 40),
+            (32, 30),
+            (36, 20),
+            (40, 10),
+            (44, 0),
         ];
 
         for (id, urgency) in input.clone() {
             // this duplicates some code from stream_priority in order to access
             // streams and the collection they're in
             let stream = streams
-                .get_or_create(id, &local_tp, &peer_tp, false, true)
+                .get_or_create(
+                    id,
+                    &local_tp,
+                    &peer_tp,
+                    false,
+                    true,
+                    crate::PROTOCOL_VERSION,
+                )
                 .unwrap();
 
             stream.urgency = urgency;
@@ -2012,14 +2450,21 @@ mod tests {
         }
 
         let walk_1: Vec<u64> = streams.writable().collect();
-        assert_eq!(walk_1, vec![40, 36, 32, 28, 24, 20, 16, 12, 8, 4, 0]);
+        assert_eq!(walk_1, vec![44, 40, 36, 32, 28, 24, 20, 16, 12, 8, 4]);
 
         // Re-applying priority to a stream does not cause duplication.
         for (id, urgency) in input {
             // this duplicates some code from stream_priority in order to access
             // streams and the collection they're in
             let stream = streams
-                .get_or_create(id, &local_tp, &peer_tp, false, true)
+                .get_or_create(
+                    id,
+                    &local_tp,
+                    &peer_tp,
+                    false,
+                    true,
+                    crate::PROTOCOL_VERSION,
+                )
                 .unwrap();
 
             stream.urgency = urgency;
@@ -2040,27 +2485,34 @@ mod tests {
         }
 
         let walk_2: Vec<u64> = streams.writable().collect();
-        assert_eq!(walk_2, vec![40, 36, 32, 28, 24, 20, 16, 12, 8, 4, 0]);
+        assert_eq!(walk_2, vec![44, 40, 36, 32, 28, 24, 20, 16, 12, 8, 4]);
 
         // Removing streams doesn't break expected ordering.
         streams.collect(24, true);
 
         let walk_3: Vec<u64> = streams.writable().collect();
-        assert_eq!(walk_3, vec![40, 36, 32, 28, 20, 16, 12, 8, 4, 0]);
+        assert_eq!(walk_3, vec![44, 40, 36, 32, 28, 20, 16, 12, 8, 4]);
 
         streams.collect(40, true);
-        streams.collect(0, true);
+        streams.collect(4, true);
 
         let walk_4: Vec<u64> = streams.writable().collect();
-        assert_eq!(walk_4, vec![36, 32, 28, 20, 16, 12, 8, 4]);
+        assert_eq!(walk_4, vec![44, 36, 32, 28, 20, 16, 12, 8]);
 
         // Adding streams doesn't break expected ordering.
         streams
-            .get_or_create(44, &local_tp, &peer_tp, false, true)
+            .get_or_create(
+                48,
+                &local_tp,
+                &peer_tp,
+                false,
+                true,
+                crate::PROTOCOL_VERSION,
+            )
             .unwrap();
 
         let walk_5: Vec<u64> = streams.writable().collect();
-        assert_eq!(walk_5, vec![36, 32, 28, 20, 16, 12, 8, 4, 44]);
+        assert_eq!(walk_5, vec![44, 36, 32, 28, 20, 16, 12, 8, 48]);
     }
 
     #[test]
@@ -2076,24 +2528,31 @@ mod tests {
 
         // Streams that share some urgency level
         let input = vec![
-            (0, 100),
-            (4, 20),
-            (8, 100),
-            (12, 20),
-            (16, 90),
-            (20, 25),
-            (24, 90),
-            (28, 30),
-            (32, 80),
-            (36, 20),
-            (40, 0),
+            (4, 100),
+            (8, 20),
+            (12, 100),
+            (16, 20),
+            (20, 90),
+            (24, 25),
+            (28, 90),
+            (32, 30),
+            (36, 80),
+            (40, 20),
+            (44, 0),
         ];
 
         for (id, urgency) in input.clone() {
             // this duplicates some code from stream_priority in order to access
             // streams and the collection they're in
             let stream = streams
-                .get_or_create(id, &local_tp, &peer_tp, false, true)
+                .get_or_create(
+                    id,
+                    &local_tp,
+                    &peer_tp,
+                    false,
+                    true,
+                    crate::PROTOCOL_VERSION,
+                )
                 .unwrap();
 
             stream.urgency = urgency;
@@ -2114,61 +2573,68 @@ mod tests {
         }
 
         let walk_1: Vec<u64> = streams.writable().collect();
+        cycle_stream_priority(8, &mut streams);
+        cycle_stream_priority(20, &mut streams);
         cycle_stream_priority(4, &mut streams);
-        cycle_stream_priority(16, &mut streams);
-        cycle_stream_priority(0, &mut streams);
         let walk_2: Vec<u64> = streams.writable().collect();
+        cycle_stream_priority(16, &mut streams);
+        cycle_stream_priority(28, &mut streams);
         cycle_stream_priority(12, &mut streams);
-        cycle_stream_priority(24, &mut streams);
-        cycle_stream_priority(8, &mut streams);
         let walk_3: Vec<u64> = streams.writable().collect();
-        cycle_stream_priority(36, &mut streams);
-        cycle_stream_priority(16, &mut streams);
-        cycle_stream_priority(0, &mut streams);
+        cycle_stream_priority(40, &mut streams);
+        cycle_stream_priority(20, &mut streams);
+        cycle_stream_priority(4, &mut streams);
         let walk_4: Vec<u64> = streams.writable().collect();
-        cycle_stream_priority(4, &mut streams);
-        cycle_stream_priority(24, &mut streams);
         cycle_stream_priority(8, &mut streams);
+        cycle_stream_priority(28, &mut streams);
+        cycle_stream_priority(12, &mut streams);
         let walk_5: Vec<u64> = streams.writable().collect();
-        cycle_stream_priority(12, &mut streams);
         cycle_stream_priority(16, &mut streams);
-        cycle_stream_priority(0, &mut streams);
-        let walk_6: Vec<u64> = streams.writable().collect();
-        cycle_stream_priority(36, &mut streams);
-        cycle_stream_priority(24, &mut streams);
-        cycle_stream_priority(8, &mut streams);
-        let walk_7: Vec<u64> = streams.writable().collect();
+        cycle_stream_priority(20, &mut streams);
         cycle_stream_priority(4, &mut streams);
-        cycle_stream_priority(16, &mut streams);
-        cycle_stream_priority(0, &mut streams);
-        let walk_8: Vec<u64> = streams.writable().collect();
+        let walk_6: Vec<u64> = streams.writable().collect();
+        cycle_stream_priority(40, &mut streams);
+        cycle_stream_priority(28, &mut streams);
         cycle_stream_priority(12, &mut streams);
-        cycle_stream_priority(24, &mut streams);
+        let walk_7: Vec<u64> = streams.writable().collect();
         cycle_stream_priority(8, &mut streams);
-        let walk_9: Vec<u64> = streams.writable().collect();
-        cycle_stream_priority(36, &mut streams);
+        cycle_stream_priority(20, &mut streams);
+        cycle_stream_priority(4, &mut streams);
+        let walk_8: Vec<u64> = streams.writable().collect();
         cycle_stream_priority(16, &mut streams);
-        cycle_stream_priority(0, &mut streams);
+        cycle_stream_priority(28, &mut streams);
+        cycle_stream_priority(12, &mut streams);
+        let walk_9: Vec<u64> = streams.writable().collect();
+        cycle_stream_priority(40, &mut streams);
+        cycle_stream_priority(20, &mut streams);
+        cycle_stream_priority(4, &mut streams);
 
-        assert_eq!(walk_1, vec![40, 4, 12, 36, 20, 28, 32, 16, 24, 0, 8]);
-        assert_eq!(walk_2, vec![40, 12, 36, 4, 20, 28, 32, 24, 16, 8, 0]);
-        assert_eq!(walk_3, vec![40, 36, 4, 12, 20, 28, 32, 16, 24, 0, 8]);
-        assert_eq!(walk_4, vec![40, 4, 12, 36, 20, 28, 32, 24, 16, 8, 0]);
-        assert_eq!(walk_5, vec![40, 12, 36, 4, 20, 28, 32, 16, 24, 0, 8]);
-        assert_eq!(walk_6, vec![40, 36, 4, 12, 20, 28, 32, 24, 16, 8, 0]);
-        assert_eq!(walk_7, vec![40, 4, 12, 36, 20, 28, 32, 16, 24, 0, 8]);
-        assert_eq!(walk_8, vec![40, 12, 36, 4, 20, 28, 32, 24, 16, 8, 0]);
-        assert_eq!(walk_9, vec![40, 36, 4, 12, 20, 28, 32, 16, 24, 0, 8]);
+        assert_eq!(walk_1, vec![44, 8, 16, 40, 24, 32, 36, 20, 28, 4, 12]);
+        assert_eq!(walk_2, vec![44, 16, 40, 8, 24, 32, 36, 28, 20, 12, 4]);
+        assert_eq!(walk_3, vec![44, 40, 8, 16, 24, 32, 36, 20, 28, 4, 12]);
+        assert_eq!(walk_4, vec![44, 8, 16, 40, 24, 32, 36, 28, 20, 12, 4]);
+        assert_eq!(walk_5, vec![44, 16, 40, 8, 24, 32, 36, 20, 28, 4, 12]);
+        assert_eq!(walk_6, vec![44, 40, 8, 16, 24, 32, 36, 28, 20, 12, 4]);
+        assert_eq!(walk_7, vec![44, 8, 16, 40, 24, 32, 36, 20, 28, 4, 12]);
+        assert_eq!(walk_8, vec![44, 16, 40, 8, 24, 32, 36, 28, 20, 12, 4]);
+        assert_eq!(walk_9, vec![44, 40, 8, 16, 24, 32, 36, 20, 28, 4, 12]);
 
         // Removing streams doesn't break expected ordering.
         streams.collect(20, true);
 
         let walk_10: Vec<u64> = streams.writable().collect();
-        assert_eq!(walk_10, vec![40, 4, 12, 36, 28, 32, 24, 16, 8, 0]);
+        assert_eq!(walk_10, vec![44, 8, 16, 40, 24, 32, 36, 28, 12, 4]);
 
         // Adding streams doesn't break expected ordering.
         let stream = streams
-            .get_or_create(44, &local_tp, &peer_tp, false, true)
+            .get_or_create(
+                48,
+                &local_tp,
+                &peer_tp,
+                false,
+                true,
+                crate::PROTOCOL_VERSION,
+            )
             .unwrap();
 
         stream.urgency = 20;
@@ -2177,7 +2643,7 @@ mod tests {
         let new_priority_key = Arc::new(StreamPriorityKey {
             urgency: stream.urgency,
             incremental: stream.incremental,
-            id: 44,
+            id: 48,
             ..Default::default()
         });
 
@@ -2187,7 +2653,7 @@ mod tests {
         streams.update_priority(&old_priority_key, &new_priority_key);
 
         let walk_11: Vec<u64> = streams.writable().collect();
-        assert_eq!(walk_11, vec![40, 4, 12, 36, 44, 28, 32, 24, 16, 8, 0]);
+        assert_eq!(walk_11, vec![44, 8, 16, 40, 48, 24, 32, 36, 28, 12, 4]);
     }
 
     #[test]
@@ -2195,7 +2661,7 @@ mod tests {
         let mut prioritized_writable: RBTree<StreamWritablePriorityAdapter> =
             Default::default();
 
-        for id in [0, 4, 8, 12] {
+        for id in [4, 8, 12, 16] {
             let s = Arc::new(StreamPriorityKey {
                 urgency: 0,
                 incremental: false,
@@ -2208,11 +2674,11 @@ mod tests {
 
         let walk_1: Vec<u64> =
             prioritized_writable.iter().map(|s| s.id).collect();
-        assert_eq!(walk_1, vec![0, 4, 8, 12]);
+        assert_eq!(walk_1, vec![4, 8, 12, 16]);
 
         // Default keys could cause duplicate entries, this is normally protected
         // against via StreamMap.
-        for id in [0, 4, 8, 12] {
+        for id in [4, 8, 12, 16] {
             let s = Arc::new(StreamPriorityKey {
                 urgency: 0,
                 incremental: false,
@@ -2225,9 +2691,10 @@ mod tests {
 
         let walk_2: Vec<u64> =
             prioritized_writable.iter().map(|s| s.id).collect();
-        assert_eq!(walk_2, vec![0, 0, 4, 4, 8, 8, 12, 12]);
+        assert_eq!(walk_2, vec![4, 4, 8, 8, 12, 12, 16, 16]);
     }
 }
 
+pub mod app_recv_buf;
 mod recv_buf;
 mod send_buf;

@@ -437,6 +437,7 @@ impl Recovery {
             rtt_stats: RttStats::new(recovery_config.max_ack_delay),
 
             lost_count: 0,
+
             lost_spurious_count: 0,
 
             congestion_window: initial_congestion_window,
@@ -534,6 +535,10 @@ impl Recovery {
         &mut self, epoch: packet::Epoch,
     ) -> impl Iterator<Item = frame::Frame> + '_ {
         self.epochs[epoch].lost_frames.drain(..)
+    }
+
+    pub fn get_largest_acked_on_epoch(&self, epoch: packet::Epoch) -> Option<u64> {
+        self.epochs[epoch].largest_acked_packet
     }
 
     pub fn has_lost_frames(&self, epoch: packet::Epoch) -> bool {

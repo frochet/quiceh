@@ -391,6 +391,12 @@ pub enum Error {
     /// Frame violated layout or size rules.
     FrameError,
 
+    /// Since QUIC v3 introduces a new API, we reflect these
+    /// changes to the H3 module, leading to different
+    /// function to be called depending on usage of the QUIC
+    /// protocol version.
+    InvalidAPICall(&'static str),
+
     /// QPACK Header block decompression failure.
     QpackDecompressionFailed,
 
@@ -504,6 +510,7 @@ impl Error {
             Error::ConnectError => WireErrorCode::ConnectError as u64,
             Error::VersionFallback => WireErrorCode::VersionFallback as u64,
             Error::BufferProtocolError => 0x998,
+            Error::InvalidAPICall(_) => 0x102, // TODO change this?
         }
     }
 
@@ -562,7 +569,8 @@ impl std::convert::From<octets::BufferError> for Error {
     fn from(err: octets::BufferError) -> Self {
         match err {
             octets::BufferError::BufferTooShortError => Error::BufferTooShort,
-            octets::BufferError::BufferProtocolError => Error::BufferProtocolError,
+            octets::BufferError::BufferProtocolError =>
+                Error::BufferProtocolError,
         }
     }
 }
@@ -959,11 +967,17 @@ impl Connection {
     ) -> Result<Connection> {
         let initial_uni_stream_id = if is_server { 0x3 } else { 0x2 };
         let h3_datagram = if enable_dgram { Some(1) } else { None };
+        let next_request_stream_id =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+                0x4
+            } else {
+                0
+            };
 
         Ok(Connection {
             is_server,
 
-            next_request_stream_id: 0,
+            next_request_stream_id,
 
             next_uni_stream_id: initial_uni_stream_id,
 
@@ -1094,8 +1108,10 @@ impl Connection {
 
         let stream_id = self.next_request_stream_id;
 
-        self.streams
-            .insert(stream_id, stream::Stream::new(stream_id, true));
+        self.streams.insert(
+            stream_id,
+            stream::Stream::new(stream_id, true, conn.version),
+        );
 
         // The underlying QUIC stream does not exist yet, so calls to e.g.
         // stream_capacity() will fail. By writing a 0-length buffer, we force
@@ -1306,7 +1322,9 @@ impl Connection {
         let mut b = octets::OctetsMut::with_slice(&mut d);
 
         // Validate that it is sane to send data on the stream.
-        if stream_id % 4 != 0 {
+        if stream_id % 4 != 0 ||
+            (stream_id == 0 && conn.version == crate::PROTOCOL_VERSION_V3)
+        {
             return Err(Error::FrameUnexpected);
         }
 
@@ -1429,6 +1447,100 @@ impl Connection {
         self.peer_settings.connect_protocol_enabled == Some(1)
     }
 
+    /// Reads request or response body data and returns a slice to the
+    /// data and the total bytes to expect before body_consumed() must
+    /// be called.
+    ///
+    /// Applications should call this method whenever the [`poll()`] method
+    /// returns a [`Data`] event
+    ///
+    /// On success, a slice is returned and the total bytes to expect before
+    /// body_consumed() has to be called, or [`Done`] if there is no data to
+    /// read.
+    ///
+    /// [`recv_body_v3()`] may be called several times until the slice is
+    /// eventually containing all promised bytes. On the meantime, if the
+    /// application wishes to consume the current data, it can do it and
+    /// then calls body_consumed() to tell how much of the data was
+    /// consumed. The next call to [`recv_body_v3()`] would then returns the
+    /// remaining slice, and the total remaining bytes to expect before
+    /// [`body_consumed()`] must be called.
+    pub fn recv_body_v3<'a>(
+        &mut self, conn: &mut super::Connection, stream_id: u64,
+        app_buf: &'a mut crate::AppRecvBufMap,
+    ) -> Result<(&'a [u8], usize)> {
+        if conn.version != crate::PROTOCOL_VERSION_V3 {
+            return Err(Error::InvalidAPICall(
+                "This function should be called on a \
+                                         PROTOCOL_VERSION_V3 connection version",
+            ));
+        }
+
+        let stream = self.streams.get_mut(&stream_id).ok_or(Error::Done)?;
+
+        if stream.state() != stream::State::Data {
+            return Err(Error::Done);
+        }
+
+        let (b, len, _) = stream.try_acquire_data(conn, app_buf)?;
+
+        if len == 0 {
+            return Err(Error::Done);
+        }
+        // TODO should we keep returning the total data, or do we update it
+        // accounting to what was consumed?
+        Ok((b, stream.get_state_len() - stream.get_state_off()))
+    }
+
+    /// Marks the data acquired by the application as consumed by it.
+    ///
+    /// Applications should call this method once they processed data from
+    /// [`recv_body_v3()`], and doesn't need it to stay available. That is,
+    /// application should always consume the data from [`recv_body_v3()`]
+    /// either through a copy, or by processing it. Ideally, the stream
+    /// capacity is large enough such that the whole data can be processed right
+    /// away without requiring a copy on the application.
+    ///
+    /// Not calling this method could result in the underlying QUIC stream to
+    /// block on its receiving capacity, and the HTTP/3 to not change its
+    /// processing state.
+    pub fn body_consumed(
+        &mut self, conn: &mut super::Connection, stream_id: u64, consumed: usize,
+        app_buf: &mut crate::AppRecvBufMap,
+    ) -> Result<()> {
+        if conn.version != crate::PROTOCOL_VERSION_V3 {
+            return Err(Error::InvalidAPICall(
+                "This function should be called on a \
+                                         PROTOCOL_VERSION_V3 connection version",
+            ));
+        }
+
+        let stream = self.streams.get_mut(&stream_id).ok_or(Error::Done)?;
+
+        stream.mark_data_consumed(conn, app_buf, consumed)?;
+
+        // While body is being received, the stream is marked as finished only
+        // when all data is read by the application.
+        if conn.stream_finished_v3(stream_id, app_buf) {
+            self.process_finished_stream(stream_id);
+        } else {
+            // parse the next frame if any
+            match self.process_readable_stream(
+                conn,
+                stream_id,
+                false,
+                &mut Some(app_buf),
+            ) {
+                Ok(_) => unreachable!(),
+
+                Err(Error::Done) => (),
+
+                Err(e) => return Err(e),
+            };
+        }
+        Ok(())
+    }
+
     /// Reads request or response body data into the provided buffer.
     ///
     /// Applications should call this method whenever the [`poll()`] method
@@ -1443,6 +1555,12 @@ impl Connection {
     pub fn recv_body(
         &mut self, conn: &mut super::Connection, stream_id: u64, out: &mut [u8],
     ) -> Result<usize> {
+        if conn.version != crate::PROTOCOL_VERSION_V1 {
+            return Err(Error::InvalidAPICall(
+                "This function should be called on a \
+                                         PROTOCOL_VERSION_V1 connection version",
+            ));
+        }
         let mut total = 0;
 
         // Try to consume all buffered data for the stream, even across multiple
@@ -1474,7 +1592,8 @@ impl Connection {
             // DATA frame was consumed, and another one is queued behind it,
             // this will ensure the additional data will also be returned to
             // the application.
-            match self.process_readable_stream(conn, stream_id, false) {
+            match self.process_readable_stream(conn, stream_id, false, &mut None)
+            {
                 Ok(_) => unreachable!(),
 
                 Err(Error::Done) => (),
@@ -1527,6 +1646,10 @@ impl Connection {
         }
 
         if stream_id % 4 != 0 {
+            return Err(Error::FrameUnexpected);
+        }
+
+        if conn.version == crate::PROTOCOL_VERSION_V3 && stream_id == 0 {
             return Err(Error::FrameUnexpected);
         }
 
@@ -1664,6 +1787,65 @@ impl Connection {
     /// [`take_last_priority_update()`]: struct.Connection.html#method.take_last_priority_update
     /// [`close()`]: ../struct.Connection.html#method.close
     pub fn poll(&mut self, conn: &mut super::Connection) -> Result<(u64, Event)> {
+        if conn.version != crate::PROTOCOL_VERSION_V1 {
+            return Err(Error::InvalidAPICall(
+                "This function should be called on a \
+                                         PROTOCOL_VERSION_V1 connection version",
+            ));
+        }
+        self.poll_internal(conn, None)
+    }
+
+    /// Processes HTTP/3 data received from the peer.
+    ///
+    /// On success it returns an [`Event`] and an ID, or [`Done`] when there are
+    /// no events to report.
+    ///
+    /// Note that all events are edge-triggered, meaning that once reported they
+    /// will not be reported again by calling this method again, until the event
+    /// is re-armed.
+    ///
+    /// The events [`Headers`], [`Data`] and [`Finished`] return a stream ID,
+    /// which is used in methods [`recv_body_v3()`], [`body_consumed()`],
+    /// [`send_response()`] or [`send_body()`].
+    ///
+    /// The event [`GoAway`] returns an ID that depends on the connection role.
+    /// A client receives the largest processed stream ID. A server receives the
+    /// the largest permitted push ID.
+    ///
+    /// The event [`PriorityUpdate`] only occurs at servers. It returns a
+    /// prioritized element ID that is used in the method
+    /// [`take_last_priority_update()`], which rearms the event for that ID.
+    ///
+    /// If an error occurs while processing data, the connection is closed with
+    /// the appropriate error code, using the transport's [`close()`] method.
+    ///
+    /// [`Event`]: enum.Event.html
+    /// [`Done`]: enum.Error.html#variant.Done
+    /// [`Headers`]: enum.Event.html#variant.Headers
+    /// [`Data`]: enum.Event.html#variant.Data
+    /// [`Finished`]: enum.Event.html#variant.Finished
+    /// [`GoAway`]: enum.Event.html#variant.GoAWay
+    /// [`PriorityUpdate`]: enum.Event.html#variant.PriorityUpdate
+    /// [`recv_body_v3()`]: struct.Connection.html#method.recv_body_v3
+    /// [`body_consumed()`]: struct.Connection.html#method.body_consumed
+    /// [`send_response()`]: struct.Connection.html#method.send_response
+    /// [`send_body()`]: struct.Connection.html#method.send_body
+    /// [`recv_dgram()`]: struct.Connection.html#method.recv_dgram
+    /// [`take_last_priority_update()`]: struct.Connection.html#method.take_last_priority_update
+    /// [`close()`]: ../struct.Connection.html#method.close
+    pub fn poll_v3(
+        &mut self, conn: &mut super::Connection,
+        app_buf: &mut crate::AppRecvBufMap,
+    ) -> Result<(u64, Event)> {
+        self.poll_internal(conn, Some(app_buf))
+    }
+
+    #[inline(always)]
+    fn poll_internal(
+        &mut self, conn: &mut super::Connection,
+        mut app_buf: Option<&mut crate::AppRecvBufMap>,
+    ) -> Result<(u64, Event)> {
         // When connection close is initiated by the local application (e.g. due
         // to a protocol error), the connection itself might be in a broken
         // state, so return early.
@@ -1673,7 +1855,7 @@ impl Connection {
 
         // Process control streams first.
         if let Some(stream_id) = self.peer_control_stream_id {
-            match self.process_control_stream(conn, stream_id) {
+            match self.process_control_stream(conn, stream_id, &mut app_buf) {
                 Ok(ev) => return Ok(ev),
 
                 Err(Error::Done) => (),
@@ -1683,7 +1865,7 @@ impl Connection {
         }
 
         if let Some(stream_id) = self.peer_qpack_streams.encoder_stream_id {
-            match self.process_control_stream(conn, stream_id) {
+            match self.process_control_stream(conn, stream_id, &mut app_buf) {
                 Ok(ev) => return Ok(ev),
 
                 Err(Error::Done) => (),
@@ -1693,7 +1875,7 @@ impl Connection {
         }
 
         if let Some(stream_id) = self.peer_qpack_streams.decoder_stream_id {
-            match self.process_control_stream(conn, stream_id) {
+            match self.process_control_stream(conn, stream_id, &mut app_buf) {
                 Ok(ev) => return Ok(ev),
 
                 Err(Error::Done) => (),
@@ -1711,20 +1893,26 @@ impl Connection {
         for s in conn.readable() {
             trace!("{} stream id {} is readable", conn.trace_id(), s);
 
-            let ev = match self.process_readable_stream(conn, s, true) {
-                Ok(v) => Some(v),
+            let ev =
+                match self.process_readable_stream(conn, s, true, &mut app_buf) {
+                    Ok(v) => Some(v),
 
-                Err(Error::Done) => None,
+                    Err(Error::Done) => None,
 
-                // Return early if the stream was reset, to avoid returning
-                // a Finished event later as well.
-                Err(Error::TransportError(crate::Error::StreamReset(e))) =>
-                    return Ok((s, Event::Reset(e))),
+                    // Return early if the stream was reset, to avoid returning
+                    // a Finished event later as well.
+                    Err(Error::TransportError(crate::Error::StreamReset(e))) =>
+                        return Ok((s, Event::Reset(e))),
 
-                Err(e) => return Err(e),
-            };
+                    Err(e) => return Err(e),
+                };
 
-            if conn.stream_finished(s) {
+            if let Some(ref mut app_buf) = app_buf {
+                // called from poll_v3
+                if conn.stream_finished_v3(s, app_buf) {
+                    self.process_finished_stream(s);
+                }
+            } else if conn.stream_finished(s) {
                 self.process_finished_stream(s);
             }
 
@@ -1772,8 +1960,10 @@ impl Connection {
         // TODO: server push
         //
         // In the meantime always send 0 from client.
-        if !self.is_server {
+        if !self.is_server && conn.version == crate::PROTOCOL_VERSION_V1 {
             id = 0;
+        } else if !self.is_server && conn.version == crate::PROTOCOL_VERSION_V3 {
+            id = 4;
         }
 
         if self.is_server && id % 4 != 0 {
@@ -2126,8 +2316,15 @@ impl Connection {
 
     fn process_control_stream(
         &mut self, conn: &mut super::Connection, stream_id: u64,
+        app_buf: &mut Option<&mut crate::AppRecvBufMap>,
     ) -> Result<(u64, Event)> {
-        if conn.stream_finished(stream_id) {
+        let is_finished = if conn.version == crate::PROTOCOL_VERSION_V3 {
+            let app_buf = app_buf.as_mut().unwrap();
+            conn.stream_finished_v3(stream_id, app_buf)
+        } else {
+            conn.stream_finished(stream_id)
+        };
+        if is_finished {
             conn.close(
                 true,
                 Error::ClosedCriticalStream.to_wire(),
@@ -2137,7 +2334,7 @@ impl Connection {
             return Err(Error::ClosedCriticalStream);
         }
 
-        match self.process_readable_stream(conn, stream_id, true) {
+        match self.process_readable_stream(conn, stream_id, true, app_buf) {
             Ok(ev) => return Ok(ev),
 
             Err(Error::Done) => (),
@@ -2145,7 +2342,14 @@ impl Connection {
             Err(e) => return Err(e),
         };
 
-        if conn.stream_finished(stream_id) {
+        let is_finished = if conn.version == crate::PROTOCOL_VERSION_V3 {
+            let app_buf = app_buf.as_mut().unwrap();
+            conn.stream_finished_v3(stream_id, app_buf)
+        } else {
+            conn.stream_finished(stream_id)
+        };
+
+        if is_finished {
             conn.close(
                 true,
                 Error::ClosedCriticalStream.to_wire(),
@@ -2160,10 +2364,11 @@ impl Connection {
 
     fn process_readable_stream(
         &mut self, conn: &mut super::Connection, stream_id: u64, polling: bool,
+        app_buf: &mut Option<&mut crate::AppRecvBufMap>,
     ) -> Result<(u64, Event)> {
-        self.streams
-            .entry(stream_id)
-            .or_insert_with(|| stream::Stream::new(stream_id, false));
+        self.streams.entry(stream_id).or_insert_with(|| {
+            stream::Stream::new(stream_id, false, conn.version)
+        });
 
         // We need to get a fresh reference to the stream for each
         // iteration, to avoid borrowing `self` for the entire duration
@@ -2172,12 +2377,30 @@ impl Connection {
         while let Some(stream) = self.streams.get_mut(&stream_id) {
             match stream.state() {
                 stream::State::StreamType => {
-                    stream.try_fill_buffer(conn)?;
+                    let varint = if conn.version == crate::PROTOCOL_VERSION_V3 {
+                        let app_buf = app_buf.as_mut().unwrap();
+                        let b = stream.try_acquire_state_buffer(conn, app_buf)?;
 
-                    let varint = match stream.try_consume_varint() {
-                        Ok(v) => v,
+                        let varint = match stream.try_consume_varint_from_buf(b) {
+                            Ok(v) => v,
 
-                        Err(_) => continue,
+                            Err(_) => {
+                                return Err(Error::Done);
+                            },
+                        };
+                        stream.mark_state_buffer_consumed(
+                            conn,
+                            stream.get_state_len(),
+                            app_buf,
+                        )?;
+                        varint
+                    } else {
+                        stream.try_fill_buffer(conn)?;
+                        match stream.try_consume_varint() {
+                            Ok(v) => v,
+
+                            Err(_) => continue,
+                        }
                     };
 
                     let ty = stream::Type::deserialize(varint)?;
@@ -2285,12 +2508,28 @@ impl Connection {
                 },
 
                 stream::State::PushId => {
-                    stream.try_fill_buffer(conn)?;
+                    let varint = if conn.version == crate::PROTOCOL_VERSION_V3 {
+                        let app_buf = app_buf.as_mut().unwrap();
+                        let b = stream.try_acquire_state_buffer(conn, app_buf)?;
 
-                    let varint = match stream.try_consume_varint() {
-                        Ok(v) => v,
+                        let varint = match stream.try_consume_varint_from_buf(b) {
+                            Ok(v) => v,
 
-                        Err(_) => continue,
+                            Err(_) => return Err(Error::Done),
+                        };
+                        stream.mark_state_buffer_consumed(
+                            conn,
+                            stream.get_state_len(),
+                            app_buf,
+                        )?;
+                        varint
+                    } else {
+                        stream.try_fill_buffer(conn)?;
+                        match stream.try_consume_varint() {
+                            Ok(v) => v,
+
+                            Err(_) => continue,
+                        }
                     };
 
                     if let Err(e) = stream.set_push_id(varint) {
@@ -2300,12 +2539,30 @@ impl Connection {
                 },
 
                 stream::State::FrameType => {
-                    stream.try_fill_buffer(conn)?;
+                    let varint = if conn.version == crate::PROTOCOL_VERSION_V3 {
+                        let app_buf = app_buf.as_mut().unwrap();
+                        let b = stream.try_acquire_state_buffer(conn, app_buf)?;
 
-                    let varint = match stream.try_consume_varint() {
-                        Ok(v) => v,
+                        let varint = match stream.try_consume_varint_from_buf(b) {
+                            Ok(v) => v,
 
-                        Err(_) => continue,
+                            Err(_) => {
+                                return Err(Error::Done);
+                            },
+                        };
+                        stream.mark_state_buffer_consumed(
+                            conn,
+                            stream.get_state_len(),
+                            app_buf,
+                        )?;
+                        varint
+                    } else {
+                        stream.try_fill_buffer(conn)?;
+                        match stream.try_consume_varint() {
+                            Ok(v) => v,
+
+                            Err(_) => continue,
+                        }
                     };
 
                     match stream.set_frame_type(varint) {
@@ -2336,12 +2593,32 @@ impl Connection {
                 },
 
                 stream::State::FramePayloadLen => {
-                    stream.try_fill_buffer(conn)?;
+                    let payload_len = if conn.version ==
+                        crate::PROTOCOL_VERSION_V3
+                    {
+                        let app_buf = app_buf.as_mut().unwrap();
+                        let b = stream.try_acquire_state_buffer(conn, app_buf)?;
 
-                    let payload_len = match stream.try_consume_varint() {
-                        Ok(v) => v,
+                        let varint = match stream.try_consume_varint_from_buf(b) {
+                            Ok(v) => v,
 
-                        Err(_) => continue,
+                            Err(_) => {
+                                return Err(Error::Done);
+                            },
+                        };
+                        stream.mark_state_buffer_consumed(
+                            conn,
+                            stream.get_state_len(),
+                            app_buf,
+                        )?;
+                        varint
+                    } else {
+                        stream.try_fill_buffer(conn)?;
+                        match stream.try_consume_varint() {
+                            Ok(v) => v,
+
+                            Err(_) => continue,
+                        }
                     };
 
                     // DATA frames are handled uniquely. After this point we lose
@@ -2381,26 +2658,85 @@ impl Connection {
                         break;
                     }
 
-                    stream.try_fill_buffer(conn)?;
+                    let (frame, payload_len) = if conn.version ==
+                        crate::PROTOCOL_VERSION_V3
+                    {
+                        let app_buf = app_buf.as_mut().unwrap();
+                        let b = match stream
+                            .try_acquire_state_buffer(conn, app_buf)
+                        {
+                            Ok(b) => b,
+                            Err(e) => {
+                                // Handle empty frame -- i.e., we get a
+                                // Error::Done
+                                // from above since we read everything. In V1, the
+                                // code
+                                // still parse an empty state_buf and then parse
+                                // an empty
+                                // frame (e.g., settings). This copies the
+                                // behavior.
+                                match app_buf.get(stream_id) {
+                                    Some(buf) => {
+                                        if buf.len() > stream.get_state_len() {
+                                            &buf[..stream.get_state_len()]
+                                        } else {
+                                            buf
+                                        }
+                                    },
+                                    None => return Err(e),
+                                }
+                            },
+                        };
 
-                    let (frame, payload_len) = match stream.try_consume_frame() {
-                        Ok(frame) => frame,
+                        match stream.try_consume_frame_from_buf(b) {
+                            Ok((frame, payload_len)) => {
+                                stream.mark_state_buffer_consumed(
+                                    conn,
+                                    payload_len as usize,
+                                    app_buf,
+                                )?;
+                                (frame, payload_len)
+                            },
 
-                        Err(Error::Done) => return Err(Error::Done),
+                            Err(Error::Done) => return Err(Error::Done),
 
-                        Err(e) => {
-                            conn.close(
-                                true,
-                                e.to_wire(),
-                                b"Error handling frame.",
-                            )?;
+                            Err(e) => {
+                                conn.close(
+                                    true,
+                                    e.to_wire(),
+                                    b"Error handling frame.",
+                                )?;
 
-                            return Err(e);
-                        },
+                                return Err(e);
+                            },
+                        }
+                    } else {
+                        stream.try_fill_buffer(conn)?;
+
+                        match stream.try_consume_frame() {
+                            Ok(frame) => frame,
+
+                            Err(Error::Done) => return Err(Error::Done),
+
+                            Err(e) => {
+                                conn.close(
+                                    true,
+                                    e.to_wire(),
+                                    b"Error handling frame.",
+                                )?;
+
+                                return Err(e);
+                            },
+                        }
                     };
 
-                    match self.process_frame(conn, stream_id, frame, payload_len)
-                    {
+                    match self.process_frame(
+                        conn,
+                        stream_id,
+                        frame,
+                        payload_len,
+                        app_buf,
+                    ) {
                         Ok(ev) => return Ok(ev),
 
                         Err(Error::Done) => {
@@ -2408,7 +2744,14 @@ impl Connection {
                             // without needing to bubble up to the user as an
                             // event. Check whether the frame has FIN'd by QUIC
                             // to prevent trying to read again on a closed stream.
-                            if conn.stream_finished(stream_id) {
+                            let is_finished =
+                                if conn.version == crate::PROTOCOL_VERSION_V3 {
+                                    let app_buf = app_buf.as_mut().unwrap();
+                                    conn.stream_finished_v3(stream_id, app_buf)
+                                } else {
+                                    conn.stream_finished(stream_id)
+                                };
+                            if is_finished {
                                 break;
                             }
                         },
@@ -2431,11 +2774,26 @@ impl Connection {
                 },
 
                 stream::State::QpackInstruction => {
-                    let mut d = [0; 4096];
+                    if conn.version == crate::PROTOCOL_VERSION_V3 {
+                        // Read data from the stream and discard immediately.
+                        let app_buf = app_buf.as_mut().unwrap();
+                        loop {
+                            // TODO check whether an error in stremv_rcv_v3 does
+                            // not result
+                            // into a memory leak (ideally, we want to collect the
+                            // stream here,
+                            // and its stream buffer within app_buf
+                            let (_, read, _) =
+                                conn.stream_recv_v3(stream_id, app_buf)?;
+                            conn.stream_consumed(stream_id, read, app_buf)?;
+                        }
+                    } else {
+                        let mut d = [0; 4096];
 
-                    // Read data from the stream and discard immediately.
-                    loop {
-                        conn.stream_recv(stream_id, &mut d)?;
+                        // Read data from the stream and discard immediately.
+                        loop {
+                            conn.stream_recv(stream_id, &mut d)?;
+                        }
                     }
                 },
 
@@ -2482,6 +2840,7 @@ impl Connection {
     fn process_frame(
         &mut self, conn: &mut super::Connection, stream_id: u64,
         frame: frame::Frame, payload_len: u64,
+        app_buf: &mut Option<&mut crate::AppRecvBufMap>,
     ) -> Result<(u64, Event)> {
         trace!(
             "{} rx frm {:?} stream={} payload_len={}",
@@ -2602,12 +2961,16 @@ impl Connection {
 
                     q.add_event_data_now(ev_data).ok();
                 });
-
-                let has_body = !conn.stream_finished(stream_id);
+                let is_finished = if conn.version == crate::PROTOCOL_VERSION_V3 {
+                    let app_buf = app_buf.as_mut().unwrap();
+                    conn.stream_finished_v3(stream_id, app_buf)
+                } else {
+                    conn.stream_finished(stream_id)
+                };
 
                 return Ok((stream_id, Event::Headers {
                     list: headers,
-                    has_body,
+                    has_body: !is_finished,
                 }));
             },
 
@@ -2769,6 +3132,18 @@ impl Connection {
                     return Err(Error::FrameUnexpected);
                 }
 
+                if prioritized_element_id == 0 &&
+                    conn.version == crate::PROTOCOL_VERSION_V3
+                {
+                    conn.close(
+                        true,
+                        Error::FrameUnexpected.to_wire(),
+                        b"PRIORITY_UPDATE with stream_id 0 is invalid on v3",
+                    )?;
+
+                    return Err(Error::FrameUnexpected);
+                }
+
                 if prioritized_element_id > conn.streams.max_streams_bidi() * 4 {
                     conn.close(
                         true,
@@ -2790,10 +3165,16 @@ impl Connection {
                 }
 
                 // If the stream did not yet exist, create it and store.
-                let stream =
-                    self.streams.entry(prioritized_element_id).or_insert_with(
-                        || stream::Stream::new(prioritized_element_id, false),
-                    );
+                let stream = self
+                    .streams
+                    .entry(prioritized_element_id)
+                    .or_insert_with(|| {
+                        stream::Stream::new(
+                            prioritized_element_id,
+                            false,
+                            conn.version,
+                        )
+                    });
 
                 let had_priority_update = stream.has_last_priority_update();
                 stream.set_last_priority_update(Some(priority_field_value));
@@ -2956,12 +3337,36 @@ pub mod testing {
 
             self.advance().ok();
 
-            while self.client.poll(&mut self.pipe.client).is_ok() {
-                // Do nothing.
-            }
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+                while self
+                    .client
+                    .poll_v3(
+                        &mut self.pipe.client,
+                        &mut self.pipe.client_app_buffers,
+                    )
+                    .is_ok()
+                {
+                    // Do nothing.
+                }
 
-            while self.server.poll(&mut self.pipe.server).is_ok() {
-                // Do nothing.
+                while self
+                    .server
+                    .poll_v3(
+                        &mut self.pipe.server,
+                        &mut self.pipe.server_app_buffers,
+                    )
+                    .is_ok()
+                {
+                    // Do nothing
+                }
+            } else {
+                while self.client.poll(&mut self.pipe.client).is_ok() {
+                    // Do nothing.
+                }
+
+                while self.server.poll(&mut self.pipe.server).is_ok() {
+                    // Do nothing.
+                }
             }
 
             Ok(())
@@ -2974,12 +3379,26 @@ pub mod testing {
 
         /// Polls the client for events.
         pub fn poll_client(&mut self) -> Result<(u64, Event)> {
-            self.client.poll(&mut self.pipe.client)
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+                self.client.poll_v3(
+                    &mut self.pipe.client,
+                    &mut self.pipe.client_app_buffers,
+                )
+            } else {
+                self.client.poll(&mut self.pipe.client)
+            }
         }
 
         /// Polls the server for events.
         pub fn poll_server(&mut self) -> Result<(u64, Event)> {
-            self.server.poll(&mut self.pipe.server)
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+                self.server.poll_v3(
+                    &mut self.pipe.server,
+                    &mut self.pipe.server_app_buffers,
+                )
+            } else {
+                self.server.poll(&mut self.pipe.server)
+            }
         }
 
         /// Sends a request from client with default headers.
@@ -3041,6 +3460,31 @@ pub mod testing {
             Ok(bytes)
         }
 
+        /// Fetches DATA payload from the server
+        ///
+        /// On success, it returns a slice of the DATA payload
+        pub fn recv_body_v3_client(
+            &mut self, stream: u64,
+        ) -> Result<(&[u8], usize)> {
+            self.client.recv_body_v3(
+                &mut self.pipe.client,
+                stream,
+                &mut self.pipe.client_app_buffers,
+            )
+        }
+
+        /// Tells HTTP/3 module that the client data is consumed
+        pub fn body_consumed_client(
+            &mut self, stream: u64, consumed: usize,
+        ) -> Result<()> {
+            self.client.body_consumed(
+                &mut self.pipe.client,
+                stream,
+                consumed,
+                &mut self.pipe.client_app_buffers,
+            )
+        }
+
         /// Fetches DATA payload from the server.
         ///
         /// On success it returns the number of bytes received.
@@ -3064,6 +3508,31 @@ pub mod testing {
             self.advance().ok();
 
             Ok(bytes)
+        }
+
+        /// Fetches DATA payload from the client
+        ///
+        /// On success, it returns a slice of the DATA payload
+        pub fn recv_body_v3_server(
+            &mut self, stream: u64,
+        ) -> Result<(&[u8], usize)> {
+            self.server.recv_body_v3(
+                &mut self.pipe.server,
+                stream,
+                &mut self.pipe.server_app_buffers,
+            )
+        }
+
+        /// Tells HTTP/3 module that the server data is consumed
+        pub fn body_consumed_server(
+            &mut self, stream: u64, consumed: usize,
+        ) -> Result<()> {
+            self.server.body_consumed(
+                &mut self.pipe.server,
+                stream,
+                consumed,
+                &mut self.pipe.server_app_buffers,
+            )
         }
 
         /// Fetches DATA payload from the client.
@@ -3273,7 +3742,7 @@ mod tests {
         }];
 
         assert_eq!(
-            pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+            pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, Some(6)),
             Ok(1200)
         );
 
@@ -3284,9 +3753,22 @@ mod tests {
         assert_eq!(r.next(), Some(6));
         assert_eq!(r.next(), None);
 
-        let mut b = [0; 15];
-        assert_eq!(pipe.server.stream_recv(6, &mut b), Ok((5, true)));
-        assert_eq!(&b[..5], b"aaaaa");
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
+            let mut b = [0; 15];
+            assert_eq!(pipe.server.stream_recv(6, &mut b), Ok((5, true)));
+            assert_eq!(&b[..5], b"aaaaa");
+        } else {
+            let (b, read, fin) = pipe
+                .server
+                .stream_recv_v3(6, &mut pipe.server_app_buffers)
+                .unwrap();
+            assert_eq!((read, fin), (5, true));
+            assert_eq!(&b[..5], b"aaaaa");
+            assert!(pipe
+                .server
+                .stream_consumed(6, read, &mut pipe.server_app_buffers)
+                .is_ok());
+        }
     }
 
     #[test]
@@ -3294,10 +3776,15 @@ mod tests {
     fn request_no_body_response_no_body() {
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         let (stream, req) = s.send_request(true).unwrap();
 
-        assert_eq!(stream, 0);
+        assert_eq!(stream, 0 + off_by);
 
         let ev_headers = Event::Headers {
             list: req,
@@ -3324,9 +3811,14 @@ mod tests {
     fn request_no_body_response_one_chunk() {
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         let (stream, req) = s.send_request(true).unwrap();
-        assert_eq!(stream, 0);
+        assert_eq!(stream, 0 + off_by);
 
         let ev_headers = Event::Headers {
             list: req,
@@ -3351,7 +3843,15 @@ mod tests {
         assert_eq!(s.poll_client(), Ok((stream, ev_headers)));
 
         assert_eq!(s.poll_client(), Ok((stream, Event::Data)));
-        assert_eq!(s.recv_body_client(stream, &mut recv_buf), Ok(body.len()));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let (b, tot_exp_len) = s.recv_body_v3_client(stream).unwrap();
+            assert_eq!(b.len(), body.len());
+            assert_eq!(tot_exp_len, b.len());
+            let len = b.len();
+            assert_eq!(s.body_consumed_client(stream, len), Ok(()));
+        } else {
+            assert_eq!(s.recv_body_client(stream, &mut recv_buf), Ok(body.len()));
+        }
 
         assert_eq!(s.poll_client(), Ok((stream, Event::Finished)));
         assert_eq!(s.poll_client(), Err(Error::Done));
@@ -3395,11 +3895,75 @@ mod tests {
         assert_eq!(s.poll_client(), Err(Error::Done));
 
         for _ in 0..total_data_frames {
-            assert_eq!(s.recv_body_client(stream, &mut recv_buf), Ok(body.len()));
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+                let (b, tot_exp_len) = s.recv_body_v3_client(stream).unwrap();
+                assert_eq!(b.len(), body.len());
+                assert_eq!(tot_exp_len, body.len());
+                assert!(s.body_consumed_client(stream, body.len()).is_ok());
+            } else {
+                assert_eq!(
+                    s.recv_body_client(stream, &mut recv_buf),
+                    Ok(body.len())
+                );
+            }
         }
 
         assert_eq!(s.poll_client(), Ok((stream, Event::Finished)));
         assert_eq!(s.poll_client(), Err(Error::Done));
+    }
+
+    #[test]
+    /// Send a request with no body, get a response with multiple DATA frames
+    /// which we partially consume.
+    fn request_no_body_response_many_chunks_partially_consumed_v3_only() {
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let mut s = Session::new().unwrap();
+            s.handshake().unwrap();
+
+            let (stream, req) = s.send_request(true).unwrap();
+
+            let ev_headers = Event::Headers {
+                list: req,
+                has_body: false,
+            };
+
+            assert_eq!(s.poll_server(), Ok((stream, ev_headers)));
+            assert_eq!(s.poll_server(), Ok((stream, Event::Finished)));
+
+            let total_data_frames = 4;
+
+            let resp = s.send_response(stream, false).unwrap();
+
+            for _ in 0..total_data_frames - 1 {
+                s.send_body_server(stream, false).unwrap();
+            }
+
+            let body = s.send_body_server(stream, true).unwrap();
+
+            let ev_headers = Event::Headers {
+                list: resp,
+                has_body: true,
+            };
+
+            assert_eq!(s.poll_client(), Ok((stream, ev_headers)));
+            assert_eq!(s.poll_client(), Ok((stream, Event::Data)));
+            assert_eq!(s.poll_client(), Err(Error::Done));
+            // Consume in two parts.
+            for _ in 0..total_data_frames - 1 {
+                let (b, _) = s.recv_body_v3_client(stream).unwrap();
+                assert_eq!(b.len(), body.len());
+                assert!(s.body_consumed_client(stream, body.len() - 1).is_ok());
+                assert!(s.body_consumed_client(stream, 1).is_ok());
+            }
+            // Read and consume body.len()-1
+            let (b, _) = s.recv_body_v3_client(stream).unwrap();
+            assert_eq!(b.len(), body.len());
+            assert!(s.body_consumed_client(stream, body.len() - 1).is_ok());
+            // Read and consume the last byte
+            let (b, _) = s.recv_body_v3_client(stream).unwrap();
+            assert_eq!(b.len(), 1);
+            assert!(s.body_consumed_client(stream, 1).is_ok());
+        }
     }
 
     #[test]
@@ -3422,7 +3986,14 @@ mod tests {
         assert_eq!(s.poll_server(), Ok((stream, ev_headers)));
 
         assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let (b, tot_exp_len) = s.recv_body_v3_server(stream).unwrap();
+            assert_eq!(b.len(), body.len());
+            assert_eq!(tot_exp_len, body.len());
+            assert!(s.body_consumed_server(stream, body.len()).is_ok());
+        } else {
+            assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
+        }
 
         assert_eq!(s.poll_server(), Ok((stream, Event::Finished)));
 
@@ -3465,7 +4036,17 @@ mod tests {
         assert_eq!(s.poll_server(), Err(Error::Done));
 
         for _ in 0..total_data_frames {
-            assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+                let (b, tot_exp_len) = s.recv_body_v3_server(stream).unwrap();
+                assert_eq!(b.len(), body.len());
+                assert_eq!(tot_exp_len, body.len());
+                assert!(s.body_consumed_server(stream, body.len()).is_ok());
+            } else {
+                assert_eq!(
+                    s.recv_body_server(stream, &mut recv_buf),
+                    Ok(body.len())
+                );
+            }
         }
 
         assert_eq!(s.poll_server(), Ok((stream, Event::Finished)));
@@ -3489,17 +4070,22 @@ mod tests {
         s.handshake().unwrap();
 
         let mut reqs = Vec::new();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         let (stream1, req1) = s.send_request(false).unwrap();
-        assert_eq!(stream1, 0);
+        assert_eq!(stream1, 0 + off_by);
         reqs.push(req1);
 
         let (stream2, req2) = s.send_request(false).unwrap();
-        assert_eq!(stream2, 4);
+        assert_eq!(stream2, 4 + off_by);
         reqs.push(req2);
 
         let (stream3, req3) = s.send_request(false).unwrap();
-        assert_eq!(stream3, 8);
+        assert_eq!(stream3, 8 + off_by);
         reqs.push(req3);
 
         let body = s.send_body_client(stream1, false).unwrap();
@@ -3535,23 +4121,53 @@ mod tests {
         };
         assert_eq!(ev, ev_headers);
 
-        assert_eq!(s.poll_server(), Ok((0, Event::Data)));
-        assert_eq!(s.recv_body_server(0, &mut recv_buf), Ok(body.len()));
+        assert_eq!(s.poll_server(), Ok((0 + off_by, Event::Data)));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(s.recv_body_v3_server(4).unwrap().0.len(), body.len());
+            assert!(s.body_consumed_server(4, body.len()).is_ok());
+        } else {
+            assert_eq!(s.recv_body_server(0, &mut recv_buf), Ok(body.len()));
+        }
         assert_eq!(s.poll_client(), Err(Error::Done));
-        assert_eq!(s.recv_body_server(0, &mut recv_buf), Ok(body.len()));
-        assert_eq!(s.poll_server(), Ok((0, Event::Finished)));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(s.recv_body_v3_server(4).unwrap().0.len(), body.len());
+            assert!(s.body_consumed_server(4, body.len()).is_ok());
+        } else {
+            assert_eq!(s.recv_body_server(0, &mut recv_buf), Ok(body.len()));
+        }
+        assert_eq!(s.poll_server(), Ok((0 + off_by, Event::Finished)));
+        assert_eq!(s.poll_server(), Ok((4 + off_by, Event::Data)));
 
-        assert_eq!(s.poll_server(), Ok((4, Event::Data)));
-        assert_eq!(s.recv_body_server(4, &mut recv_buf), Ok(body.len()));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(s.recv_body_v3_server(8).unwrap().0.len(), body.len());
+            assert!(s.body_consumed_server(8, body.len()).is_ok());
+        } else {
+            assert_eq!(s.recv_body_server(4, &mut recv_buf), Ok(body.len()));
+        }
         assert_eq!(s.poll_client(), Err(Error::Done));
-        assert_eq!(s.recv_body_server(4, &mut recv_buf), Ok(body.len()));
-        assert_eq!(s.poll_server(), Ok((4, Event::Finished)));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(s.recv_body_v3_server(8).unwrap().0.len(), body.len());
+            assert!(s.body_consumed_server(8, body.len()).is_ok());
+        } else {
+            assert_eq!(s.recv_body_server(4, &mut recv_buf), Ok(body.len()));
+        }
+        assert_eq!(s.poll_server(), Ok((4 + off_by, Event::Finished)));
+        assert_eq!(s.poll_server(), Ok((8 + off_by, Event::Data)));
 
-        assert_eq!(s.poll_server(), Ok((8, Event::Data)));
-        assert_eq!(s.recv_body_server(8, &mut recv_buf), Ok(body.len()));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(s.recv_body_v3_server(12).unwrap().0.len(), body.len());
+            assert!(s.body_consumed_server(12, body.len()).is_ok());
+        } else {
+            assert_eq!(s.recv_body_server(8, &mut recv_buf), Ok(body.len()));
+        }
         assert_eq!(s.poll_client(), Err(Error::Done));
-        assert_eq!(s.recv_body_server(8, &mut recv_buf), Ok(body.len()));
-        assert_eq!(s.poll_server(), Ok((8, Event::Finished)));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(s.recv_body_v3_server(12).unwrap().0.len(), body.len());
+            assert!(s.body_consumed_server(12, body.len()).is_ok());
+        } else {
+            assert_eq!(s.recv_body_server(8, &mut recv_buf), Ok(body.len()));
+        }
+        assert_eq!(s.poll_server(), Ok((8 + off_by, Event::Finished)));
 
         assert_eq!(s.poll_server(), Err(Error::Done));
 
@@ -3569,7 +4185,7 @@ mod tests {
         for _ in 0..resps.len() {
             let (stream, ev) = s.poll_client().unwrap();
             let ev_headers = Event::Headers {
-                list: resps[(stream / 4) as usize].clone(),
+                list: resps[((stream - off_by) / 4) as usize].clone(),
                 has_body: false,
             };
             assert_eq!(ev, ev_headers);
@@ -3610,7 +4226,15 @@ mod tests {
         assert_eq!(s.poll_client(), Ok((stream, ev_headers)));
 
         assert_eq!(s.poll_client(), Ok((stream, Event::Data)));
-        assert_eq!(s.recv_body_client(stream, &mut recv_buf), Ok(body.len()));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(
+                s.recv_body_v3_client(stream).unwrap().0.len(),
+                body.len()
+            );
+            assert!(s.body_consumed_client(stream, body.len()).is_ok());
+        } else {
+            assert_eq!(s.recv_body_client(stream, &mut recv_buf), Ok(body.len()));
+        }
 
         assert_eq!(s.pipe.server.stream_send(stream, &[], true), Ok(0));
         s.advance().ok();
@@ -3626,9 +4250,15 @@ mod tests {
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
 
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
+
         let (stream, req) = s.send_request(true).unwrap();
 
-        assert_eq!(stream, 0);
+        assert_eq!(stream, 0 + off_by);
 
         let ev_headers = Event::Headers {
             list: req,
@@ -3653,12 +4283,18 @@ mod tests {
         let mut b = octets::OctetsMut::with_slice(&mut d);
 
         let frame_type = b.put_varint(148_764_065_110_560_899).unwrap();
-        s.pipe.server.stream_send(0, frame_type, false).unwrap();
+        s.pipe
+            .server
+            .stream_send(0 + off_by, frame_type, false)
+            .unwrap();
 
         let frame_len = b.put_varint(10).unwrap();
-        s.pipe.server.stream_send(0, frame_len, false).unwrap();
+        s.pipe
+            .server
+            .stream_send(0 + off_by, frame_len, false)
+            .unwrap();
 
-        s.pipe.server.stream_send(0, &d, true).unwrap();
+        s.pipe.server.stream_send(0 + off_by, &d, true).unwrap();
 
         s.advance().ok();
 
@@ -3672,9 +4308,14 @@ mod tests {
     fn body_response_before_headers() {
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         let (stream, req) = s.send_request(true).unwrap();
-        assert_eq!(stream, 0);
+        assert_eq!(stream, 0 + off_by);
 
         let ev_headers = Event::Headers {
             list: req,
@@ -3700,7 +4341,16 @@ mod tests {
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
 
-        assert_eq!(s.send_body_client(0, true), Err(Error::FrameUnexpected));
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
+
+        assert_eq!(
+            s.send_body_client(0 + off_by, true),
+            Err(Error::FrameUnexpected)
+        );
 
         assert_eq!(
             s.send_body_client(s.client.control_stream_id.unwrap(), true),
@@ -3751,8 +4401,16 @@ mod tests {
     fn send_body_invalid_server_stream() {
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
-        assert_eq!(s.send_body_server(0, true), Err(Error::FrameUnexpected));
+        assert_eq!(
+            s.send_body_server(0 + off_by, true),
+            Err(Error::FrameUnexpected)
+        );
 
         assert_eq!(
             s.send_body_server(s.server.control_stream_id.unwrap(), true),
@@ -3967,13 +4625,18 @@ mod tests {
     fn goaway_from_client_good() {
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         s.client.send_goaway(&mut s.pipe.client, 100).unwrap();
 
         s.advance().ok();
 
         // TODO: server push
-        assert_eq!(s.poll_server(), Ok((0, Event::GoAway)));
+        assert_eq!(s.poll_server(), Ok((0 + off_by, Event::GoAway)));
     }
 
     #[test]
@@ -4026,22 +4689,27 @@ mod tests {
     fn goaway_from_server_increase_id() {
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         s.send_frame_server(
-            frame::Frame::GoAway { id: 0 },
+            frame::Frame::GoAway { id: 0 + off_by },
             s.server.control_stream_id.unwrap(),
             false,
         )
         .unwrap();
 
         s.send_frame_server(
-            frame::Frame::GoAway { id: 4 },
+            frame::Frame::GoAway { id: 4 + off_by },
             s.server.control_stream_id.unwrap(),
             false,
         )
         .unwrap();
 
-        assert_eq!(s.poll_client(), Ok((0, Event::GoAway)));
+        assert_eq!(s.poll_client(), Ok((0 + off_by, Event::GoAway)));
 
         assert_eq!(s.poll_client(), Err(Error::IdError));
     }
@@ -4137,16 +4805,25 @@ mod tests {
     fn priority_update_request() {
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         s.client
-            .send_priority_update_for_request(&mut s.pipe.client, 0, &Priority {
-                urgency: 3,
-                incremental: false,
-            })
+            .send_priority_update_for_request(
+                &mut s.pipe.client,
+                0 + off_by,
+                &Priority {
+                    urgency: 3,
+                    incremental: false,
+                },
+            )
             .unwrap();
         s.advance().ok();
 
-        assert_eq!(s.poll_server(), Ok((0, Event::PriorityUpdate)));
+        assert_eq!(s.poll_server(), Ok((0 + off_by, Event::PriorityUpdate)));
         assert_eq!(s.poll_server(), Err(Error::Done));
     }
 
@@ -4155,23 +4832,36 @@ mod tests {
     fn priority_update_single_stream_rearm() {
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         s.client
-            .send_priority_update_for_request(&mut s.pipe.client, 0, &Priority {
-                urgency: 3,
-                incremental: false,
-            })
+            .send_priority_update_for_request(
+                &mut s.pipe.client,
+                0 + off_by,
+                &Priority {
+                    urgency: 3,
+                    incremental: false,
+                },
+            )
             .unwrap();
         s.advance().ok();
 
-        assert_eq!(s.poll_server(), Ok((0, Event::PriorityUpdate)));
+        assert_eq!(s.poll_server(), Ok((0 + off_by, Event::PriorityUpdate)));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
         s.client
-            .send_priority_update_for_request(&mut s.pipe.client, 0, &Priority {
-                urgency: 5,
-                incremental: false,
-            })
+            .send_priority_update_for_request(
+                &mut s.pipe.client,
+                0 + off_by,
+                &Priority {
+                    urgency: 5,
+                    incremental: false,
+                },
+            )
             .unwrap();
         s.advance().ok();
 
@@ -4179,22 +4869,38 @@ mod tests {
 
         // There is only one PRIORITY_UPDATE frame to read. Once read, the event
         // will rearm ready for more.
-        assert_eq!(s.server.take_last_priority_update(0), Ok(b"u=5".to_vec()));
-        assert_eq!(s.server.take_last_priority_update(0), Err(Error::Done));
+        assert_eq!(
+            s.server.take_last_priority_update(0 + off_by),
+            Ok(b"u=5".to_vec())
+        );
+        assert_eq!(
+            s.server.take_last_priority_update(0 + off_by),
+            Err(Error::Done)
+        );
 
         s.client
-            .send_priority_update_for_request(&mut s.pipe.client, 0, &Priority {
-                urgency: 7,
-                incremental: false,
-            })
+            .send_priority_update_for_request(
+                &mut s.pipe.client,
+                0 + off_by,
+                &Priority {
+                    urgency: 7,
+                    incremental: false,
+                },
+            )
             .unwrap();
         s.advance().ok();
 
-        assert_eq!(s.poll_server(), Ok((0, Event::PriorityUpdate)));
+        assert_eq!(s.poll_server(), Ok((0 + off_by, Event::PriorityUpdate)));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
-        assert_eq!(s.server.take_last_priority_update(0), Ok(b"u=7".to_vec()));
-        assert_eq!(s.server.take_last_priority_update(0), Err(Error::Done));
+        assert_eq!(
+            s.server.take_last_priority_update(0 + off_by),
+            Ok(b"u=7".to_vec())
+        );
+        assert_eq!(
+            s.server.take_last_priority_update(0 + off_by),
+            Err(Error::Done)
+        );
     }
 
     #[test]
@@ -4203,44 +4909,73 @@ mod tests {
     fn priority_update_request_multiple_stream_arm_multiple_flights() {
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         s.client
-            .send_priority_update_for_request(&mut s.pipe.client, 0, &Priority {
-                urgency: 3,
-                incremental: false,
-            })
+            .send_priority_update_for_request(
+                &mut s.pipe.client,
+                0 + off_by,
+                &Priority {
+                    urgency: 3,
+                    incremental: false,
+                },
+            )
             .unwrap();
         s.advance().ok();
 
-        assert_eq!(s.poll_server(), Ok((0, Event::PriorityUpdate)));
+        assert_eq!(s.poll_server(), Ok((0 + off_by, Event::PriorityUpdate)));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
         s.client
-            .send_priority_update_for_request(&mut s.pipe.client, 4, &Priority {
-                urgency: 1,
-                incremental: false,
-            })
+            .send_priority_update_for_request(
+                &mut s.pipe.client,
+                4 + off_by,
+                &Priority {
+                    urgency: 1,
+                    incremental: false,
+                },
+            )
             .unwrap();
         s.advance().ok();
 
-        assert_eq!(s.poll_server(), Ok((4, Event::PriorityUpdate)));
+        assert_eq!(s.poll_server(), Ok((4 + off_by, Event::PriorityUpdate)));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
         s.client
-            .send_priority_update_for_request(&mut s.pipe.client, 8, &Priority {
-                urgency: 2,
-                incremental: false,
-            })
+            .send_priority_update_for_request(
+                &mut s.pipe.client,
+                8 + off_by,
+                &Priority {
+                    urgency: 2,
+                    incremental: false,
+                },
+            )
             .unwrap();
         s.advance().ok();
 
-        assert_eq!(s.poll_server(), Ok((8, Event::PriorityUpdate)));
+        assert_eq!(s.poll_server(), Ok((8 + off_by, Event::PriorityUpdate)));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
-        assert_eq!(s.server.take_last_priority_update(0), Ok(b"u=3".to_vec()));
-        assert_eq!(s.server.take_last_priority_update(4), Ok(b"u=1".to_vec()));
-        assert_eq!(s.server.take_last_priority_update(8), Ok(b"u=2".to_vec()));
-        assert_eq!(s.server.take_last_priority_update(0), Err(Error::Done));
+        assert_eq!(
+            s.server.take_last_priority_update(0 + off_by),
+            Ok(b"u=3".to_vec())
+        );
+        assert_eq!(
+            s.server.take_last_priority_update(4 + off_by),
+            Ok(b"u=1".to_vec())
+        );
+        assert_eq!(
+            s.server.take_last_priority_update(8 + off_by),
+            Ok(b"u=2".to_vec())
+        );
+        assert_eq!(
+            s.server.take_last_priority_update(0 + off_by),
+            Err(Error::Done)
+        );
     }
 
     #[test]
@@ -4249,23 +4984,28 @@ mod tests {
     fn priority_update_request_multiple_stream_arm_single_flight() {
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         let mut d = [42; 65535];
 
         let mut b = octets::OctetsMut::with_slice(&mut d);
 
         let p1 = frame::Frame::PriorityUpdateRequest {
-            prioritized_element_id: 0,
+            prioritized_element_id: 0 + off_by,
             priority_field_value: b"u=3".to_vec(),
         };
 
         let p2 = frame::Frame::PriorityUpdateRequest {
-            prioritized_element_id: 4,
+            prioritized_element_id: 4 + off_by,
             priority_field_value: b"u=3".to_vec(),
         };
 
         let p3 = frame::Frame::PriorityUpdateRequest {
-            prioritized_element_id: 8,
+            prioritized_element_id: 8 + off_by,
             priority_field_value: b"u=3".to_vec(),
         };
 
@@ -4281,16 +5021,28 @@ mod tests {
 
         s.advance().ok();
 
-        assert_eq!(s.poll_server(), Ok((0, Event::PriorityUpdate)));
-        assert_eq!(s.poll_server(), Ok((4, Event::PriorityUpdate)));
-        assert_eq!(s.poll_server(), Ok((8, Event::PriorityUpdate)));
+        assert_eq!(s.poll_server(), Ok((0 + off_by, Event::PriorityUpdate)));
+        assert_eq!(s.poll_server(), Ok((4 + off_by, Event::PriorityUpdate)));
+        assert_eq!(s.poll_server(), Ok((8 + off_by, Event::PriorityUpdate)));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
-        assert_eq!(s.server.take_last_priority_update(0), Ok(b"u=3".to_vec()));
-        assert_eq!(s.server.take_last_priority_update(4), Ok(b"u=3".to_vec()));
-        assert_eq!(s.server.take_last_priority_update(8), Ok(b"u=3".to_vec()));
+        assert_eq!(
+            s.server.take_last_priority_update(0 + off_by),
+            Ok(b"u=3".to_vec())
+        );
+        assert_eq!(
+            s.server.take_last_priority_update(4 + off_by),
+            Ok(b"u=3".to_vec())
+        );
+        assert_eq!(
+            s.server.take_last_priority_update(8 + off_by),
+            Ok(b"u=3".to_vec())
+        );
 
-        assert_eq!(s.server.take_last_priority_update(0), Err(Error::Done));
+        assert_eq!(
+            s.server.take_last_priority_update(0 + off_by),
+            Err(Error::Done)
+        );
     }
 
     #[test]
@@ -4299,12 +5051,21 @@ mod tests {
     fn priority_update_request_collected_completed() {
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         s.client
-            .send_priority_update_for_request(&mut s.pipe.client, 0, &Priority {
-                urgency: 3,
-                incremental: false,
-            })
+            .send_priority_update_for_request(
+                &mut s.pipe.client,
+                0 + off_by,
+                &Priority {
+                    urgency: 3,
+                    incremental: false,
+                },
+            )
             .unwrap();
         s.advance().ok();
 
@@ -4315,13 +5076,19 @@ mod tests {
         };
 
         // Priority event is generated before request headers.
-        assert_eq!(s.poll_server(), Ok((0, Event::PriorityUpdate)));
+        assert_eq!(s.poll_server(), Ok((0 + off_by, Event::PriorityUpdate)));
         assert_eq!(s.poll_server(), Ok((stream, ev_headers)));
         assert_eq!(s.poll_server(), Ok((stream, Event::Finished)));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
-        assert_eq!(s.server.take_last_priority_update(0), Ok(b"u=3".to_vec()));
-        assert_eq!(s.server.take_last_priority_update(0), Err(Error::Done));
+        assert_eq!(
+            s.server.take_last_priority_update(0 + off_by),
+            Ok(b"u=3".to_vec())
+        );
+        assert_eq!(
+            s.server.take_last_priority_update(0 + off_by),
+            Err(Error::Done)
+        );
 
         let resp = s.send_response(stream, true).unwrap();
 
@@ -4336,10 +5103,14 @@ mod tests {
 
         // Now send a PRIORITY_UPDATE for the completed request stream.
         s.client
-            .send_priority_update_for_request(&mut s.pipe.client, 0, &Priority {
-                urgency: 3,
-                incremental: false,
-            })
+            .send_priority_update_for_request(
+                &mut s.pipe.client,
+                0 + off_by,
+                &Priority {
+                    urgency: 3,
+                    incremental: false,
+                },
+            )
             .unwrap();
         s.advance().ok();
 
@@ -4353,12 +5124,21 @@ mod tests {
     fn priority_update_request_collected_stopped() {
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         s.client
-            .send_priority_update_for_request(&mut s.pipe.client, 0, &Priority {
-                urgency: 3,
-                incremental: false,
-            })
+            .send_priority_update_for_request(
+                &mut s.pipe.client,
+                0 + off_by,
+                &Priority {
+                    urgency: 3,
+                    incremental: false,
+                },
+            )
             .unwrap();
         s.advance().ok();
 
@@ -4369,12 +5149,18 @@ mod tests {
         };
 
         // Priority event is generated before request headers.
-        assert_eq!(s.poll_server(), Ok((0, Event::PriorityUpdate)));
+        assert_eq!(s.poll_server(), Ok((0 + off_by, Event::PriorityUpdate)));
         assert_eq!(s.poll_server(), Ok((stream, ev_headers)));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
-        assert_eq!(s.server.take_last_priority_update(0), Ok(b"u=3".to_vec()));
-        assert_eq!(s.server.take_last_priority_update(0), Err(Error::Done));
+        assert_eq!(
+            s.server.take_last_priority_update(0 + off_by),
+            Ok(b"u=3".to_vec())
+        );
+        assert_eq!(
+            s.server.take_last_priority_update(0 + off_by),
+            Err(Error::Done)
+        );
 
         s.pipe
             .client
@@ -4387,15 +5173,19 @@ mod tests {
 
         s.advance().ok();
 
-        assert_eq!(s.poll_server(), Ok((0, Event::Reset(0x100))));
+        assert_eq!(s.poll_server(), Ok((0 + off_by, Event::Reset(0x100))));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
         // Now send a PRIORITY_UPDATE for the closed request stream.
         s.client
-            .send_priority_update_for_request(&mut s.pipe.client, 0, &Priority {
-                urgency: 3,
-                incremental: false,
-            })
+            .send_priority_update_for_request(
+                &mut s.pipe.client,
+                0 + off_by,
+                &Priority {
+                    urgency: 3,
+                    incremental: false,
+                },
+            )
             .unwrap();
         s.advance().ok();
 
@@ -4443,6 +5233,34 @@ mod tests {
     }
 
     #[test]
+    /// Send a PRIORITY_UPDATE for request stream from client buf for
+    /// a stream ID 0, which is incorrect stream type in v3
+    fn priority_update_resquest_stream_0_on_v3() {
+        // Rust does not seem to support managing tests based on const value known
+        // at compile time. I suppose the reason behind is that macros
+        // from cargo test are managed before the const can be evaluated.
+        // So I have no better idea than the following ugliness to test a
+        // behavior only existing if we have crate::PROTOCOL_VERSION_V3.
+        // XXX Todo if a better idea comes.
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let mut s = Session::new().unwrap();
+            s.handshake().unwrap();
+
+            s.send_frame_client(
+                frame::Frame::PriorityUpdateRequest {
+                    prioritized_element_id: 0,
+                    priority_field_value: b"u=3".to_vec(),
+                },
+                s.client.control_stream_id.unwrap(),
+                false,
+            )
+            .unwrap();
+
+            assert_eq!(s.poll_server(), Err(Error::FrameUnexpected));
+        }
+    }
+
+    #[test]
     /// Send a PRIORITY_UPDATE for push stream from the client but for an
     /// incorrect stream type.
     fn priority_update_push_bad_stream() {
@@ -4486,10 +5304,15 @@ mod tests {
     fn priority_update_push_from_server() {
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         s.send_frame_server(
             frame::Frame::PriorityUpdatePush {
-                prioritized_element_id: 0,
+                prioritized_element_id: 0 + off_by,
                 priority_field_value: b"u=3".to_vec(),
             },
             s.server.control_stream_id.unwrap(),
@@ -4553,7 +5376,7 @@ mod tests {
         .unwrap();
 
         loop {
-            match s.server.poll(&mut s.pipe.server) {
+            match s.poll_server() {
                 Ok(_) => (),
 
                 Err(Error::Done) => {
@@ -4589,7 +5412,7 @@ mod tests {
         s.advance().ok();
 
         loop {
-            match s.server.poll(&mut s.pipe.server) {
+            match s.poll_server() {
                 Ok(_) => (),
 
                 Err(Error::Done) => {
@@ -4627,7 +5450,7 @@ mod tests {
         s.advance().ok();
 
         loop {
-            match s.server.poll(&mut s.pipe.server) {
+            match s.poll_server() {
                 Ok(_) => (),
 
                 Err(Error::Done) => {
@@ -4646,6 +5469,11 @@ mod tests {
     fn max_state_buf_size() {
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         let req = vec![
             Header::new(b":method", b"GET"),
@@ -4657,7 +5485,7 @@ mod tests {
 
         assert_eq!(
             s.client.send_request(&mut s.pipe.client, &req, false),
-            Ok(0)
+            Ok(0 + off_by)
         );
 
         s.advance().ok();
@@ -4667,23 +5495,29 @@ mod tests {
             has_body: true,
         };
 
-        assert_eq!(s.server.poll(&mut s.pipe.server), Ok((0, ev_headers)));
+        assert_eq!(s.poll_server(), Ok((0 + off_by, ev_headers)));
 
         // DATA frames don't consume the state buffer, so can be of any size.
         let mut d = [42; 128];
         let mut b = octets::OctetsMut::with_slice(&mut d);
 
         let frame_type = b.put_varint(frame::DATA_FRAME_TYPE_ID).unwrap();
-        s.pipe.client.stream_send(0, frame_type, false).unwrap();
+        s.pipe
+            .client
+            .stream_send(0 + off_by, frame_type, false)
+            .unwrap();
 
         let frame_len = b.put_varint(1 << 24).unwrap();
-        s.pipe.client.stream_send(0, frame_len, false).unwrap();
+        s.pipe
+            .client
+            .stream_send(0 + off_by, frame_len, false)
+            .unwrap();
 
-        s.pipe.client.stream_send(0, &d, false).unwrap();
+        s.pipe.client.stream_send(0 + off_by, &d, false).unwrap();
 
         s.advance().ok();
 
-        assert_eq!(s.server.poll(&mut s.pipe.server), Ok((0, Event::Data)));
+        assert_eq!(s.poll_server(), Ok((0 + off_by, Event::Data)));
 
         // GREASE frames consume the state buffer, so need to be limited.
         let mut s = Session::new().unwrap();
@@ -4693,16 +5527,22 @@ mod tests {
         let mut b = octets::OctetsMut::with_slice(&mut d);
 
         let frame_type = b.put_varint(148_764_065_110_560_899).unwrap();
-        s.pipe.client.stream_send(0, frame_type, false).unwrap();
+        s.pipe
+            .client
+            .stream_send(0 + off_by, frame_type, false)
+            .unwrap();
 
         let frame_len = b.put_varint(1 << 24).unwrap();
-        s.pipe.client.stream_send(0, frame_len, false).unwrap();
+        s.pipe
+            .client
+            .stream_send(0 + off_by, frame_len, false)
+            .unwrap();
 
-        s.pipe.client.stream_send(0, &d, false).unwrap();
+        s.pipe.client.stream_send(0 + off_by, &d, false).unwrap();
 
         s.advance().ok();
 
-        assert_eq!(s.server.poll(&mut s.pipe.server), Err(Error::ExcessiveLoad));
+        assert_eq!(s.poll_server(), Err(Error::ExcessiveLoad));
     }
 
     #[test]
@@ -4747,16 +5587,32 @@ mod tests {
         assert_eq!(s.poll_server(), Err(Error::Done));
 
         for _ in 0..total_data_frames {
-            assert_eq!(
-                s.recv_body_server(stream, &mut recv_buf),
-                Ok(bytes.len())
-            );
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+                assert_eq!(
+                    s.recv_body_v3_server(stream).unwrap().0.len(),
+                    bytes.len()
+                );
+                assert!(s.body_consumed_server(stream, bytes.len()).is_ok());
+            } else {
+                assert_eq!(
+                    s.recv_body_server(stream, &mut recv_buf),
+                    Ok(bytes.len())
+                );
+            }
         }
 
-        assert_eq!(
-            s.recv_body_server(stream, &mut recv_buf),
-            Ok(bytes.len() - 2)
-        );
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(
+                s.recv_body_v3_server(stream).unwrap().0.len(),
+                bytes.len() - 2
+            );
+            assert!(s.body_consumed_server(stream, bytes.len() - 2).is_ok());
+        } else {
+            assert_eq!(
+                s.recv_body_server(stream, &mut recv_buf),
+                Ok(bytes.len() - 2)
+            );
+        }
 
         // Fin flag from last send_body() call was not sent as the buffer was
         // only partially written.
@@ -4788,6 +5644,11 @@ mod tests {
         let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
 
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         let req = vec![
             Header::new(b":method", b"GET"),
@@ -4804,7 +5665,7 @@ mod tests {
 
         s.advance().ok();
 
-        assert_eq!(stream, 0);
+        assert_eq!(stream, 0 + off_by);
 
         assert_eq!(s.poll_server(), Err(Error::ExcessiveLoad));
 
@@ -4819,6 +5680,11 @@ mod tests {
     fn transport_error() {
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         let req = vec![
             Header::new(b":method", b"GET"),
@@ -4832,16 +5698,25 @@ mod tests {
         // Session::send_request() method because it also calls advance(),
         // otherwise the server would send a MAX_STREAMS frame and the client
         // wouldn't hit the streams limit.
-        assert_eq!(s.client.send_request(&mut s.pipe.client, &req, true), Ok(0));
-        assert_eq!(s.client.send_request(&mut s.pipe.client, &req, true), Ok(4));
-        assert_eq!(s.client.send_request(&mut s.pipe.client, &req, true), Ok(8));
         assert_eq!(
             s.client.send_request(&mut s.pipe.client, &req, true),
-            Ok(12)
+            Ok(0 + off_by)
         );
         assert_eq!(
             s.client.send_request(&mut s.pipe.client, &req, true),
-            Ok(16)
+            Ok(4 + off_by)
+        );
+        assert_eq!(
+            s.client.send_request(&mut s.pipe.client, &req, true),
+            Ok(8 + off_by)
+        );
+        assert_eq!(
+            s.client.send_request(&mut s.pipe.client, &req, true),
+            Ok(12 + off_by)
+        );
+        assert_eq!(
+            s.client.send_request(&mut s.pipe.client, &req, true),
+            Ok(16 + off_by)
         );
 
         assert_eq!(
@@ -4855,24 +5730,35 @@ mod tests {
     fn data_before_headers() {
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         let mut d = [42; 128];
         let mut b = octets::OctetsMut::with_slice(&mut d);
 
         let frame_type = b.put_varint(frame::DATA_FRAME_TYPE_ID).unwrap();
-        s.pipe.client.stream_send(0, frame_type, false).unwrap();
+        s.pipe
+            .client
+            .stream_send(0 + off_by, frame_type, false)
+            .unwrap();
 
         let frame_len = b.put_varint(5).unwrap();
-        s.pipe.client.stream_send(0, frame_len, false).unwrap();
+        s.pipe
+            .client
+            .stream_send(0 + off_by, frame_len, false)
+            .unwrap();
 
-        s.pipe.client.stream_send(0, b"hello", false).unwrap();
+        s.pipe
+            .client
+            .stream_send(0 + off_by, b"hello", false)
+            .unwrap();
 
         s.advance().ok();
 
-        assert_eq!(
-            s.server.poll(&mut s.pipe.server),
-            Err(Error::FrameUnexpected)
-        );
+        assert_eq!(s.poll_server(), Err(Error::FrameUnexpected));
     }
 
     #[test]
@@ -4880,24 +5766,35 @@ mod tests {
     fn poll_after_error() {
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         let mut d = [42; 128];
         let mut b = octets::OctetsMut::with_slice(&mut d);
 
         let frame_type = b.put_varint(148_764_065_110_560_899).unwrap();
-        s.pipe.client.stream_send(0, frame_type, false).unwrap();
+        s.pipe
+            .client
+            .stream_send(0 + off_by, frame_type, false)
+            .unwrap();
 
         let frame_len = b.put_varint(1 << 24).unwrap();
-        s.pipe.client.stream_send(0, frame_len, false).unwrap();
+        s.pipe
+            .client
+            .stream_send(0 + off_by, frame_len, false)
+            .unwrap();
 
-        s.pipe.client.stream_send(0, &d, false).unwrap();
+        s.pipe.client.stream_send(0 + off_by, &d, false).unwrap();
 
         s.advance().ok();
 
-        assert_eq!(s.server.poll(&mut s.pipe.server), Err(Error::ExcessiveLoad));
+        assert_eq!(s.poll_server(), Err(Error::ExcessiveLoad));
 
         // Try to call poll() again after an error occurred.
-        assert_eq!(s.server.poll(&mut s.pipe.server), Err(Error::Done));
+        assert_eq!(s.poll_server(), Err(Error::Done));
     }
 
     #[test]
@@ -4924,6 +5821,11 @@ mod tests {
         let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
 
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         let req = vec![
             Header::new(b":method", b"GET"),
@@ -4932,7 +5834,10 @@ mod tests {
             Header::new(b":path", b"/test"),
         ];
 
-        assert_eq!(s.client.send_request(&mut s.pipe.client, &req, true), Ok(0));
+        assert_eq!(
+            s.client.send_request(&mut s.pipe.client, &req, true),
+            Ok(0 + off_by)
+        );
 
         assert_eq!(
             s.client.send_request(&mut s.pipe.client, &req, true),
@@ -4949,8 +5854,11 @@ mod tests {
 
         // Once the server gives flow control credits back, we can send the
         // request.
-        assert_eq!(s.pipe.client.stream_writable_next(), Some(4));
-        assert_eq!(s.client.send_request(&mut s.pipe.client, &req, true), Ok(4));
+        assert_eq!(s.pipe.client.stream_writable_next(), Some(4 + off_by));
+        assert_eq!(
+            s.client.send_request(&mut s.pipe.client, &req, true),
+            Ok(4 + off_by)
+        );
     }
 
     #[test]
@@ -4977,6 +5885,11 @@ mod tests {
         let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
 
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         // After the HTTP handshake, some bytes of connection flow control have
         // been consumed. Fill the connection with more grease data on the control
@@ -5008,7 +5921,10 @@ mod tests {
         // Now we can send the request.
         assert_eq!(s.pipe.client.stream_writable_next(), Some(2));
         assert_eq!(s.pipe.client.stream_writable_next(), Some(6));
-        assert_eq!(s.client.send_request(&mut s.pipe.client, &req, true), Ok(0));
+        assert_eq!(
+            s.client.send_request(&mut s.pipe.client, &req, true),
+            Ok(0 + off_by)
+        );
     }
 
     #[test]
@@ -5038,6 +5954,11 @@ mod tests {
         let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
 
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         let (stream, req) = s.send_request(true).unwrap();
 
@@ -5077,14 +5998,19 @@ mod tests {
         let mut buf = [0; 65535];
         let (len, _) = s.pipe.server.send(&mut buf).unwrap();
 
-        let frames = decode_pkt(&mut s.pipe.client, &mut buf[..len]).unwrap();
+        let frames = decode_pkt(
+            &mut s.pipe.client,
+            &mut buf[..len],
+            &mut s.pipe.client_app_buffers,
+        )
+        .unwrap();
 
         let mut iter = frames.iter();
 
         assert_eq!(
             iter.next(),
             Some(&crate::frame::Frame::StreamDataBlocked {
-                stream_id: 0,
+                stream_id: 0 + off_by,
                 limit: 80,
             })
         );
@@ -5108,19 +6034,19 @@ mod tests {
 
         // Now update the client's max offset manually.
         let frames = [crate::frame::Frame::MaxStreamData {
-            stream_id: 0,
+            stream_id: 0 + off_by,
             max: 100,
         }];
 
         let pkt_type = crate::packet::Type::Short;
         if s.pipe.client.version == crate::PROTOCOL_VERSION_V3 {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
                 Ok(48),
             );
         } else {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
                 Ok(39),
             );
         }
@@ -5142,14 +6068,19 @@ mod tests {
 
         let (len, _) = s.pipe.server.send(&mut buf).unwrap();
 
-        let frames = decode_pkt(&mut s.pipe.client, &mut buf[..len]).unwrap();
+        let frames = decode_pkt(
+            &mut s.pipe.client,
+            &mut buf[..len],
+            &mut s.pipe.client_app_buffers,
+        )
+        .unwrap();
 
         let mut iter = frames.iter();
 
         assert_eq!(
             iter.next(),
             Some(&crate::frame::Frame::StreamDataBlocked {
-                stream_id: 0,
+                stream_id: 0 + off_by,
                 limit: 100,
             })
         );
@@ -5179,6 +6110,11 @@ mod tests {
         let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
 
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         let (stream, req) = s.send_request(true).unwrap();
 
@@ -5216,7 +6152,12 @@ mod tests {
         let mut recv_buf = [42; 80000];
         assert!(s.poll_client().is_ok());
         assert_eq!(s.poll_client(), Ok((stream, Event::Data)));
-        assert_eq!(s.recv_body_client(stream, &mut recv_buf), Ok(11995));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(s.recv_body_v3_client(stream).unwrap().0.len(), 11995);
+            assert!(s.body_consumed_client(stream, 11995).is_ok());
+        } else {
+            assert_eq!(s.recv_body_client(stream, &mut recv_buf), Ok(11995));
+        }
 
         s.advance().ok();
 
@@ -5224,7 +6165,7 @@ mod tests {
         assert!(s.pipe.server.tx_cap < send_buf.len() - sent);
 
         // Once the server cwnd opens up, we can send more body.
-        assert_eq!(s.pipe.server.stream_writable_next(), Some(0));
+        assert_eq!(s.pipe.server.stream_writable_next(), Some(0 + off_by));
     }
 
     #[test]
@@ -5251,6 +6192,11 @@ mod tests {
         let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
 
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         let (stream, req) = s.send_request(true).unwrap();
 
@@ -5297,12 +6243,17 @@ mod tests {
         let mut recv_buf = [42; 80000];
         assert!(s.poll_client().is_ok());
         assert_eq!(s.poll_client(), Ok((stream, Event::Data)));
-        assert_eq!(s.recv_body_client(stream, &mut recv_buf), Ok(11994));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(s.recv_body_v3_client(stream).unwrap().0.len(), 11994);
+            assert!(s.body_consumed_client(stream, 11994).is_ok());
+        } else {
+            assert_eq!(s.recv_body_client(stream, &mut recv_buf), Ok(11994));
+        }
 
         s.advance().ok();
 
         // Once the server cwnd opens up, we can send more body.
-        assert_eq!(s.pipe.server.stream_writable_next(), Some(0));
+        assert_eq!(s.pipe.server.stream_writable_next(), Some(0 + off_by));
     }
 
     #[test]
@@ -5310,14 +6261,24 @@ mod tests {
     fn zero_length_data() {
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         let (stream, req) = s.send_request(false).unwrap();
 
         assert_eq!(
-            s.client.send_body(&mut s.pipe.client, 0, b"", false),
+            s.client
+                .send_body(&mut s.pipe.client, 0 + off_by, b"", false),
             Err(Error::Done)
         );
-        assert_eq!(s.client.send_body(&mut s.pipe.client, 0, b"", true), Ok(0));
+        assert_eq!(
+            s.client
+                .send_body(&mut s.pipe.client, 0 + off_by, b"", true),
+            Ok(0)
+        );
 
         s.advance().ok();
 
@@ -5331,7 +6292,14 @@ mod tests {
         assert_eq!(s.poll_server(), Ok((stream, ev_headers)));
 
         assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Err(Error::Done));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(s.recv_body_v3_server(stream), Err(Error::Done));
+        } else {
+            assert_eq!(
+                s.recv_body_server(stream, &mut recv_buf),
+                Err(Error::Done)
+            );
+        }
 
         assert_eq!(s.poll_server(), Ok((stream, Event::Finished)));
         assert_eq!(s.poll_server(), Err(Error::Done));
@@ -5339,10 +6307,15 @@ mod tests {
         let resp = s.send_response(stream, false).unwrap();
 
         assert_eq!(
-            s.server.send_body(&mut s.pipe.server, 0, b"", false),
+            s.server
+                .send_body(&mut s.pipe.server, 0 + off_by, b"", false),
             Err(Error::Done)
         );
-        assert_eq!(s.server.send_body(&mut s.pipe.server, 0, b"", true), Ok(0));
+        assert_eq!(
+            s.server
+                .send_body(&mut s.pipe.server, 0 + off_by, b"", true),
+            Ok(0)
+        );
 
         s.advance().ok();
 
@@ -5354,7 +6327,14 @@ mod tests {
         assert_eq!(s.poll_client(), Ok((stream, ev_headers)));
 
         assert_eq!(s.poll_client(), Ok((stream, Event::Data)));
-        assert_eq!(s.recv_body_client(stream, &mut recv_buf), Err(Error::Done));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(s.recv_body_v3_client(stream), Err(Error::Done));
+        } else {
+            assert_eq!(
+                s.recv_body_client(stream, &mut recv_buf),
+                Err(Error::Done)
+            );
+        }
 
         assert_eq!(s.poll_client(), Ok((stream, Event::Finished)));
         assert_eq!(s.poll_client(), Err(Error::Done));
@@ -5384,6 +6364,11 @@ mod tests {
         let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
 
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         let req = vec![
             Header::new(b":method", b"GET"),
@@ -5394,11 +6379,12 @@ mod tests {
 
         assert_eq!(
             s.client.send_request(&mut s.pipe.client, &req, false),
-            Ok(0)
+            Ok(0 + off_by)
         );
 
         assert_eq!(
-            s.client.send_body(&mut s.pipe.client, 0, b"", true),
+            s.client
+                .send_body(&mut s.pipe.client, 0 + off_by, b"", true),
             Err(Error::Done)
         );
 
@@ -5411,8 +6397,12 @@ mod tests {
         s.advance().ok();
 
         // Once the server gives flow control credits back, we can send the body.
-        assert_eq!(s.pipe.client.stream_writable_next(), Some(0));
-        assert_eq!(s.client.send_body(&mut s.pipe.client, 0, b"", true), Ok(0));
+        assert_eq!(s.pipe.client.stream_writable_next(), Some(0 + off_by));
+        assert_eq!(
+            s.client
+                .send_body(&mut s.pipe.client, 0 + off_by, b"", true),
+            Ok(0)
+        );
     }
 
     #[test]
@@ -5478,14 +6468,14 @@ mod tests {
         assert!(!s.server.dgram_enabled_by_peer(&s.pipe.server));
 
         // When everything is ok, poll returns Done and DATAGRAM is enabled.
-        assert_eq!(s.server.poll(&mut s.pipe.server), Err(Error::Done));
+        assert_eq!(s.poll_server(), Err(Error::Done));
         assert!(s.server.dgram_enabled_by_peer(&s.pipe.server));
 
         // Now detect things on the client
         s.server.send_settings(&mut s.pipe.server).unwrap();
         assert_eq!(s.pipe.advance(), Ok(()));
         assert!(!s.client.dgram_enabled_by_peer(&s.pipe.client));
-        assert_eq!(s.client.poll(&mut s.pipe.client), Err(Error::Done));
+        assert_eq!(s.poll_client(), Err(Error::Done));
         assert!(s.client.dgram_enabled_by_peer(&s.pipe.client));
     }
 
@@ -5539,7 +6529,7 @@ mod tests {
 
         assert_eq!(s.pipe.advance(), Ok(()));
 
-        assert_eq!(s.server.poll(&mut s.pipe.server), Err(Error::SettingsError));
+        assert_eq!(s.poll_server(), Err(Error::SettingsError));
     }
 
     #[test]
@@ -5608,9 +6598,9 @@ mod tests {
 
         assert_eq!(s.pipe.advance(), Ok(()));
 
-        assert_eq!(s.server.poll(&mut s.pipe.server), Err(Error::SettingsError));
+        assert_eq!(s.poll_server(), Err(Error::SettingsError));
 
-        assert_eq!(s.client.poll(&mut s.pipe.client), Err(Error::SettingsError));
+        assert_eq!(s.poll_client(), Err(Error::SettingsError));
     }
 
     #[test]
@@ -5684,11 +6674,11 @@ mod tests {
 
         s.client.send_settings(&mut s.pipe.client).unwrap();
         assert_eq!(s.pipe.advance(), Ok(()));
-        assert_eq!(s.server.poll(&mut s.pipe.server), Err(Error::Done));
+        assert_eq!(s.poll_server(), Err(Error::Done));
 
         s.server.send_settings(&mut s.pipe.server).unwrap();
         assert_eq!(s.pipe.advance(), Ok(()));
-        assert_eq!(s.client.poll(&mut s.pipe.client), Err(Error::Done));
+        assert_eq!(s.poll_client(), Err(Error::Done));
 
         assert_eq!(
             s.server.peer_settings_raw(),
@@ -5706,16 +6696,21 @@ mod tests {
         let mut buf = [0; 65535];
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         // We'll send default data of 10 bytes on flow ID 0.
-        let result = (11, 0, 1);
+        let result = (11, 0 + off_by, 1);
 
-        s.send_dgram_client(0).unwrap();
+        s.send_dgram_client(0 + off_by).unwrap();
 
         assert_eq!(s.poll_server(), Err(Error::Done));
         assert_eq!(s.recv_dgram_server(&mut buf), Ok(result));
 
-        s.send_dgram_server(0).unwrap();
+        s.send_dgram_server(0 + off_by).unwrap();
         assert_eq!(s.poll_client(), Err(Error::Done));
         assert_eq!(s.recv_dgram_client(&mut buf), Ok(result));
     }
@@ -5726,13 +6721,18 @@ mod tests {
         let mut buf = [0; 65535];
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         // We'll send default data of 10 bytes on flow ID 0.
-        let result = (11, 0, 1);
+        let result = (11, 0 + off_by, 1);
 
-        s.send_dgram_client(0).unwrap();
-        s.send_dgram_client(0).unwrap();
-        s.send_dgram_client(0).unwrap();
+        s.send_dgram_client(0 + off_by).unwrap();
+        s.send_dgram_client(0 + off_by).unwrap();
+        s.send_dgram_client(0 + off_by).unwrap();
 
         assert_eq!(s.poll_server(), Err(Error::Done));
         assert_eq!(s.recv_dgram_server(&mut buf), Ok(result));
@@ -5740,9 +6740,9 @@ mod tests {
         assert_eq!(s.recv_dgram_server(&mut buf), Ok(result));
         assert_eq!(s.recv_dgram_server(&mut buf), Err(Error::Done));
 
-        s.send_dgram_server(0).unwrap();
-        s.send_dgram_server(0).unwrap();
-        s.send_dgram_server(0).unwrap();
+        s.send_dgram_server(0 + off_by).unwrap();
+        s.send_dgram_server(0 + off_by).unwrap();
+        s.send_dgram_server(0 + off_by).unwrap();
 
         assert_eq!(s.poll_client(), Err(Error::Done));
         assert_eq!(s.recv_dgram_client(&mut buf), Ok(result));
@@ -5757,16 +6757,21 @@ mod tests {
         let mut buf = [0; 65535];
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         // We'll send default data of 10 bytes on flow ID 0.
-        let result = (11, 0, 1);
+        let result = (11, 0 + off_by, 1);
 
         // Five DATAGRAMs
-        s.send_dgram_client(0).unwrap();
-        s.send_dgram_client(0).unwrap();
-        s.send_dgram_client(0).unwrap();
-        s.send_dgram_client(0).unwrap();
-        s.send_dgram_client(0).unwrap();
+        s.send_dgram_client(0 + off_by).unwrap();
+        s.send_dgram_client(0 + off_by).unwrap();
+        s.send_dgram_client(0 + off_by).unwrap();
+        s.send_dgram_client(0 + off_by).unwrap();
+        s.send_dgram_client(0 + off_by).unwrap();
 
         // Only 3 independent DATAGRAMs to read events will fire.
         assert_eq!(s.poll_server(), Err(Error::Done));
@@ -5799,6 +6804,11 @@ mod tests {
         let h3_config = Config::new().unwrap();
         let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         // Send request followed by DATAGRAM on client side.
         let (stream, req) = s.send_request(false).unwrap();
@@ -5810,7 +6820,7 @@ mod tests {
             has_body: true,
         };
 
-        s.send_dgram_client(0).unwrap();
+        s.send_dgram_client(0 + off_by).unwrap();
 
         assert_eq!(s.poll_server(), Ok((stream, ev_headers)));
         assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
@@ -5843,9 +6853,14 @@ mod tests {
         let h3_config = Config::new().unwrap();
         let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         // We'll send default data of 10 bytes on flow ID 0.
-        let result = (11, 0, 1);
+        let result = (11, 0 + off_by, 1);
 
         // Send request followed by DATAGRAM on client side.
         let (stream, req) = s.send_request(false).unwrap();
@@ -5859,7 +6874,7 @@ mod tests {
             has_body: true,
         };
 
-        s.send_dgram_client(0).unwrap();
+        s.send_dgram_client(0 + off_by).unwrap();
 
         assert_eq!(s.poll_server(), Ok((stream, ev_headers)));
         assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
@@ -5870,7 +6885,15 @@ mod tests {
 
         assert_eq!(s.poll_server(), Err(Error::Done));
 
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(
+                s.recv_body_v3_server(stream).unwrap().0.len(),
+                body.len()
+            );
+            assert!(s.body_consumed_server(stream, body.len()).is_ok());
+        } else {
+            assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
+        }
         assert_eq!(s.poll_server(), Ok((stream, Event::Finished)));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
@@ -5886,7 +6909,7 @@ mod tests {
             has_body: true,
         };
 
-        s.send_dgram_server(0).unwrap();
+        s.send_dgram_server(0 + off_by).unwrap();
 
         assert_eq!(s.poll_client(), Ok((stream, ev_headers)));
         assert_eq!(s.poll_client(), Ok((stream, Event::Data)));
@@ -5897,7 +6920,15 @@ mod tests {
 
         assert_eq!(s.poll_client(), Err(Error::Done));
 
-        assert_eq!(s.recv_body_client(stream, &mut recv_buf), Ok(body.len()));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(
+                s.recv_body_v3_client(stream).unwrap().0.len(),
+                body.len()
+            );
+            assert!(s.body_consumed_client(stream, body.len()).is_ok());
+        } else {
+            assert_eq!(s.recv_body_client(stream, &mut recv_buf), Ok(body.len()));
+        }
 
         assert_eq!(s.poll_client(), Ok((stream, Event::Finished)));
         assert_eq!(s.poll_client(), Err(Error::Done));
@@ -5928,9 +6959,14 @@ mod tests {
         let h3_config = Config::new().unwrap();
         let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         // 10 bytes on flow ID 0 and 2.
-        let flow_0_result = (11, 0, 1);
+        let flow_0_result = (11, 0 + off_by, 1);
         let flow_2_result = (11, 2, 1);
 
         // Send requests followed by DATAGRAMs on client side.
@@ -5945,11 +6981,11 @@ mod tests {
             has_body: true,
         };
 
-        s.send_dgram_client(0).unwrap();
-        s.send_dgram_client(0).unwrap();
-        s.send_dgram_client(0).unwrap();
-        s.send_dgram_client(0).unwrap();
-        s.send_dgram_client(0).unwrap();
+        s.send_dgram_client(0 + off_by).unwrap();
+        s.send_dgram_client(0 + off_by).unwrap();
+        s.send_dgram_client(0 + off_by).unwrap();
+        s.send_dgram_client(0 + off_by).unwrap();
+        s.send_dgram_client(0 + off_by).unwrap();
         s.send_dgram_client(2).unwrap();
         s.send_dgram_client(2).unwrap();
         s.send_dgram_client(2).unwrap();
@@ -5969,7 +7005,15 @@ mod tests {
         assert_eq!(s.recv_dgram_server(&mut buf), Ok(flow_0_result));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(
+                s.recv_body_v3_server(stream).unwrap().0.len(),
+                body.len()
+            );
+            assert!(s.body_consumed_server(stream, body.len()).is_ok());
+        } else {
+            assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
+        }
         assert_eq!(s.poll_server(), Ok((stream, Event::Finished)));
 
         assert_eq!(s.poll_server(), Err(Error::Done));
@@ -6002,11 +7046,11 @@ mod tests {
             has_body: true,
         };
 
-        s.send_dgram_server(0).unwrap();
-        s.send_dgram_server(0).unwrap();
-        s.send_dgram_server(0).unwrap();
-        s.send_dgram_server(0).unwrap();
-        s.send_dgram_server(0).unwrap();
+        s.send_dgram_server(0 + off_by).unwrap();
+        s.send_dgram_server(0 + off_by).unwrap();
+        s.send_dgram_server(0 + off_by).unwrap();
+        s.send_dgram_server(0 + off_by).unwrap();
+        s.send_dgram_server(0 + off_by).unwrap();
         s.send_dgram_server(2).unwrap();
         s.send_dgram_server(2).unwrap();
         s.send_dgram_server(2).unwrap();
@@ -6026,7 +7070,15 @@ mod tests {
         assert_eq!(s.recv_dgram_client(&mut buf), Ok(flow_0_result));
         assert_eq!(s.poll_client(), Err(Error::Done));
 
-        assert_eq!(s.recv_body_client(stream, &mut recv_buf), Ok(body.len()));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(
+                s.recv_body_v3_client(stream).unwrap().0.len(),
+                body.len()
+            );
+            assert!(s.body_consumed_client(stream, body.len()).is_ok());
+        } else {
+            assert_eq!(s.recv_body_client(stream, &mut recv_buf), Ok(body.len()));
+        }
         assert_eq!(s.poll_client(), Ok((stream, Event::Finished)));
 
         assert_eq!(s.poll_client(), Err(Error::Done));
@@ -6084,10 +7136,25 @@ mod tests {
         assert_eq!(s.poll_server(), Ok((stream, ev_headers)));
         assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
 
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(
+                s.recv_body_v3_server(stream).unwrap().0.len(),
+                body.len()
+            );
+            assert!(s.body_consumed_server(stream, body.len()).is_ok());
+        } else {
+            assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
+        }
         assert_eq!(s.poll_server(), Ok((stream, Event::Finished)));
 
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Err(Error::Done));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(s.recv_body_v3_server(stream), Err(Error::Done));
+        } else {
+            assert_eq!(
+                s.recv_body_server(stream, &mut recv_buf),
+                Err(Error::Done)
+            );
+        }
         assert_eq!(s.poll_server(), Err(Error::Done));
     }
 
@@ -6132,7 +7199,14 @@ mod tests {
         assert_eq!(s.poll_server(), Err(Error::Done));
 
         // Read the available body data.
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(5));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let (b, tot_exp_len) = s.recv_body_v3_server(stream).unwrap();
+            assert_eq!(b.len(), 5);
+            assert_eq!(tot_exp_len, 10);
+            assert!(s.body_consumed_server(stream, 5).is_ok());
+        } else {
+            assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(5));
+        }
 
         // Send the remaining DATA payload.
         assert_eq!(s.pipe.client.stream_send(stream, &bytes[5..], false), Ok(5));
@@ -6142,7 +7216,14 @@ mod tests {
         assert_eq!(s.poll_server(), Err(Error::Done));
 
         // Read the rest of the body data.
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(5));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let (b, tot_exp_len) = s.recv_body_v3_server(stream).unwrap();
+            assert_eq!(b.len(), 5);
+            assert_eq!(tot_exp_len, 5);
+            assert!(s.body_consumed_server(stream, 5).is_ok());
+        } else {
+            assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(5));
+        }
         assert_eq!(s.poll_server(), Err(Error::Done));
 
         // Send more data.
@@ -6151,7 +7232,15 @@ mod tests {
         assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(
+                s.recv_body_v3_server(stream).unwrap().0.len(),
+                body.len()
+            );
+            assert!(s.body_consumed_server(stream, body.len()).is_ok());
+        } else {
+            assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
+        }
 
         // Send more data, then HEADERS, then more data.
         let body = s.send_body_client(stream, false).unwrap();
@@ -6172,12 +7261,28 @@ mod tests {
         s.send_body_client(stream, false).unwrap();
 
         assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(
+                s.recv_body_v3_server(stream).unwrap().0.len(),
+                body.len()
+            );
+            assert!(s.body_consumed_server(stream, body.len()).is_ok());
+        } else {
+            assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
+        }
 
         assert_eq!(s.poll_server(), Ok((stream, ev_trailers)));
 
         assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(
+                s.recv_body_v3_server(stream).unwrap().0.len(),
+                body.len()
+            );
+            assert!(s.body_consumed_server(stream, body.len()).is_ok());
+        } else {
+            assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
+        }
 
         let (stream, req) = s.send_request(false).unwrap();
 
@@ -6203,7 +7308,14 @@ mod tests {
         assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Err(Error::Done));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(s.recv_body_v3_server(stream), Err(Error::Done));
+        } else {
+            assert_eq!(
+                s.recv_body_server(stream, &mut recv_buf),
+                Err(Error::Done)
+            );
+        }
 
         assert_eq!(s.pipe.client.stream_send(stream, &bytes[..5], false), Ok(5));
 
@@ -6212,7 +7324,14 @@ mod tests {
         assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(5));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let (b, tot_exp_len) = s.recv_body_v3_server(stream).unwrap();
+            assert_eq!(b.len(), 5);
+            assert_eq!(tot_exp_len, 10);
+            assert!(s.body_consumed_server(stream, 5).is_ok());
+        } else {
+            assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(5));
+        }
 
         assert_eq!(s.pipe.client.stream_send(stream, &bytes[5..], false), Ok(5));
         s.advance().ok();
@@ -6220,7 +7339,14 @@ mod tests {
         assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(5));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let (b, tot_exp_len) = s.recv_body_v3_server(stream).unwrap();
+            assert_eq!(b.len(), 5);
+            assert_eq!(tot_exp_len, 5);
+            assert!(s.body_consumed_server(stream, 5).is_ok());
+        } else {
+            assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(5));
+        }
 
         // Buffer multiple data frames.
         let body = s.send_body_client(stream, false).unwrap();
@@ -6244,10 +7370,21 @@ mod tests {
 
         let mut recv_buf = vec![0; bytes.len() * 3];
 
-        assert_eq!(
-            s.recv_body_server(stream, &mut recv_buf),
-            Ok(body.len() * 3)
-        );
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            for _ in 0..3 {
+                // In V3 we process one DATA frame per recv by design of
+                // zero-copy.
+                let (b, tot_exp_len) = s.recv_body_v3_server(stream).unwrap();
+                assert_eq!(b.len(), body.len());
+                assert_eq!(tot_exp_len, body.len());
+                assert!(s.body_consumed_server(stream, body.len()).is_ok());
+            }
+        } else {
+            assert_eq!(
+                s.recv_body_server(stream, &mut recv_buf),
+                Ok(body.len() * 3)
+            );
+        }
     }
 
     #[test]
@@ -6275,9 +7412,14 @@ mod tests {
         let h3_config = Config::new().unwrap();
         let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         // 10 bytes on flow ID 0 and 2.
-        let flow_0_result = (11, 0, 1);
+        let flow_0_result = (11, 0 + off_by, 1);
         let flow_2_result = (11, 2, 1);
 
         // Send requests followed by DATAGRAMs on client side.
@@ -6292,8 +7434,8 @@ mod tests {
             has_body: true,
         };
 
-        s.send_dgram_client(0).unwrap();
-        s.send_dgram_client(0).unwrap();
+        s.send_dgram_client(0 + off_by).unwrap();
+        s.send_dgram_client(0 + off_by).unwrap();
         s.send_dgram_client(2).unwrap();
         s.send_dgram_client(2).unwrap();
 
@@ -6314,7 +7456,7 @@ mod tests {
 
         assert_eq!(s.poll_server(), Err(Error::Done));
 
-        s.send_dgram_client(0).unwrap();
+        s.send_dgram_client(0 + off_by).unwrap();
         s.send_dgram_client(2).unwrap();
 
         assert_eq!(s.poll_server(), Err(Error::Done));
@@ -6325,7 +7467,15 @@ mod tests {
         assert_eq!(s.recv_dgram_server(&mut buf), Ok(flow_2_result));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(
+                s.recv_body_v3_server(stream).unwrap().0.len(),
+                body.len()
+            );
+            assert!(s.body_consumed_server(stream, body.len()).is_ok());
+        } else {
+            assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
+        }
         assert_eq!(s.poll_server(), Ok((stream, Event::Finished)));
     }
 
@@ -6369,12 +7519,12 @@ mod tests {
         let pkt_type = crate::packet::Type::Short;
         if s.pipe.client.version == crate::PROTOCOL_VERSION_V3 {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
                 Ok(48)
             );
         } else {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
                 Ok(39)
             );
         }
@@ -6386,12 +7536,12 @@ mod tests {
         // Sending RESET_STREAM again shouldn't trigger another Reset event.
         if s.pipe.client.version == crate::PROTOCOL_VERSION_V3 {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
                 Ok(48)
             );
         } else {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
                 Ok(39)
             );
         }
@@ -6403,13 +7553,20 @@ mod tests {
     fn reset_finished_at_server() {
         let mut s = Session::new().unwrap();
         s.handshake().unwrap();
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            4
+        } else {
+            0
+        };
 
         // Client sends HEADERS and doesn't fin
         let (stream, _req) = s.send_request(false).unwrap();
 
         // ..then Client sends RESET_STREAM
         assert_eq!(
-            s.pipe.client.stream_shutdown(0, crate::Shutdown::Write, 0),
+            s.pipe
+                .client
+                .stream_shutdown(0 + off_by, crate::Shutdown::Write, 0),
             Ok(())
         );
 
@@ -6424,7 +7581,9 @@ mod tests {
 
         // ..then Client sends RESET_STREAM
         assert_eq!(
-            s.pipe.client.stream_shutdown(4, crate::Shutdown::Write, 0),
+            s.pipe
+                .client
+                .stream_shutdown(4 + off_by, crate::Shutdown::Write, 0),
             Ok(())
         );
 
@@ -6541,12 +7700,12 @@ mod tests {
         let pkt_type = crate::packet::Type::Short;
         if s.pipe.client.version == crate::PROTOCOL_VERSION_V3 {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
                 Ok(48)
             );
         } else {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
                 Ok(39)
             );
         }

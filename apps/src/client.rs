@@ -26,6 +26,7 @@
 
 use crate::args::*;
 use crate::common::*;
+use quiche::AppRecvBufMap;
 
 use std::net::ToSocketAddrs;
 
@@ -38,6 +39,7 @@ use std::cell::RefCell;
 use ring::rand::*;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
+pub const MAX_FLUSH_SIZE: usize = 256_000;
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -186,6 +188,16 @@ pub fn connect(
 
     let local_addr = socket.local_addr().unwrap();
 
+    let mut app_buffers = AppRecvBufMap::new(
+        3,
+        conn_args.max_stream_window,
+        conn_args.max_streams_bidi,
+        conn_args.max_streams_uni,
+    );
+    app_buffers
+        .set_expected_chunklen_to_consume(MAX_FLUSH_SIZE as u64)
+        .unwrap();
+
     // Create a QUIC connection and initiate handshake.
     let mut conn = quiche::connect(
         connect_url.domain(),
@@ -318,14 +330,16 @@ pub fn connect(
                 };
 
                 // Process potentially coalesced packets.
-                let read = match conn.recv(&mut buf[..len], recv_info) {
-                    Ok(v) => v,
+                let read =
+                    match conn.recv(&mut buf[..len], &mut app_buffers, recv_info)
+                    {
+                        Ok(v) => v,
 
-                    Err(e) => {
-                        error!("{}: recv failed: {:?}", local_addr, e);
-                        continue 'read;
-                    },
-                };
+                        Err(e) => {
+                            error!("{}: recv failed: {:?}", local_addr, e);
+                            continue 'read;
+                        },
+                    };
 
                 trace!("{}: processed {} bytes", local_addr, read);
             }
@@ -423,7 +437,15 @@ pub fn connect(
         // process received data.
         if let Some(h_conn) = http_conn.as_mut() {
             h_conn.send_requests(&mut conn, &args.dump_response_path);
-            h_conn.handle_responses(&mut conn, &mut buf, &app_data_start);
+            if conn.version() == quiche::PROTOCOL_VERSION_V3 {
+                h_conn.handle_responses_on_quic_v3(
+                    &mut conn,
+                    &mut app_buffers,
+                    &app_data_start,
+                );
+            } else {
+                h_conn.handle_responses(&mut conn, &mut buf, &app_data_start);
+            }
         }
 
         // Handle path events.
