@@ -98,6 +98,8 @@ pub struct Client {
     pub loss_rate: f64,
 
     pub max_send_burst: usize,
+
+    pub app_buffers: quiche::AppRecvBufMap,
 }
 
 pub type ClientIdMap = HashMap<ConnectionId<'static>, ClientId>;
@@ -343,6 +345,11 @@ pub trait HttpConn {
         req_start: &std::time::Instant,
     );
 
+    fn handle_responses_on_quic_v3(
+        &mut self, conn: &mut quiche::Connection,
+        app_buffers: &mut quiche::AppRecvBufMap, req_start: &std::time::Instant,
+    );
+
     fn report_incomplete(&self, start: &std::time::Instant) -> bool;
 
     fn handle_requests(
@@ -350,6 +357,13 @@ pub trait HttpConn {
         partial_requests: &mut HashMap<u64, PartialRequest>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
         index: &str, buf: &mut [u8],
+        app_buffers: Option<&mut quiche::AppRecvBufMap>,
+    ) -> quiche::h3::Result<()>;
+
+    fn handle_requests_on_quic_v3(
+        &mut self, conn: &mut quiche::Connection,
+        partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
+        index: &str, app_buffers: &mut quiche::AppRecvBufMap,
     ) -> quiche::h3::Result<()>;
 
     fn handle_writable(
@@ -475,6 +489,14 @@ impl HttpConn for Http09Conn {
         self.reqs_sent += reqs_done;
     }
 
+    fn handle_responses_on_quic_v3(
+        &mut self, _conn: &mut quiche::Connection,
+        _app_buffers: &mut quiche::AppRecvBufMap,
+        _req_start: &std::time::Instant,
+    ) {
+        unimplemented!()
+    }
+
     fn handle_responses(
         &mut self, conn: &mut quiche::Connection, buf: &mut [u8],
         req_start: &std::time::Instant,
@@ -562,11 +584,20 @@ impl HttpConn for Http09Conn {
         false
     }
 
+    fn handle_requests_on_quic_v3(
+        &mut self, _conn: &mut quiche::Connection,
+        _partial_responses: &mut HashMap<u64, PartialResponse>, _root: &str,
+        _index: &str, _app_buffers: &mut quiche::AppRecvBufMap,
+    ) -> quiche::h3::Result<()> {
+        unimplemented!()
+    }
+
     fn handle_requests(
         &mut self, conn: &mut quiche::Connection,
         partial_requests: &mut HashMap<u64, PartialRequest>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
         index: &str, buf: &mut [u8],
+        _app_buffers: Option<&mut quiche::AppRecvBufMap>,
     ) -> quiche::h3::Result<()> {
         // Process all readable streams.
         for s in conn.readable() {
@@ -885,6 +916,19 @@ impl Http3Conn {
         };
 
         Ok(Box::new(h_conn))
+    }
+
+    /// poll the h3_conn with either poll() or poll_v3() depending on the
+    /// connection context.
+    fn poll_internal(
+        &mut self, conn: &mut quiche::Connection,
+        app_buffers: &mut Option<&mut quiche::AppRecvBufMap>,
+    ) -> quiche::h3::Result<(u64, quiche::h3::Event)> {
+        if let Some(ref mut app_buffers) = app_buffers {
+            self.h3_conn.poll_v3(conn, app_buffers)
+        } else {
+            self.h3_conn.poll(conn)
+        }
     }
 
     /// Builds an HTTP/3 response given a request.
@@ -1214,6 +1258,165 @@ impl HttpConn for Http3Conn {
         }
     }
 
+    fn handle_responses_on_quic_v3(
+        &mut self, conn: &mut quiche::Connection,
+        app_buffers: &mut quiche::AppRecvBufMap, req_start: &std::time::Instant,
+    ) {
+        loop {
+            match self.h3_conn.poll_v3(conn, app_buffers) {
+                Ok((stream_id, quiche::h3::Event::Headers { list, .. })) => {
+                    debug!(
+                        "got response headers {:?} on stream id {}",
+                        hdrs_to_strings(&list),
+                        stream_id
+                    );
+
+                    let req = self
+                        .reqs
+                        .iter_mut()
+                        .find(|r| r.stream_id == Some(stream_id))
+                        .unwrap();
+
+                    req.response_hdrs = list;
+                },
+
+                Ok((stream_id, quiche::h3::Event::Data)) => {
+                    let (b, tot_exp_len) = match self.h3_conn.recv_body_v3(
+                        conn,
+                        stream_id,
+                        app_buffers,
+                    ) {
+                        Ok((b, tot_exp_len)) => {
+                            debug!(
+                                "got {} bytes of response data on stream {}. Total expected will be {}",
+                                b.len(), stream_id, tot_exp_len
+                            );
+
+                            (b, tot_exp_len)
+                        },
+
+                        Err(quiche::h3::Error::Done) => panic!("Error::Done"),
+
+                        Err(e) => panic!("Error reading conn: {:?}", e),
+                    };
+
+                    // If this condition is not satified, we can conn.recv() more
+                    // before processing what we already have.
+                    // As long as MAX_FLUSH_SIZE < --max-data/2; this is okay.
+                    if b.len() >= crate::client::MAX_FLUSH_SIZE ||
+                        b.len() == tot_exp_len
+                    {
+                        let req = self
+                            .reqs
+                            .iter_mut()
+                            .find(|r| r.stream_id == Some(stream_id))
+                            .unwrap();
+
+                        match &mut req.response_writer {
+                            Some(rw) => {
+                                rw.write_all(b).ok();
+                                self.h3_conn
+                                    .body_consumed(
+                                        conn,
+                                        stream_id,
+                                        b.len(),
+                                        app_buffers,
+                                    )
+                                    .unwrap();
+                            },
+                            None => {
+                                self.h3_conn
+                                    .body_consumed(
+                                        conn,
+                                        stream_id,
+                                        b.len(),
+                                        app_buffers,
+                                    )
+                                    .unwrap();
+                            },
+                        }
+                    }
+                },
+
+                Ok((_stream_id, quiche::h3::Event::Finished)) => {
+                    self.reqs_complete += 1;
+                    let reqs_count = self.reqs.len();
+                    debug!(
+                        "{}/{} responses received",
+                        self.reqs_complete, reqs_count
+                    );
+
+                    if self.reqs_complete == reqs_count {
+                        info!(
+                            "{}/{} response(s) received in {:?}, closing...",
+                            self.reqs_complete,
+                            reqs_count,
+                            req_start.elapsed()
+                        );
+
+                        if self.dump_json {
+                            dump_json(
+                                &self.reqs,
+                                &mut *self.output_sink.borrow_mut(),
+                            );
+                        }
+
+                        match conn.close(true, 0x100, b"kthxbye") {
+                            // Already closed.
+                            Ok(_) | Err(quiche::Error::Done) => (),
+
+                            Err(e) => panic!("error closing conn: {:?}", e),
+                        }
+
+                        break;
+                    }
+                },
+
+                Ok((_stream_id, quiche::h3::Event::Reset(e))) => {
+                    error!("request was reset by peer with {}, closing...", e);
+
+                    match conn.close(true, 0x100, b"kthxbye") {
+                        // Already closed.
+                        Ok(_) | Err(quiche::Error::Done) => (),
+
+                        Err(e) => panic!("error closing conn: {:?}", e),
+                    }
+
+                    break;
+                },
+
+                Ok((
+                    prioritized_element_id,
+                    quiche::h3::Event::PriorityUpdate,
+                )) => {
+                    info!(
+                        "{} PRIORITY_UPDATE triggered for element ID={}",
+                        conn.trace_id(),
+                        prioritized_element_id
+                    );
+                },
+
+                Ok((goaway_id, quiche::h3::Event::GoAway)) => {
+                    info!(
+                        "{} got GOAWAY with ID {} ",
+                        conn.trace_id(),
+                        goaway_id
+                    );
+                },
+
+                Err(quiche::h3::Error::Done) => {
+                    break;
+                },
+
+                Err(e) => {
+                    error!("HTTP/3 processing failed: {:?}", e);
+
+                    break;
+                },
+            }
+        }
+    }
+
     fn handle_responses(
         &mut self, conn: &mut quiche::Connection, buf: &mut [u8],
         req_start: &std::time::Instant,
@@ -1258,17 +1461,18 @@ impl HttpConn for Http3Conn {
                         req.response_body.extend_from_slice(&buf[..len]);
 
                         match &mut req.response_writer {
-                            Some(rw) => {
-                                rw.write_all(&buf[..read]).ok();
+                            Some(_rw) => {
+                                // for fair comparison
+                                // rw.write_all(&buf[..read]).ok();
                             },
 
                             None =>
                                 if !self.dump_json {
-                                    self.output_sink.borrow_mut()(unsafe {
-                                        String::from_utf8_unchecked(
-                                            buf[..read].to_vec(),
-                                        )
-                                    });
+                                    // self.output_sink.borrow_mut()(unsafe {
+                                    // String::from_utf8_unchecked(
+                                    // buf[..read].to_vec(),
+                                    //)
+                                    //});
                                 },
                         }
                     }
@@ -1386,15 +1590,32 @@ impl HttpConn for Http3Conn {
         false
     }
 
+    fn handle_requests_on_quic_v3(
+        &mut self, conn: &mut quiche::Connection,
+        partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
+        index: &str, app_buffers: &mut quiche::AppRecvBufMap,
+    ) -> quiche::h3::Result<()> {
+        self.handle_requests(
+            conn,
+            &mut HashMap::new(),
+            partial_responses,
+            root,
+            index,
+            &mut [0; 0],
+            Some(app_buffers),
+        )
+    }
+
     fn handle_requests(
         &mut self, conn: &mut quiche::Connection,
         _partial_requests: &mut HashMap<u64, PartialRequest>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
         index: &str, buf: &mut [u8],
+        mut app_buffers: Option<&mut quiche::AppRecvBufMap>,
     ) -> quiche::h3::Result<()> {
         // Process HTTP stream-related events.
         loop {
-            match self.h3_conn.poll(conn) {
+            match self.poll_internal(conn, &mut app_buffers) {
                 Ok((stream_id, quiche::h3::Event::Headers { list, .. })) => {
                     info!(
                         "{} got request {:?} on stream id {}",

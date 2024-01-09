@@ -50,6 +50,7 @@ use quiche_apps::common::*;
 use quiche_apps::sendto::*;
 
 const MAX_BUF_SIZE: usize = 65507;
+const MAX_FLUSH_SIZE: usize = 256_000;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
@@ -378,7 +379,7 @@ fn main() {
 
                 let client_id = next_client_id;
 
-                let client = Client {
+                let mut client = Client {
                     conn,
                     http_conn: None,
                     client_id,
@@ -388,7 +389,18 @@ fn main() {
                     max_datagram_size,
                     loss_rate: 0.0,
                     max_send_burst: MAX_BUF_SIZE,
+                    app_buffers: quiche::AppRecvBufMap::new(
+                        3,
+                        conn_args.max_stream_window,
+                        conn_args.max_streams_bidi,
+                        conn_args.max_streams_uni,
+                    ),
                 };
+
+                client
+                    .app_buffers
+                    .set_expected_chunklen_to_consume(MAX_FLUSH_SIZE as u64)
+                    .unwrap();
 
                 clients.insert(client_id, client);
                 clients_ids.insert(scid.clone(), client_id);
@@ -412,7 +424,11 @@ fn main() {
             };
 
             // Process potentially coalesced packets.
-            let read = match client.conn.recv(pkt_buf, recv_info) {
+            let read = match client.conn.recv(
+                pkt_buf,
+                &mut client.app_buffers,
+                recv_info,
+            ) {
                 Ok(v) => v,
 
                 Err(e) => {
@@ -488,18 +504,36 @@ fn main() {
                     http_conn.handle_writable(conn, partial_responses, stream_id);
                 }
 
-                if http_conn
-                    .handle_requests(
-                        conn,
-                        &mut client.partial_requests,
-                        partial_responses,
-                        &args.root,
-                        &args.index,
-                        &mut buf,
-                    )
-                    .is_err()
-                {
-                    continue 'read;
+                if conn.version() == quiche::PROTOCOL_VERSION_V3 {
+                    if http_conn
+                        .handle_requests(
+                            conn,
+                            &mut client.partial_requests,
+                            partial_responses,
+                            &args.root,
+                            &args.index,
+                            &mut buf,
+                            Some(&mut client.app_buffers),
+                        )
+                        .is_err()
+                    {
+                        continue 'read;
+                    }
+                } else {
+                    if http_conn
+                        .handle_requests(
+                            conn,
+                            &mut client.partial_requests,
+                            partial_responses,
+                            &args.root,
+                            &args.index,
+                            &mut buf,
+                            None,
+                        )
+                        .is_err()
+                    {
+                        continue 'read;
+                    }
                 }
             }
 
