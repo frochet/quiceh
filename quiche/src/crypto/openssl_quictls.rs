@@ -142,6 +142,117 @@ impl Open {
 
         Ok(plaintext_len + olen as usize)
     }
+
+    pub fn open_with_u64_counter_into(
+        &self, counter: u64, ad: &[u8], buf: &[u8], into: &mut [u8],
+    ) -> Result<usize> {
+        if cfg!(feature = "fuzzing") {
+            return Ok(buf.len());
+        }
+
+        let tag_len = self.alg().tag_len();
+
+        let mut cipher_len = buf.len();
+
+        let nonce = make_nonce(&self.packet.nonce, counter);
+
+        // Set the IV len.
+        const EVP_CTRL_AEAD_SET_IVLEN: i32 = 0x9;
+        let mut rc = unsafe {
+            EVP_CIPHER_CTX_ctrl(
+                self.packet.ctx,
+                EVP_CTRL_AEAD_SET_IVLEN,
+                nonce.len() as i32,
+                std::ptr::null_mut(),
+            )
+        };
+        if rc != 1 {
+            return Err(Error::CryptoFail);
+        }
+
+        rc = unsafe {
+            EVP_CipherInit_ex2(
+                self.packet.ctx,
+                std::ptr::null_mut(), // already set
+                self.packet.key.as_ptr(),
+                nonce[..].as_ptr(),
+                Self::DECRYPT as i32,
+                std::ptr::null(),
+            )
+        };
+
+        if rc != 1 {
+            return Err(Error::CryptoFail);
+        }
+
+        let mut olen: i32 = 0;
+
+        if !ad.is_empty() {
+            rc = unsafe {
+                EVP_CipherUpdate(
+                    self.packet.ctx,
+                    std::ptr::null_mut(),
+                    &mut olen,
+                    ad.as_ptr(),
+                    ad.len() as i32,
+                )
+            };
+
+            if rc != 1 {
+                return Err(Error::CryptoFail);
+            }
+        }
+
+        if cipher_len < tag_len {
+            return Err(Error::CryptoFail);
+        }
+
+        cipher_len -= tag_len;
+
+        rc = unsafe {
+            EVP_CipherUpdate(
+                self.packet.ctx,
+                into.as_mut_ptr(),
+                &mut olen,
+                buf.as_ptr(),
+                cipher_len as i32,
+            )
+        };
+
+        if rc != 1 {
+            return Err(Error::CryptoFail);
+        }
+
+        let plaintext_len = olen as usize;
+
+        const EVP_CTRL_AEAD_SET_TAG: i32 = 0x11;
+        rc = unsafe {
+            EVP_CIPHER_CTX_ctrl(
+                self.packet.ctx,
+                EVP_CTRL_AEAD_SET_TAG,
+                tag_len as i32,
+                into[cipher_len..].as_mut_ptr() as *mut c_void,
+            )
+        };
+
+        if rc != 1 {
+            return Err(Error::CryptoFail);
+        }
+
+        rc = unsafe {
+            EVP_CipherFinal_ex(
+                self.packet.ctx,
+                into[plaintext_len..].as_mut_ptr(),
+                &mut olen,
+            )
+        };
+
+        if rc != 1 {
+            return Err(Error::CryptoFail);
+        }
+
+        Ok(plaintext_len + olen as usize)
+    }
 }
 
 impl Seal {

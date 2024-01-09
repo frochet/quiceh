@@ -24,10 +24,10 @@
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+use likely_stable::if_unlikely;
 /// Zero-copy abstraction for parsing and constructing network packets.
 use std::mem;
 use std::ptr;
-use likely_stable::if_unlikely;
 
 /// A specialized [`Result`] type for [`OctetsMut`] operations.
 ///
@@ -99,7 +99,6 @@ macro_rules! peek_u_buflen_guaranteed {
     }};
 }
 
-
 macro_rules! get_u {
     ($b:expr, $ty:ty, $len:expr) => {{
         let out = peek_u!($b, $ty, $len);
@@ -112,7 +111,7 @@ macro_rules! get_u {
 
 macro_rules! peek_u_reverse {
     ($b:expr, $ty:ty, $len:expr) => {{
-        if_unlikely!{ $b.off < $len => {
+        if_unlikely! { $b.off < $len => {
             return Err(BufferError::BufferProtocolError);
         } else {
             $b.off -= $len;
@@ -127,12 +126,12 @@ macro_rules! peek_u_reverse {
 /// in the reverse direction, from the end to the beginning, like reading
 /// a Manga.
 ///
-/// For example, we start at offset = buf.len(); then rewind 1 byte to read 1 byte.
-/// The buffer offset keeps moving backward while reading information with the set of
-/// [..]_reverse() functions.
+/// For example, we start at offset = buf.len(); then rewind 1 byte to read 1
+/// byte. The buffer offset keeps moving backward while reading information with
+/// the set of [..]_reverse() functions.
 macro_rules! get_u_reverse {
     ($b:expr, $ty:ty, $len:expr) => {{
-        if_unlikely!{ $b.off < $len => {
+        if_unlikely! { $b.off < $len => {
             // This is protocol-level bug -- Could happen if received frames
             // are missing elements.
             // Or if we're reading things we should not. In that case, it is
@@ -284,11 +283,12 @@ impl<'a> Octets<'a> {
         Ok(out)
     }
 
-    /// On PROTOCOL_VERSION_V3, variable length integers also need to be "reversed", with the
-    /// 2-bits length indicator at the end of the last byte.
+    /// On PROTOCOL_VERSION_V3, variable length integers also need to be
+    /// "reversed", with the 2-bits length indicator at the end of the last
+    /// byte.
     pub fn get_varint_reverse(&mut self) -> Result<u64> {
-        if_unlikely!{ self.off == 0 => {
-            return Err(BufferError::BufferProtocolError);
+        if_unlikely! { self.off == 0 => {
+            Err(BufferError::BufferProtocolError)
         } else {
             self.off -= 1;
             // This checks buffer size while we don't need it.
@@ -308,8 +308,8 @@ impl<'a> Octets<'a> {
 
                 _ => unreachable!(),
             };
-            return Ok(out);
-        }};
+            Ok(out)
+        }}
     }
 
     /// Reads `len` bytes from the current offset without copying and advances
@@ -332,8 +332,8 @@ impl<'a> Octets<'a> {
     /// Rewind the buffer of  `len` bytes from the current offset and then
     /// read without copying.
     pub fn get_bytes_reverse(&mut self, len: usize) -> Result<Octets<'a>> {
-        if_unlikely!{ self.off < len => {
-            return Err(BufferError::BufferProtocolError);
+        if_unlikely! { self.off < len => {
+            Err(BufferError::BufferProtocolError)
         } else {
             self.off -= len;
             let out = Octets {
@@ -341,12 +341,13 @@ impl<'a> Octets<'a> {
                 off: 0,
             };
 
-            return Ok(out);
-        }};
+            Ok(out)
+        }}
     }
 
-    /// Reads `len` + 1 bytes from the current offset without copying and advances
-    /// the buffer, where `len` is an unsigned 8-bit integer prefix.
+    /// Reads `len` + 1 bytes from the current offset without copying and
+    /// advances the buffer, where `len` is an unsigned 8-bit integer
+    /// prefix.
     pub fn get_bytes_with_u8_length(&mut self) -> Result<Octets<'a>> {
         let len = self.get_u8()?;
         self.get_bytes(len as usize)
@@ -366,7 +367,8 @@ impl<'a> Octets<'a> {
         self.get_bytes(len as usize)
     }
 
-    /// Rewind the buffer of `len`+ 2 bytes and read `len` bytes  without copying.
+    /// Rewind the buffer of `len`+ 2 bytes and read `len` bytes  without
+    /// copying.
     pub fn get_bytes_with_u16_length_reverse(&mut self) -> Result<Octets<'a>> {
         let len = self.get_u16_reverse()?;
         self.get_bytes_reverse(len as usize)
@@ -380,7 +382,8 @@ impl<'a> Octets<'a> {
         self.get_bytes(len as usize)
     }
 
-    /// Rewind the buffer of `len`+ varint bytes and read `len` bytes without copying.
+    /// Rewind the buffer of `len`+ varint bytes and read `len` bytes without
+    /// copying.
     pub fn get_bytes_with_varint_length_reverse(&mut self) -> Result<Octets<'a>> {
         let len = self.get_varint_reverse()?;
         self.get_bytes_reverse(len as usize)
@@ -427,6 +430,17 @@ impl<'a> Octets<'a> {
         }
 
         self.off += skip;
+
+        Ok(())
+    }
+
+    /// Rewind the buffer's offset.
+    pub fn rewind(&mut self, rewind: usize) -> Result<()> {
+        if self.off < rewind {
+            return Err(BufferError::BufferTooShortError);
+        }
+
+        self.off -= rewind;
 
         Ok(())
     }
@@ -637,28 +651,25 @@ impl<'a> OctetsMut<'a> {
     pub fn put_varint_with_len_reverse(
         &mut self, v: u64, len: usize,
     ) -> Result<&mut [u8]> {
-
         if self.cap() < len {
             return Err(BufferError::BufferTooShortError);
         }
 
         let buf = match len {
-            1 => {
-                self.put_u8((v<<2) as u8)?
-            },
+            1 => self.put_u8((v << 2) as u8)?,
 
             2 => {
-                let buf = self.put_u16((v<<2) as u16)?;
+                let buf = self.put_u16((v << 2) as u16)?;
                 buf[1] |= 0x1;
                 buf
             },
             4 => {
-                let buf = self.put_u32((v<<2) as u32)?;
+                let buf = self.put_u32((v << 2) as u32)?;
                 buf[3] |= 0x2;
                 buf
-            }
+            },
             8 => {
-                let buf = self.put_u64(v<<2)?;
+                let buf = self.put_u64(v << 2)?;
                 buf[7] |= 0x3;
                 buf
             },
@@ -1184,7 +1195,6 @@ mod tests {
         b.skip(8).expect("skip issue");
         assert_eq!(b.get_varint_reverse().unwrap(), 464037470360126853);
         assert_eq!(b.off(), 0);
-
     }
     #[test]
     fn get_varint_mut() {

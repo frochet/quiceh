@@ -105,6 +105,11 @@ pub enum Frame {
         data: stream::RangeBuf,
     },
 
+    StreamV3 {
+        stream_id: u64,
+        metadata: stream::RecvBufInfo,
+    },
+
     StreamHeader {
         stream_id: u64,
         offset: u64,
@@ -189,24 +194,23 @@ pub enum Frame {
 
 impl Frame {
     pub fn from_bytes(
-        b: &mut octets::Octets, pkt: packet::Type,
-        version: u32,
+        b: &mut octets::Octets, pkt: packet::Type, version: u32,
     ) -> Result<Frame> {
-
-        let frame_type = if_likely!{version == crate::PROTOCOL_VERSION_V3 => {
+        let frame_type = if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
             b.get_varint_reverse()?
         } else {
             b.get_varint()?
         }};
-        // Parse frames according either to the V3 format or to the previous Quic format.
-        // In V3, frames are reversed, meaning that:
+        // Parse frames according either to the V3 format or to the previous Quic
+        // format. In V3, frames are reversed, meaning that:
         //  - Elements order is reversed
-        //  - Elements are encoded and decoded with the set of [..]_reverse() Octets functions to
-        //    enable reading them from the back of the buffer towards the beginning (Manga-like).
+        //  - Elements are encoded and decoded with the set of [..]_reverse()
+        //    Octets functions to enable reading them from the back of the buffer
+        //    towards the beginning (Manga-like).
         let frame: Frame = match frame_type {
             0x00 => {
                 let mut len = 1;
-                if_likely!{version == crate::PROTOCOL_VERSION_V3 => {
+                if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
                     while b.peek_u8_reverse() == Ok(0x00) {
                         b.get_u8_reverse()?;
 
@@ -227,7 +231,7 @@ impl Frame {
 
             0x02..=0x03 => parse_ack_frame(frame_type, b, version)?,
 
-            0x04 => if_likely!{version == crate::PROTOCOL_VERSION_V3 => {
+            0x04 => if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
                 Frame::ResetStream {
                     stream_id: b.get_varint_reverse()?,
                     error_code: b.get_varint_reverse()?,
@@ -241,7 +245,7 @@ impl Frame {
                 }
             }},
 
-            0x05 => if_likely!{version == crate::PROTOCOL_VERSION_V3 => {
+            0x05 => if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
                 Frame::StopSending {
                     stream_id: b.get_varint_reverse()?,
                     error_code: b.get_varint_reverse()?,
@@ -254,7 +258,7 @@ impl Frame {
             }},
 
             0x06 => {
-                let (offset, data) = if_likely!{version == crate::PROTOCOL_VERSION_V3 => {
+                let (offset, data) = if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
                     (b.get_varint_reverse()?,
                     b.get_bytes_with_varint_length_reverse()?)
                 } else {
@@ -268,7 +272,7 @@ impl Frame {
             },
 
             0x07 => Frame::NewToken {
-                token: if_likely!{version == crate::PROTOCOL_VERSION_V3 => {
+                token: if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
                     let len = b.get_varint_reverse()?;
                     if len == 0 {
                         return Err(Error::InvalidFrame);
@@ -280,20 +284,20 @@ impl Frame {
                         return Err(Error::InvalidFrame);
                     }
                     b.get_bytes(len as usize)?.to_vec()
-                }}
+                }},
             },
 
             0x08..=0x0f => parse_stream_frame(frame_type, b, version)?,
 
             0x10 => Frame::MaxData {
-                max: if_likely!{version == crate::PROTOCOL_VERSION_V3 => {
+                max: if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
                     b.get_varint_reverse()?
                 } else {
                     b.get_varint()?
-                }}
+                }},
             },
 
-            0x11 => if_likely!{version == crate::PROTOCOL_VERSION_V3 => {
+            0x11 => if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
                 Frame::MaxStreamData {
                     stream_id: b.get_varint_reverse()?,
                     max: b.get_varint_reverse()?,
@@ -306,27 +310,27 @@ impl Frame {
             }},
 
             0x12 => Frame::MaxStreamsBidi {
-                max: if_likely!{version == crate::PROTOCOL_VERSION_V3 => {
+                max: if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
                     b.get_varint_reverse()?
                 } else {
                     b.get_varint()?
-                }}
+                }},
             },
 
             0x13 => Frame::MaxStreamsUni {
-                max: if_likely!{version == crate::PROTOCOL_VERSION_V3 => {
+                max: if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
                     b.get_varint_reverse()?
                 } else {
                     b.get_varint()?
-                }}
+                }},
             },
 
             0x14 => Frame::DataBlocked {
-                limit: if_likely!{version == crate::PROTOCOL_VERSION_V3 => {
+                limit: if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
                     b.get_varint_reverse()?
                 } else {
                     b.get_varint()?
-                }}
+                }},
             },
 
             0x15 => if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
@@ -342,22 +346,22 @@ impl Frame {
             }},
 
             0x16 => Frame::StreamsBlockedBidi {
-                limit: if_likely!{version == crate::PROTOCOL_VERSION_V3 => {
+                limit: if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
                     b.get_varint_reverse()?
                 } else {
                     b.get_varint()?
-                }}
+                }},
             },
 
             0x17 => Frame::StreamsBlockedUni {
-                limit: if_likely!{version == crate::PROTOCOL_VERSION_V3 => {
+                limit: if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
                     b.get_varint_reverse()?
                 } else {
                     b.get_varint()?
-                }}
+                }},
             },
 
-            0x18 => if_likely!{ version == crate::PROTOCOL_VERSION_V3 => {
+            0x18 => if_likely! { version == crate::PROTOCOL_VERSION_V3 => {
                 let seq_num = b.get_varint_reverse()?;
                 let retire_prior_to = b.get_varint_reverse()?;
                 let conn_id_len = b.get_u8_reverse()?;
@@ -398,7 +402,7 @@ impl Frame {
             }},
 
             0x19 => Frame::RetireConnectionId {
-                seq_num: if_likely!{version == crate::PROTOCOL_VERSION_V3 => {
+                seq_num: if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
                     b.get_varint_reverse()?
                 } else {
                     b.get_varint()?
@@ -406,7 +410,7 @@ impl Frame {
             },
 
             0x1a => Frame::PathChallenge {
-                data: if_likely!{version == crate::PROTOCOL_VERSION_V3 =>{
+                data: if_likely! {version == crate::PROTOCOL_VERSION_V3 =>{
                     b
                     .get_bytes_reverse(8)?
                     .buf()
@@ -422,7 +426,7 @@ impl Frame {
             },
 
             0x1b => Frame::PathResponse {
-                data: if_likely!{version == crate::PROTOCOL_VERSION_V3 =>{
+                data: if_likely! {version == crate::PROTOCOL_VERSION_V3 =>{
                     b
                     .get_bytes_reverse(8)?
                     .buf()
@@ -451,7 +455,7 @@ impl Frame {
                 }
             }},
 
-            0x1d => if_likely! {version == crate::PROTOCOL_VERSION_V3 => { 
+            0x1d => if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
                 Frame::ApplicationClose {
                     error_code: b.get_varint_reverse()?,
                     reason: b.get_bytes_with_varint_length_reverse()?.to_vec(),
@@ -505,10 +509,9 @@ impl Frame {
         Ok(frame)
     }
 
-    pub fn to_bytes(&self,
-                    b: &mut octets::OctetsMut,
-                    version: u32
-           ) -> Result<usize> {
+    pub fn to_bytes(
+        &self, b: &mut octets::OctetsMut, version: u32,
+    ) -> Result<usize> {
         let before = b.cap();
 
         match self {
@@ -516,7 +519,7 @@ impl Frame {
                 let mut left = *len;
 
                 while left > 0 {
-                    if_likely!{version == crate::PROTOCOL_VERSION_V3 => {
+                    if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
                         b.put_varint_reverse(0x00)?;
                     } else {
                         b.put_varint(0x00)?;
@@ -526,7 +529,7 @@ impl Frame {
             },
 
             Frame::Ping { .. } => {
-                if_likely!{version == crate::PROTOCOL_VERSION_V3 => {
+                if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
                     b.put_varint_reverse(0x01)?;
                 } else {
                     b.put_varint(0x01)?;
@@ -691,8 +694,11 @@ impl Frame {
                 }};
             },
 
+            // We don't use it to send data; we only use that for some test.
+            Frame::StreamV3 { .. } => (),
+
             Frame::Stream { stream_id, data } => {
-                if_likely!{version == crate::PROTOCOL_VERSION_V3 => {
+                if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
                     b.put_bytes(data)?;
 
                     encode_stream_footer(
@@ -929,7 +935,7 @@ impl Frame {
                 if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
                     b.put_bytes(data.as_ref())?;
 
-                    encode_dgram_footer(data.len() as u64, b)?; 
+                    encode_dgram_footer(data.len() as u64, b)?;
                 } else {
                     encode_dgram_header(data.len() as u64, b)?;
 
@@ -1024,6 +1030,17 @@ impl Frame {
                 1 + // frame type
                 octets::varint_len(token.len() as u64) + // token length
                 token.len() // token
+            },
+            // Only used in the received pipeline
+            Frame::StreamV3 {
+                stream_id,
+                metadata,
+            } => {
+                1 + // frame type
+                octets::varint_len(*stream_id) + // stream_id
+                octets::varint_len(metadata.off()) + // offset
+                2 + // length, always encode as 2-byte varint
+                metadata.len() // data
             },
 
             Frame::Stream { stream_id, data } => {
@@ -1253,6 +1270,17 @@ impl Frame {
                 },
             },
 
+            Frame::StreamV3 {
+                stream_id,
+                metadata,
+            } => QuicFrame::Stream {
+                stream_id: *stream_id,
+                offset: metadata.off(),
+                length: metadata.len() as u64,
+                fin: metadata.fin().then_some(true),
+                raw: None,
+            },
+
             Frame::Stream { stream_id, data } => QuicFrame::Stream {
                 stream_id: *stream_id,
                 offset: data.off(),
@@ -1345,14 +1373,15 @@ impl Frame {
                 trigger_frame_type: None, // don't know trigger type
             },
 
-            Frame::ApplicationClose { error_code, reason } =>
+            Frame::ApplicationClose { error_code, reason } => {
                 QuicFrame::ConnectionClose {
                     error_space: Some(ErrorSpace::ApplicationError),
                     error_code: Some(*error_code),
                     error_code_value: None, // raw error is no different for us
                     reason: Some(String::from_utf8_lossy(reason).into_owned()),
                     trigger_frame_type: None, // don't know trigger type
-                },
+                }
+            },
 
             Frame::HandshakeDone => QuicFrame::HandshakeDone,
 
@@ -1419,6 +1448,20 @@ impl std::fmt::Debug for Frame {
 
             Frame::NewToken { token } => {
                 write!(f, "NEW_TOKEN len={}", token.len())?;
+            },
+
+            Frame::StreamV3 {
+                stream_id,
+                metadata,
+            } => {
+                write!(
+                    f,
+                    "STREAMV3 id={} off={} len={} fin={}",
+                    stream_id,
+                    metadata.off(),
+                    metadata.len(),
+                    metadata.fin()
+                )?;
             },
 
             Frame::Stream { stream_id, data } => {
@@ -1538,7 +1581,9 @@ impl std::fmt::Debug for Frame {
     }
 }
 
-fn parse_ack_frame(ty: u64, b: &mut octets::Octets, version: u32) -> Result<Frame> {
+fn parse_ack_frame(
+    ty: u64, b: &mut octets::Octets, version: u32,
+) -> Result<Frame> {
     let first = ty as u8;
     let mut ranges = ranges::RangeSet::default();
 
@@ -1557,7 +1602,7 @@ fn parse_ack_frame(ty: u64, b: &mut octets::Octets, version: u32) -> Result<Fram
     ranges.insert(smallest_ack..largest_ack + 1);
 
     for _ in 0..block_count {
-        let gap = if_likely!{version ==  crate::PROTOCOL_VERSION_V3 => {
+        let gap = if_likely! {version ==  crate::PROTOCOL_VERSION_V3 => {
             b.get_varint_reverse()?
         } else {
             b.get_varint()?
@@ -1580,12 +1625,11 @@ fn parse_ack_frame(ty: u64, b: &mut octets::Octets, version: u32) -> Result<Fram
 
         smallest_ack = largest_ack - ack_block;
 
-
         ranges.insert(smallest_ack..largest_ack + 1);
     }
 
     let ecn_counts = if first & 0x01 != 0 {
-        let ecn = if_likely!{version == crate::PROTOCOL_VERSION_V3 => {
+        let ecn = if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
             EcnCounts {
                 ect0_count: b.get_varint_reverse()?,
                 ect1_count: b.get_varint_reverse()?,
@@ -1679,7 +1723,6 @@ pub fn encode_stream_footer(
 
     b.put_varint_reverse(u64::from(ty))?;
 
-
     Ok(())
 }
 
@@ -1709,10 +1752,12 @@ pub fn encode_dgram_header(length: u64, b: &mut octets::OctetsMut) -> Result<()>
     Ok(())
 }
 
-fn parse_stream_frame(ty: u64, b: &mut octets::Octets, version: u32) -> Result<Frame> {
+fn parse_stream_frame(
+    ty: u64, b: &mut octets::Octets, version: u32,
+) -> Result<Frame> {
     let first = ty as u8;
 
-    if_likely!{ version == crate::PROTOCOL_VERSION_V3 => {
+    if_likely! { version == crate::PROTOCOL_VERSION_V3 => {
 
         let stream_id = b.get_varint_reverse()?;
 
@@ -1734,11 +1779,11 @@ fn parse_stream_frame(ty: u64, b: &mut octets::Octets, version: u32) -> Result<F
         }
 
         let fin = first & 0x01 != 0;
-        let data = b.get_bytes_reverse(len)?;
-        //TODO protocol_reverso
-        let data = stream::RangeBuf::from(data.as_ref(), offset, fin);
+        b.rewind(len)?;
+        // This avoids cloning the buffer, as does the RangeBuf.
+        let metadata = stream::RecvBufInfo::from(offset, len, fin);
 
-        return Ok(Frame::Stream { stream_id, data})
+        Ok(Frame::StreamV3 { stream_id, metadata})
 
     } else {
 
@@ -1765,14 +1810,12 @@ fn parse_stream_frame(ty: u64, b: &mut octets::Octets, version: u32) -> Result<F
         let data = b.get_bytes(len)?;
         let data = stream::RangeBuf::from(data.as_ref(), offset, fin);
 
-        return Ok(Frame::Stream { stream_id, data })
-    }};
+        Ok(Frame::Stream { stream_id, data })
+    }}
 }
 
 fn parse_datagram_frame(
-    ty: u64,
-    b: &mut octets::Octets,
-    version: u32,
+    ty: u64, b: &mut octets::Octets, version: u32,
 ) -> Result<Frame> {
     let first = ty as u8;
 
@@ -1821,25 +1864,47 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1863,25 +1928,47 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1911,25 +1998,47 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1965,25 +2074,47 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
     }
 
     #[test]
@@ -2007,25 +2138,47 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
     }
 
     #[test]
@@ -2048,25 +2201,47 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
     }
 
     #[test]
@@ -2090,25 +2265,47 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
     }
 
     #[test]
@@ -2130,25 +2327,47 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
     }
 
     #[test]
@@ -2157,6 +2376,10 @@ mod tests {
         let _d2 = [42; 128];
         let data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 
+        let framev3 = Frame::StreamV3 {
+            stream_id: 32,
+            metadata: stream::RecvBufInfo::from(1230976, 12, true),
+        };
         let frame = Frame::Stream {
             stream_id: 32,
             data: stream::RangeBuf::from(&data, 1230976, true),
@@ -2172,26 +2395,57 @@ mod tests {
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
+            assert_eq!(
+                Frame::from_bytes(
+                    &mut b,
+                    packet::Type::Short,
+                    crate::PROTOCOL_VERSION
+                ),
+                Ok(framev3)
+            );
+        } else {
+            assert_eq!(
+                Frame::from_bytes(
+                    &mut b,
+                    packet::Type::Short,
+                    crate::PROTOCOL_VERSION
+                ),
+                Ok(frame)
+            );
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
     }
 
     #[test]
@@ -2217,9 +2471,13 @@ mod tests {
             b.skip(wire_len).expect("skip issue");
         }
         assert_eq!(
-            Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION),
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
             Err(Error::InvalidFrame)
-            );
+        );
     }
 
     #[test]
@@ -2239,25 +2497,47 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
     }
 
     #[test]
@@ -2280,25 +2560,47 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
     }
 
     #[test]
@@ -2310,7 +2612,6 @@ mod tests {
         let wire_len = {
             let mut b = octets::OctetsMut::with_slice(&mut d);
             frame.to_bytes(&mut b, crate::PROTOCOL_VERSION).unwrap()
-
         };
         assert_eq!(wire_len, 5);
 
@@ -2318,25 +2619,47 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
     }
 
     #[test]
@@ -2356,25 +2679,47 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
     }
 
     #[test]
@@ -2394,25 +2739,47 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
     }
 
     #[test]
@@ -2435,25 +2802,47 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
     }
 
     #[test]
@@ -2473,25 +2862,47 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
     }
 
     #[test]
@@ -2511,25 +2922,47 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
     }
 
     #[test]
@@ -2554,25 +2987,47 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
     }
 
     #[test]
@@ -2592,25 +3047,47 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
     }
 
     #[test]
@@ -2632,25 +3109,47 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
     }
 
     #[test]
@@ -2672,25 +3171,47 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
     }
 
     #[test]
@@ -2714,25 +3235,47 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
     }
 
     #[test]
@@ -2756,25 +3299,47 @@ mod tests {
             b.skip(wire_len).expect("skip issue");
         }
 
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
     }
 
     #[test]
@@ -2795,25 +3360,47 @@ mod tests {
             b.skip(wire_len).expect("skip issue");
         }
 
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
+        assert_eq!(
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
+            Ok(frame)
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
     }
 
     #[test]
@@ -2836,27 +3423,46 @@ mod tests {
             b.skip(wire_len).expect("skip issue");
         }
         assert_eq!(
-            Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION),
+            Frame::from_bytes(
+                &mut b,
+                packet::Type::Short,
+                crate::PROTOCOL_VERSION
+            ),
             Ok(frame.clone())
-            );
+        );
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Initial, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Initial,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::ZeroRTT, crate::PROTOCOL_VERSION).is_ok());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::ZeroRTT,
+            crate::PROTOCOL_VERSION
+        )
+        .is_ok());
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
         }
-        assert!(Frame::from_bytes(&mut b, packet::Type::Handshake, crate::PROTOCOL_VERSION).is_err());
+        assert!(Frame::from_bytes(
+            &mut b,
+            packet::Type::Handshake,
+            crate::PROTOCOL_VERSION
+        )
+        .is_err());
 
         let frame_data = match &frame {
             Frame::Datagram { data } => data.clone(),
