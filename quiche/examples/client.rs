@@ -29,6 +29,8 @@ extern crate log;
 
 use ring::rand::*;
 
+use quiche::AppRecvBufMap;
+
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
 const HTTP_REQ_STREAM_ID: u64 = 4;
@@ -135,6 +137,7 @@ fn main() {
     let req_start = std::time::Instant::now();
 
     let mut req_sent = false;
+    let mut app_buffers = AppRecvBufMap::new(3);
 
     loop {
         poll.poll(&mut events, conn.timeout()).unwrap();
@@ -175,7 +178,7 @@ fn main() {
             };
 
             // Process potentially coalesced packets.
-            let read = match conn.recv(&mut buf[..len], recv_info) {
+            let read = match conn.recv(&mut buf[..len], &mut app_buffers, recv_info) {
                 Ok(v) => v,
 
                 Err(e) => {

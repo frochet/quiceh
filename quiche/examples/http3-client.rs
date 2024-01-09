@@ -29,6 +29,8 @@ extern crate log;
 
 use quiche::h3::NameValue;
 
+use quiche::AppRecvBufMap;
+
 use ring::rand::*;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
@@ -154,6 +156,8 @@ fn main() {
 
     let mut req_sent = false;
 
+    let mut app_buffers = AppRecvBufMap::new(3);
+
     loop {
         poll.poll(&mut events, conn.timeout()).unwrap();
 
@@ -194,7 +198,7 @@ fn main() {
             };
 
             // Process potentially coalesced packets.
-            let read = match conn.recv(&mut buf[..len], recv_info) {
+            let read = match conn.recv(&mut buf[..len], &mut app_buffers, recv_info) {
                 Ok(v) => v,
 
                 Err(e) => {

@@ -848,6 +848,8 @@ pub struct Connection {
 
     local_goaway_id: Option<u64>,
     peer_goaway_id: Option<u64>,
+
+    app_buffers: crate::AppRecvBufMap,
 }
 
 impl Connection {
@@ -908,6 +910,8 @@ impl Connection {
 
             local_goaway_id: None,
             peer_goaway_id: None,
+
+            app_buffers: crate::AppRecvBufMap::new(3),
         })
     }
 
@@ -2304,11 +2308,19 @@ impl Connection {
                 },
 
                 stream::State::QpackInstruction => {
-                    let mut d = [0; 4096];
+                    if conn.version == crate::PROTOCOL_VERSION_V3 {
+                        // Read data from the stream and discard immediately.
+                        loop {
+                            let (_, read, _) = conn.stream_recv_v3(stream_id, &mut self.app_buffers)?;
+                            conn.stream_consumed(stream_id, read, &mut self.app_buffers)?;
+                        }
+                    } else {
+                        let mut d = [0; 4096];
 
-                    // Read data from the stream and discard immediately.
-                    loop {
-                        conn.stream_recv(stream_id, &mut d)?;
+                        // Read data from the stream and discard immediately.
+                        loop {
+                            conn.stream_recv(stream_id, &mut d)?;
+                        }
                     }
                 },
 
@@ -3143,7 +3155,7 @@ mod tests {
         }];
 
         assert_eq!(
-            pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+            pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, Some(6)),
             Ok(1200)
         );
 
@@ -3154,9 +3166,15 @@ mod tests {
         assert_eq!(r.next(), Some(6));
         assert_eq!(r.next(), None);
 
-        let mut b = [0; 15];
-        assert_eq!(pipe.server.stream_recv(6, &mut b), Ok((5, true)));
-        assert_eq!(&b[..5], b"aaaaa");
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
+            let mut b = [0; 15];
+            assert_eq!(pipe.server.stream_recv(6, &mut b), Ok((5, true)));
+            assert_eq!(&b[..5], b"aaaaa");
+        } else {
+            let (buf, read, fin) = pipe.server.stream_recv_v3(6, &mut pipe.server_app_buffers).unwrap();
+            assert_eq!((read, fin), (5, true));
+            assert_eq!(&buf[..5], b"aaaaa");
+        }
     }
 
     #[test]
@@ -4947,7 +4965,7 @@ mod tests {
         let mut buf = [0; 65535];
         let (len, _) = s.pipe.server.send(&mut buf).unwrap();
 
-        let frames = decode_pkt(&mut s.pipe.client, &mut buf[..len]).unwrap();
+        let frames = decode_pkt(&mut s.pipe.client, &mut buf[..len], &mut s.pipe.client_app_buffers).unwrap();
 
         let mut iter = frames.iter();
 
@@ -4985,12 +5003,12 @@ mod tests {
         let pkt_type = crate::packet::Type::Short;
         if s.pipe.client.version == crate::PROTOCOL_VERSION_V3 {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
                 Ok(48),
             );
         } else {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
                 Ok(39),
             );
         }
@@ -5012,7 +5030,7 @@ mod tests {
 
         let (len, _) = s.pipe.server.send(&mut buf).unwrap();
 
-        let frames = decode_pkt(&mut s.pipe.client, &mut buf[..len]).unwrap();
+        let frames = decode_pkt(&mut s.pipe.client, &mut buf[..len], &mut s.pipe.client_app_buffers).unwrap();
 
         let mut iter = frames.iter();
 
@@ -6151,12 +6169,12 @@ mod tests {
         let pkt_type = crate::packet::Type::Short;
         if s.pipe.client.version == crate::PROTOCOL_VERSION_V3 {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
                 Ok(48)
             );
         } else {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
                 Ok(39)
             );
         }
@@ -6168,12 +6186,12 @@ mod tests {
         // Sending RESET_STREAM again shouldn't trigger another Reset event.
         if s.pipe.client.version == crate::PROTOCOL_VERSION_V3 {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
                 Ok(48)
             );
         } else {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
                 Ok(39)
             );
         }
@@ -6286,12 +6304,12 @@ mod tests {
         let pkt_type = crate::packet::Type::Short;
         if s.pipe.client.version == crate::PROTOCOL_VERSION_V3 {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
                 Ok(48)
             );
         } else {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
                 Ok(39)
             );
         }

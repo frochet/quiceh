@@ -35,6 +35,8 @@ use ring::rand::*;
 
 use quiche::h3::NameValue;
 
+use quiche::AppRecvBufMap;
+
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
 struct PartialResponse {
@@ -115,6 +117,8 @@ fn main() {
     let mut clients = ClientMap::new();
 
     let local_addr = socket.local_addr().unwrap();
+
+    let mut app_buffers = AppRecvBufMap::new(3);
 
     loop {
         // Find the shorter timeout from all the active connections.
@@ -295,7 +299,7 @@ fn main() {
             };
 
             // Process potentially coalesced packets.
-            let read = match client.conn.recv(pkt_buf, recv_info) {
+            let read = match client.conn.recv(pkt_buf, &mut app_buffers, recv_info) {
                 Ok(v) => v,
 
                 Err(e) => {

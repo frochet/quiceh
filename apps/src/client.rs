@@ -26,6 +26,7 @@
 
 use crate::args::*;
 use crate::common::*;
+use quiche::AppRecvBufMap;
 
 use std::net::ToSocketAddrs;
 
@@ -178,6 +179,8 @@ pub fn connect(
 
     let local_addr = socket.local_addr().unwrap();
 
+    let mut app_buffers = AppRecvBufMap::new(3);
+
     // Create a QUIC connection and initiate handshake.
     let mut conn = quiche::connect(
         connect_url.domain(),
@@ -310,7 +313,7 @@ pub fn connect(
                 };
 
                 // Process potentially coalesced packets.
-                let read = match conn.recv(&mut buf[..len], recv_info) {
+                let read = match conn.recv(&mut buf[..len], &mut app_buffers, recv_info) {
                     Ok(v) => v,
 
                     Err(e) => {

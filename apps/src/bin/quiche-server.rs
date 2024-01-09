@@ -43,6 +43,8 @@ use std::cell::RefCell;
 
 use ring::rand::*;
 
+use quiche::AppRecvBufMap;
+
 use quiche_apps::args::*;
 
 use quiche_apps::common::*;
@@ -70,6 +72,8 @@ fn main() {
     // Setup the event loop.
     let mut poll = mio::Poll::new().unwrap();
     let mut events = mio::Events::with_capacity(1024);
+
+    let mut app_buffers = AppRecvBufMap::new(3);
 
     // Create the UDP listening socket, and register it with the event loop.
     let mut socket =
@@ -412,7 +416,7 @@ fn main() {
             };
 
             // Process potentially coalesced packets.
-            let read = match client.conn.recv(pkt_buf, recv_info) {
+            let read = match client.conn.recv(pkt_buf, &mut app_buffers, recv_info) {
                 Ok(v) => v,
 
                 Err(e) => {

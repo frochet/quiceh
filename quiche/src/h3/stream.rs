@@ -398,7 +398,7 @@ impl Stream {
         }
 
         let buf = &mut self.state_buf[self.state_off..self.state_len];
-
+        // TODO PROTOCOL_VERSION_V3
         let read = match conn.stream_recv(self.id, buf) {
             Ok((len, _)) => len,
 

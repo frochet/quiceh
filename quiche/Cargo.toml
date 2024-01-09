@@ -79,6 +79,11 @@ winapi = { version = "0.3", features = ["wincrypt", "ws2def", "ws2ipdef", "ws2tc
 [dev-dependencies]
 mio = { version = "0.8", features = ["net", "os-poll"] }
 url = "2.5"
+criterion = { version = "0.4", features = ["html_reports"] }
 
 [lib]
 crate-type = ["lib", "staticlib", "cdylib"]
+
+[[bench]]
+name = "benchmarks"
+harness = false

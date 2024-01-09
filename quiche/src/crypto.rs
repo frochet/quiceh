@@ -164,6 +164,45 @@ impl Open {
         })
     }
 
+    pub fn open_with_u64_counter_into(
+        &self, counter: u64, ad: &[u8], buf: &[u8], into: &mut [u8]
+    ) -> Result<usize> {
+        if cfg!(feature = "fuzzing") {
+            return Ok(buf.len());
+        }
+        let tag_len = self.alg().tag_len();
+
+        let mut out_len = match buf.len().checked_sub(tag_len) {
+            Some(n) => n,
+            None => return Err(Error::CryptoFail),
+        };
+        let max_out_len = out_len;
+
+        let nonce = make_nonce(&self.packet.nonce, counter);
+
+        let rc = unsafe {
+            EVP_AEAD_CTX_open(
+                &self.packet.ctx,   // ctx
+                into.as_mut_ptr(),   // out
+                &mut out_len,       // out_len
+                max_out_len,        // max_out_len
+                nonce[..].as_ptr(), // nonce
+                nonce.len(),        // nonce_len
+                buf.as_ptr(),       // inp
+                buf.len(),          // in_len
+                ad.as_ptr(),        // ad
+                ad.len(),           // ad_len
+            )
+        };
+
+        if rc != 1 {
+            return Err(Error::CryptoFail);
+        }
+
+        Ok(out_len)
+
+    }
+
     pub fn open_with_u64_counter(
         &self, counter: u64, ad: &[u8], buf: &mut [u8],
     ) -> Result<usize> {

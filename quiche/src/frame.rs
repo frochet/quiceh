@@ -98,6 +98,11 @@ pub enum Frame {
         data: stream::RangeBuf,
     },
 
+    StreamV3 {
+        stream_id: u64,
+        metadata: stream::RecvBufInfo,
+    },
+
     StreamHeader {
         stream_id: u64,
         offset: u64,
@@ -660,6 +665,9 @@ impl Frame {
                 }};
             },
 
+            // We don't use it to send data; we only use that for some test.
+            Frame::StreamV3 { .. } => (),
+
             Frame::Stream { stream_id, data } => {
                 if_likely!{version == crate::PROTOCOL_VERSION_V3 => {
                     b.put_bytes(data)?;
@@ -994,6 +1002,14 @@ impl Frame {
                 octets::varint_len(token.len() as u64) + // token length
                 token.len() // token
             },
+            // Only used in the received pipeline
+            Frame::StreamV3 { stream_id, metadata } => {
+                1 + // frame type
+                octets::varint_len(*stream_id) + // stream_id
+                octets::varint_len(metadata.off()) + // offset
+                2 + // length, always encode as 2-byte varint
+                metadata.len() // data
+            },
 
             Frame::Stream { stream_id, data } => {
                 1 + // frame type
@@ -1222,6 +1238,14 @@ impl Frame {
                 },
             },
 
+            Frame::StreamV3 { stream_id, metadata } => QuicFrame::Stream {
+                stream_id: *stream_id,
+                offset: metadata.off(),
+                length: metadata.len() as u64,
+                fin: metadata.fin().then_some(true),
+                raw: None,
+            },
+
             Frame::Stream { stream_id, data } => QuicFrame::Stream {
                 stream_id: *stream_id,
                 offset: data.off(),
@@ -1388,6 +1412,17 @@ impl std::fmt::Debug for Frame {
 
             Frame::NewToken { .. } => {
                 write!(f, "NEW_TOKEN (TODO)")?;
+            },
+
+            Frame::StreamV3 { stream_id, metadata } => {
+                write!(
+                    f,
+                    "STREAMV3 id={} off={} len={} fin={}",
+                    stream_id,
+                    metadata.off(),
+                    metadata.len(),
+                    metadata.fin()
+                )?;
             },
 
             Frame::Stream { stream_id, data } => {
@@ -1704,10 +1739,16 @@ fn parse_stream_frame(ty: u64, b: &mut octets::Octets, version: u32) -> Result<F
 
         let fin = first & 0x01 != 0;
         let data = b.get_bytes_reverse(len)?;
-        //TODO protocol_reverso
-        let data = stream::RangeBuf::from(data.as_ref(), offset, fin);
+        if_likely!{version == crate::PROTOCOL_VERSION_V3 => {
+            // This avoids cloning the buffer, as does the RangeBuf.
+            let metadata = stream::RecvBufInfo::from(offset, len, fin);
 
-        return Ok(Frame::Stream { stream_id, data})
+            return Ok(Frame::StreamV3 { stream_id, metadata})
+        } else {
+            let data = stream::RangeBuf::from(data.as_ref(), offset, fin);
+
+            return Ok(Frame::Stream { stream_id, data})
+        }};
 
     } else {
 
@@ -2126,9 +2167,13 @@ mod tests {
         let _d2 = [42; 128];
         let data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 
-        let frame = Frame::Stream {
+        let framev3 = Frame::StreamV3 {
             stream_id: 32,
-            data: stream::RangeBuf::from(&data, 1230976, true),
+            metadata: stream::RecvBufInfo::from(1230976, 12, true),
+        };
+        let frame = Frame::Stream {
+                stream_id: 32,
+                data: stream::RangeBuf::from(&data, 1230976, true),
         };
 
         let wire_len = {
@@ -2141,8 +2186,10 @@ mod tests {
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
             b.skip(wire_len).expect("skip issue");
+            assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(framev3));
+        } else {
+            assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
         }
-        assert_eq!(Frame::from_bytes(&mut b, packet::Type::Short, crate::PROTOCOL_VERSION), Ok(frame));
 
         let mut b = octets::Octets::with_slice(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
