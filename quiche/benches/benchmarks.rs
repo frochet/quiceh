@@ -81,7 +81,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             b.iter_batched_ref( || {
                 let mut pipe_v1 = Pipe::with_config(&mut config_v1).unwrap();
                 pipe_v1.handshake().unwrap();
-                pipe_v1.server.stream_send(1, &sendbuf, false).unwrap();
+                pipe_v1.server.stream_send(1, sendbuf, false).unwrap();
                 let flight = quiche::testing::emit_flight(&mut pipe_v1.server).unwrap();
                 (pipe_v1, flight)
             },
@@ -102,7 +102,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 pipe_v3.advance().unwrap();
                 pipe_v3.client.stream_recv_v3(1, &mut pipe_v3.client_app_buffers).unwrap();
                 pipe_v3.client.stream_consumed(1, 4, &mut pipe_v3.client_app_buffers).unwrap();
-                pipe_v3.server.stream_send(1, &sendbuf, false).unwrap();
+                pipe_v3.server.stream_send(1, sendbuf, false).unwrap();
                 let flight = quiche::testing::emit_flight(&mut pipe_v3.server).unwrap();
                 (pipe_v3, flight)
             },
