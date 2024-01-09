@@ -576,11 +576,11 @@ impl<'a> std::fmt::Debug for Header<'a> {
 /// bits are containing information for the length of the next
 /// element.
 pub fn num_len_to_encode(num: u64) -> usize {
-	if num  <= 63 {
+	if num  <= 63u64 {
 		0
-	} else if num < 16383 {
+	} else if num < 16_383u64 {
 		1
-	} else if num < 1_073_741_823 {
+	} else if num < 1_073_741_823u64 {
 		2
 	} else {
 		3
@@ -591,7 +591,7 @@ pub fn num_len_to_encode(num: u64) -> usize {
 /// so it should returns 0,1,2 or 3
 #[inline]
 pub fn offset_len_to_encode(offset: u64) -> Result<usize> {
-    pkt_num_len(offset) 
+    pkt_num_len(offset)
 }
 
 #[inline]
@@ -783,6 +783,7 @@ pub fn decode_pkt_num(largest_pn: u64, truncated_pn: u64, pn_len: usize) -> u64 
 
     candidate_pn
 }
+
 #[inline]
 pub fn decode_pkt_offset(current_offset: u64, truncated_offset: u64, offset_len: usize) -> u64 {
     decode_pkt_num(current_offset, truncated_offset, offset_len)
@@ -790,7 +791,7 @@ pub fn decode_pkt_offset(current_offset: u64, truncated_offset: u64, offset_len:
 
 pub fn decrypt_pkt_v3<'a>(
     b: &'a mut octets::OctetsMut, pn: u64, hdr_enc_len: usize, payload_len: usize,
-    _stream_id: u64, _offset: u64, aead: &crypto::Open,
+    outbuf: Option<&'a mut octets::OctetsMut>, aead: &crypto::Open,
     ) -> Result<(octets::Octets<'a>, usize)> {
     // PROTOCOL_REVERSO: temporary for testing
     let payload_offset = b.off();
@@ -802,17 +803,17 @@ pub fn decrypt_pkt_v3<'a>(
         .ok_or(Error::InvalidPacket)?;
 
     let mut ciphertext = payload.peek_bytes_mut(payload_len_enc)?;
-
-    let payload_len =
-        aead.open_with_u64_counter(pn, header.as_ref(), ciphertext.as_mut())?;
-
-    let mut bytestring = String::new();
-    for &byte in &b.as_ref()[..payload_len] {
-        let part: Vec<u8> = std::ascii::escape_default(byte).collect();
-        bytestring.push_str(std::str::from_utf8(&part).unwrap());
+    if let Some(outbuf) = outbuf {
+        let payload_len = aead.open_with_u64_counter_into(pn, header.as_ref(), ciphertext.as_ref(), outbuf.as_mut())?;
+        // Number of read bytes is computed from b's offset. We need skip since
+        // we process the frame from another buffer in V3.
+        b.skip(payload_len)?;
+        Ok((outbuf.get_bytes(payload_len)?, payload_len))
+    } else {
+        let payload_len = aead.open_with_u64_counter(pn, header.as_ref(), ciphertext.as_mut())?;
+        Ok((b.get_bytes(payload_len)?, payload_len))
     }
 
-    Ok((b.get_bytes(payload_len)?, payload_len))
 }
 
 pub fn decrypt_pkt<'a>(
@@ -831,11 +832,6 @@ pub fn decrypt_pkt<'a>(
 
     let payload_len =
         aead.open_with_u64_counter(pn, header.as_ref(), ciphertext.as_mut())?;
-    let mut bytestring = String::new();
-    for &byte in &b.as_ref()[..payload_len] {
-        let part: Vec<u8> = std::ascii::escape_default(byte).collect();
-        bytestring.push_str(std::str::from_utf8(&part).unwrap());
-    }
 
     Ok((b.get_bytes(payload_len)?, payload_len))
 }
@@ -1099,6 +1095,7 @@ pub struct PktNumSpace {
 
 impl PktNumSpace {
     pub fn new() -> PktNumSpace {
+        // TODO. For the moment, the CRYPTO stream is V1
         PktNumSpace {
             largest_rx_pkt_num: 0,
 
@@ -1129,6 +1126,7 @@ impl PktNumSpace {
                 true,
                 true,
                 stream::MAX_STREAM_WINDOW,
+                crate::PROTOCOL_VERSION_V1,
                 ),
         }
     }
@@ -1141,6 +1139,7 @@ impl PktNumSpace {
             true,
             true,
             stream::MAX_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION_V1,
             );
 
         self.ack_elicited = false;

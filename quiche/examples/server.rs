@@ -33,6 +33,8 @@ use std::collections::HashMap;
 
 use ring::rand::*;
 
+use quiche::AppRecvBufMap;
+
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
 struct PartialResponse {
@@ -113,6 +115,8 @@ fn main() {
     let mut clients = ClientMap::new();
 
     let local_addr = socket.local_addr().unwrap();
+
+    let mut app_buffers = AppRecvBufMap::new(3);
 
     loop {
         // Find the shorter timeout from all the active connections.
@@ -292,7 +296,7 @@ fn main() {
             };
 
             // Process potentially coalesced packets.
-            let read = match client.conn.recv(pkt_buf, recv_info) {
+            let read = match client.conn.recv(pkt_buf, &mut app_buffers, recv_info) {
                 Ok(v) => v,
 
                 Err(e) => {
@@ -310,27 +314,50 @@ fn main() {
                 }
 
                 // Process all readable streams.
-                for s in client.conn.readable() {
-                    while let Ok((read, fin)) =
-                        client.conn.stream_recv(s, &mut buf)
-                    {
-                        debug!(
-                            "{} received {} bytes",
-                            client.conn.trace_id(),
-                            read
-                        );
+                if client.conn.version() == quiche::PROTOCOL_VERSION_V1 {
+                    for s in client.conn.readable() {
+                        while let Ok((read, fin)) =
+                            client.conn.stream_recv(s, &mut buf)
+                        {
+                            debug!(
+                                "{} received {} bytes",
+                                client.conn.trace_id(),
+                                read
+                            );
 
-                        let stream_buf = &buf[..read];
+                            let stream_buf = &buf[..read];
 
-                        debug!(
-                            "{} stream {} has {} bytes (fin? {})",
-                            client.conn.trace_id(),
-                            s,
-                            stream_buf.len(),
-                            fin
-                        );
+                            debug!(
+                                "{} stream {} has {} bytes (fin? {})",
+                                client.conn.trace_id(),
+                                s,
+                                stream_buf.len(),
+                                fin
+                            );
 
-                        handle_stream(client, s, stream_buf, "examples/root");
+                            handle_stream(client, s, stream_buf, "examples/root");
+                        }
+                    }
+                } else {
+                    for s in client.conn.readable() {
+                        while let Ok((stream_buf, read, fin)) =
+                            client.conn.stream_recv_v3(s, &mut app_buffers)
+                        {
+                            debug!(
+                                "{} received {} bytes",
+                                client.conn.trace_id(),
+                                read
+                            );
+                            debug!(
+                                "{} stream {} has {} bytes (fin? {})",
+                                client.conn.trace_id(),
+                                s,
+                                stream_buf.len(),
+                                fin
+                            );
+
+                            handle_stream(client, s, stream_buf, "examples/root");
+                        }
                     }
                 }
             }
