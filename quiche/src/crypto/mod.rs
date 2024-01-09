@@ -163,6 +163,10 @@ impl Open {
         })
     }
 
+    pub fn alg(&self) -> Algorithm {
+        self.alg
+    }
+
     pub fn new_mask(&self, sample: &[u8]) -> Result<[u8; 5]> {
         if cfg!(feature = "fuzzing") {
             return Ok(<[u8; 5]>::default());
@@ -188,10 +192,6 @@ impl Open {
             .new_mask_13(sample)
             .map_err(|_| Error::CryptoFail)?;
         Ok(mask)
-    }
-
-    pub fn alg(&self) -> Algorithm {
-        self.alg
     }
 
     pub fn derive_next_packet_key(&self) -> Result<Open> {

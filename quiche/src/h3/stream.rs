@@ -28,6 +28,7 @@ use super::Error;
 use super::Result;
 
 use super::frame;
+use crate::AppRecvBufMap;
 
 pub const HTTP3_CONTROL_STREAM_TYPE_ID: u64 = 0x0;
 pub const HTTP3_PUSH_STREAM_TYPE_ID: u64 = 0x1;
@@ -156,6 +157,11 @@ pub struct Stream {
 
     /// The last `PRIORITY_UPDATE` frame encoded field value, if any.
     last_priority_update: Option<Vec<u8>>,
+
+    /// The quic version being used. We need to keep track of this here
+    /// for semantic mapping between HTTP/3 stream and QUIC streams with
+    /// zero-cpy.
+    qversion: u32,
 }
 
 impl Stream {
@@ -163,7 +169,7 @@ impl Stream {
     ///
     /// The `is_local` parameter indicates whether the stream was created by the
     /// local endpoint, or by the peer.
-    pub fn new(id: u64, is_local: bool) -> Stream {
+    pub fn new(id: u64, is_local: bool, qversion: u32) -> Stream {
         let (ty, state) = if crate::stream::is_bidi(id) {
             // All bidirectional streams are "request" streams, so we don't
             // need to read the stream type.
@@ -180,7 +186,11 @@ impl Stream {
             state,
 
             // Pre-allocate a buffer to avoid multiple tiny early allocations.
-            state_buf: vec![0; 16],
+            state_buf: if qversion == crate::PROTOCOL_VERSION_V3 {
+                vec![]
+            } else {
+                vec![0; 16]
+            },
 
             // Expect one byte for the initial state, to parse the initial
             // varint length.
@@ -196,6 +206,7 @@ impl Stream {
             data_event_triggered: false,
 
             last_priority_update: None,
+            qversion,
         }
     }
 
@@ -384,6 +395,61 @@ impl Stream {
         Err(Error::InternalError)
     }
 
+    /// Read the connection and acquire a reference to the data containing the
+    /// state
+    pub fn try_acquire_state_buffer<'a>(
+        &mut self, conn: &mut crate::Connection, app_buf: &'a mut AppRecvBufMap,
+    ) -> Result<&'a [u8]> {
+        // In v3, the state is kept mixed with data. We eventually
+        // give a slice to the upper layer containing the DATA from
+        // the data frame.
+        //
+        // This gives everything readable until it is explicitely
+        // marrked as consumed.
+        let b = match conn.stream_recv_v3(self.id, app_buf) {
+            Ok((b, len, _)) => {
+                // We read nothing form the QUIC stream
+                if len == 0 {
+                    self.reset_data_event();
+
+                    return Err(Error::Done);
+                }
+                // we acquired some data
+                b
+            },
+
+            Err(e) => {
+                // The stream is not readable anymore, so re-arm the Data event.
+                if e == crate::Error::Done {
+                    self.reset_data_event();
+                }
+
+                return Err(e.into());
+            },
+        };
+
+        Ok(b)
+    }
+
+    /// Mark the data acquired from the state buffer as consumed.
+    pub fn mark_state_buffer_consumed(
+        &mut self, conn: &mut crate::Connection, consumed: usize,
+        app_buf: &mut AppRecvBufMap,
+    ) -> Result<()> {
+        self.state_off += consumed;
+
+        conn.stream_consumed(self.id, consumed, app_buf)?;
+
+        trace!(
+            "{} consumed {} bytes on stream {}",
+            conn.trace_id(),
+            consumed,
+            self.id
+        );
+
+        Ok(())
+    }
+
     /// Tries to fill the state buffer by reading data from the corresponding
     /// transport stream.
     ///
@@ -466,6 +532,74 @@ impl Stream {
         Ok(())
     }
 
+    /// This is intended to replace `try_acquire_state_buffer()` in tests, in
+    /// order to avoid having to setup a transport connection.
+    #[cfg(test)]
+    fn try_acquire_state_buffer_for_tests<'a>(
+        &mut self, stream: &'a mut std::io::Cursor<Vec<u8>>,
+    ) -> Result<&'a [u8]> {
+        let buf = &stream.get_ref()[stream.position() as usize..];
+
+        Ok(buf)
+    }
+
+    /// This is intended o replace `try_acquire_data()` in tests. Since the
+    /// state buffer isn't moved out of the app buffer in V3, this is the
+    /// same function than acquiring the state buffer.
+    #[cfg(test)]
+    fn try_acquire_data_for_tests<'a>(
+        &mut self, stream: &'a mut std::io::Cursor<Vec<u8>>,
+    ) -> Result<&'a [u8]> {
+        let buf = &stream.get_ref()[stream.position() as usize..];
+
+        let left = std::cmp::min(buf.len(), self.state_len - self.state_off);
+        Ok(&buf[..left])
+    }
+
+    #[cfg(test)]
+    fn mark_state_buffer_consumed_for_tests(
+        &mut self, consumed: usize, stream: &mut std::io::Cursor<Vec<u8>>,
+    ) -> Result<()> {
+        self.state_off += consumed;
+
+        stream.set_position(stream.position() + consumed as u64);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn mark_data_consumed_for_tests(
+        &mut self, consumed: usize, stream: &mut std::io::Cursor<Vec<u8>>,
+    ) -> Result<()> {
+        self.state_off += consumed;
+
+        stream.set_position(stream.position() + consumed as u64);
+
+        // We can transition if we consumed the whole data frame.
+        if self.state_buffer_complete() {
+            self.state_transition(State::FrameType, 1, true)?;
+        }
+
+        Ok(())
+    }
+
+    /// Update the state length an tries to consume the varint.
+    pub fn try_consume_varint_from_buf<'a>(
+        &mut self, buf: &'a [u8],
+    ) -> Result<u64> {
+        // always parse the length
+        self.state_len = octets::varint_parse_len(buf[0]);
+
+        // In case we don't have enough data pulled from QUIC.
+        if buf.len() < self.state_len {
+            self.reset_data_event();
+            return Err(Error::Done);
+        }
+
+        let varint = octets::Octets::with_slice(buf).get_varint()?;
+
+        Ok(varint)
+    }
+
     /// Tries to parse a varint (including length) from the state buffer.
     pub fn try_consume_varint(&mut self) -> Result<u64> {
         if self.state_off == 1 {
@@ -482,6 +616,31 @@ impl Stream {
         let varint = octets::Octets::with_slice(&self.state_buf).get_varint()?;
 
         Ok(varint)
+    }
+
+    /// Tries to parse a frame from the provided buffer.
+    ///
+    /// If successful, returns the `frame::Frame` and the payload length.
+    pub fn try_consume_frame_from_buf(
+        &mut self, buf: &[u8],
+    ) -> Result<(frame::Frame, u64)> {
+        // if we don't have enough data to parse the frame, we return early.
+        if buf.len() < self.state_len {
+            self.reset_data_event();
+            return Err(Error::Done);
+        }
+
+        // Processing a frame other than DATA, so re-arm the Data event.
+        self.reset_data_event();
+
+        let payload_len = self.state_len as u64;
+
+        let frame =
+            frame::Frame::from_bytes(self.frame_type.unwrap(), payload_len, buf)?;
+
+        self.state_transition(State::FrameType, 1, true)?;
+
+        Ok((frame, payload_len))
     }
 
     /// Tries to parse a frame from the state buffer.
@@ -503,6 +662,33 @@ impl Stream {
         self.state_transition(State::FrameType, 1, true)?;
 
         Ok((frame, payload_len))
+    }
+
+    /// Tries to get a reference to the DATA payload for the  application to
+    /// eventually consume.
+    pub fn try_acquire_data<'a>(
+        &mut self, conn: &mut crate::Connection, app_buf: &'a mut AppRecvBufMap,
+    ) -> Result<(&'a [u8], usize, bool)> {
+        let (b, len, fin) = match conn.stream_recv_v3(self.id, app_buf) {
+            Ok(v) => v,
+
+            Err(e) => {
+                // The stream is not readable anymore, so re-arm the Data event.
+                if e == crate::Error::Done {
+                    self.reset_data_event();
+                }
+
+                return Err(e.into());
+            },
+        };
+        let left = std::cmp::min(b.len(), self.state_len - self.state_off);
+
+        // The stream is not readable anymore, so re-arm the Data event.
+        if !conn.stream_readable(self.id) {
+            self.reset_data_event();
+        }
+
+        Ok((&b[..left], len, fin))
     }
 
     /// Tries to read DATA payload from the transport stream.
@@ -536,6 +722,25 @@ impl Stream {
         }
 
         Ok((len, fin))
+    }
+
+    /// Marks DATA payload read and consumed (up to `consumed`).
+    pub fn mark_data_consumed(
+        &mut self, conn: &mut crate::Connection, app_buf: &mut AppRecvBufMap,
+        consumed: usize,
+    ) -> Result<()> {
+        // Account for DATA consumed by the app
+        self.state_off += consumed;
+
+        // Tell the underlying QUIC stream that we consumed part of the data.
+        conn.stream_consumed(self.id, consumed, app_buf)?;
+
+        // We can transition if we consumed the whole data frame.
+        if self.state_buffer_complete() {
+            self.state_transition(State::FrameType, 1, true)?;
+        }
+
+        Ok(())
     }
 
     /// Marks the stream as finished.
@@ -598,9 +803,20 @@ impl Stream {
         self.last_priority_update.is_some()
     }
 
+    /// Returns the current state len
+    pub fn get_state_len(&self) -> usize {
+        self.state_len
+    }
+
+    pub fn get_state_off(&self) -> usize {
+        self.state_off
+    }
+
     /// Returns true if the state buffer has enough data to complete the state.
     fn state_buffer_complete(&self) -> bool {
-        self.state_off == self.state_len
+        // with stream_recv_v3, we may read more than the state buffer
+        // although it is not an issue since everything is zero-copy
+        self.state_off >= self.state_len
     }
 
     /// Transitions the stream to a new state, and optionally resets the state
@@ -610,6 +826,7 @@ impl Stream {
     ) -> Result<()> {
         // Some states don't need the state buffer, so don't resize it if not
         // necessary.
+        // V3 does not use a local state buf, so we only touch it in V1.
         if resize {
             // A peer can influence the size of the state buffer (e.g. with the
             // payload size of a GREASE frame), so we need to limit the maximum
@@ -618,7 +835,9 @@ impl Stream {
                 return Err(Error::ExcessiveLoad);
             }
 
-            self.state_buf.resize(expected_len, 0);
+            if self.qversion == crate::PROTOCOL_VERSION_V1 {
+                self.state_buf.resize(expected_len, 0);
+            }
         }
 
         self.state = new_state;
@@ -636,7 +855,7 @@ mod tests {
     use super::*;
 
     fn open_uni(b: &mut octets::OctetsMut, ty: u64) -> Result<Stream> {
-        let stream = Stream::new(2, false);
+        let stream = Stream::new(2, false, crate::PROTOCOL_VERSION);
         assert_eq!(stream.state, State::StreamType);
 
         b.put_varint(ty)?;
@@ -647,9 +866,21 @@ mod tests {
     fn parse_uni(
         stream: &mut Stream, ty: u64, cursor: &mut std::io::Cursor<Vec<u8>>,
     ) -> Result<()> {
-        stream.try_fill_buffer_for_tests(cursor)?;
+        let stream_ty = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream.try_acquire_state_buffer_for_tests(cursor)?;
 
-        let stream_ty = stream.try_consume_varint()?;
+            let varint = stream.try_consume_varint_from_buf(b)?;
+            stream.mark_state_buffer_consumed_for_tests(
+                stream.get_state_len(),
+                cursor,
+            )?;
+            varint
+        } else {
+            stream.try_fill_buffer_for_tests(cursor)?;
+
+            stream.try_consume_varint()?
+        };
+
         assert_eq!(stream_ty, ty);
         stream.set_ty(Type::deserialize(stream_ty).unwrap())?;
 
@@ -660,24 +891,58 @@ mod tests {
         stream: &mut Stream, cursor: &mut std::io::Cursor<Vec<u8>>,
     ) -> Result<()> {
         // Parse the frame type.
-        stream.try_fill_buffer_for_tests(cursor)?;
+        let frame_ty = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream.try_acquire_state_buffer_for_tests(cursor)?;
 
-        let frame_ty = stream.try_consume_varint()?;
+            let frame_ty = stream.try_consume_varint_from_buf(b)?;
+            stream.mark_state_buffer_consumed_for_tests(
+                stream.get_state_len(),
+                cursor,
+            )?;
+            frame_ty
+        } else {
+            stream.try_fill_buffer_for_tests(cursor)?;
+
+            stream.try_consume_varint()?
+        };
 
         stream.set_frame_type(frame_ty)?;
         assert_eq!(stream.state, State::FramePayloadLen);
 
         // Parse the frame payload length.
-        stream.try_fill_buffer_for_tests(cursor)?;
+        let frame_payload_len =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+                let b = stream.try_acquire_state_buffer_for_tests(cursor)?;
 
-        let frame_payload_len = stream.try_consume_varint()?;
+                let frame_payload_len = stream.try_consume_varint_from_buf(b)?;
+                stream.mark_state_buffer_consumed_for_tests(
+                    stream.get_state_len(),
+                    cursor,
+                )?;
+                frame_payload_len
+            } else {
+                stream.try_fill_buffer_for_tests(cursor)?;
+
+                stream.try_consume_varint()?
+            };
+
         stream.set_frame_payload_len(frame_payload_len)?;
         assert_eq!(stream.state, State::FramePayload);
 
         // Parse the frame payload.
-        stream.try_fill_buffer_for_tests(cursor)?;
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream.try_acquire_state_buffer_for_tests(cursor)?;
 
-        stream.try_consume_frame()?;
+            stream.try_consume_frame_from_buf(b)?;
+            stream.mark_state_buffer_consumed_for_tests(
+                frame_payload_len as usize,
+                cursor,
+            )?;
+        } else {
+            stream.try_fill_buffer_for_tests(cursor)?;
+
+            stream.try_consume_frame()?;
+        };
         assert_eq!(stream.state, State::FrameType);
 
         Ok(())
@@ -716,26 +981,69 @@ mod tests {
         assert_eq!(stream.state, State::FrameType);
 
         // Parse the SETTINGS frame type.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let frame_ty = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
 
-        let frame_ty = stream.try_consume_varint().unwrap();
+            let frame_ty = stream.try_consume_varint_from_buf(b).unwrap();
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(
+                    stream.get_state_len(),
+                    &mut cursor
+                )
+                .is_ok());
+            frame_ty
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            stream.try_consume_varint().unwrap()
+        };
         assert_eq!(frame_ty, frame::SETTINGS_FRAME_TYPE_ID);
 
         stream.set_frame_type(frame_ty).unwrap();
         assert_eq!(stream.state, State::FramePayloadLen);
 
         // Parse the SETTINGS frame payload length.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let frame_payload_len =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+                let b = stream
+                    .try_acquire_state_buffer_for_tests(&mut cursor)
+                    .unwrap();
 
-        let frame_payload_len = stream.try_consume_varint().unwrap();
+                let frame_payload_len =
+                    stream.try_consume_varint_from_buf(b).unwrap();
+                assert!(stream
+                    .mark_state_buffer_consumed_for_tests(
+                        stream.get_state_len(),
+                        &mut cursor
+                    )
+                    .is_ok());
+                frame_payload_len
+            } else {
+                stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+                stream.try_consume_varint().unwrap()
+            };
         assert_eq!(frame_payload_len, 6);
         stream.set_frame_payload_len(frame_payload_len).unwrap();
         assert_eq!(stream.state, State::FramePayload);
 
         // Parse the SETTINGS frame payload.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
 
-        assert_eq!(stream.try_consume_frame(), Ok((frame, 6)));
+            assert_eq!(stream.try_consume_frame_from_buf(b), Ok((frame, 6)));
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(6, &mut cursor)
+                .is_ok());
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            assert_eq!(stream.try_consume_frame(), Ok((frame, 6)));
+        }
         assert_eq!(stream.state, State::FrameType);
     }
 
@@ -766,26 +1074,70 @@ mod tests {
         assert_eq!(stream.state, State::FrameType);
 
         // Parse the SETTINGS frame type.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let frame_ty = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
 
-        let frame_ty = stream.try_consume_varint().unwrap();
+            let frame_ty = stream.try_consume_varint_from_buf(b).unwrap();
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(
+                    stream.get_state_len(),
+                    &mut cursor
+                )
+                .is_ok());
+            frame_ty
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            stream.try_consume_varint().unwrap()
+        };
         assert_eq!(frame_ty, frame::SETTINGS_FRAME_TYPE_ID);
 
         stream.set_frame_type(frame_ty).unwrap();
         assert_eq!(stream.state, State::FramePayloadLen);
 
         // Parse the SETTINGS frame payload length.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let frame_payload_len =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+                let b = stream
+                    .try_acquire_state_buffer_for_tests(&mut cursor)
+                    .unwrap();
 
-        let frame_payload_len = stream.try_consume_varint().unwrap();
+                let frame_payload_len =
+                    stream.try_consume_varint_from_buf(b).unwrap();
+                assert!(stream
+                    .mark_state_buffer_consumed_for_tests(
+                        stream.get_state_len(),
+                        &mut cursor
+                    )
+                    .is_ok());
+                frame_payload_len
+            } else {
+                stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+                stream.try_consume_varint().unwrap()
+            };
+
         assert_eq!(frame_payload_len, 0);
         stream.set_frame_payload_len(frame_payload_len).unwrap();
         assert_eq!(stream.state, State::FramePayload);
 
         // Parse the SETTINGS frame payload.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
 
-        assert_eq!(stream.try_consume_frame(), Ok((frame, 0)));
+            assert_eq!(stream.try_consume_frame_from_buf(b), Ok((frame, 0)));
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(0, &mut cursor)
+                .is_ok());
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            assert_eq!(stream.try_consume_frame(), Ok((frame, 0)));
+        }
         assert_eq!(stream.state, State::FrameType);
     }
 
@@ -823,32 +1175,90 @@ mod tests {
         assert_eq!(stream.state, State::FrameType);
 
         // Parse the SETTINGS frame type.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let frame_ty = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
 
-        let frame_ty = stream.try_consume_varint().unwrap();
+            let frame_ty = stream.try_consume_varint_from_buf(b).unwrap();
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(
+                    stream.get_state_len(),
+                    &mut cursor
+                )
+                .is_ok());
+            frame_ty
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            stream.try_consume_varint().unwrap()
+        };
         assert_eq!(frame_ty, frame::SETTINGS_FRAME_TYPE_ID);
 
         stream.set_frame_type(frame_ty).unwrap();
         assert_eq!(stream.state, State::FramePayloadLen);
 
         // Parse the SETTINGS frame payload length.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let frame_payload_len =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+                let b = stream
+                    .try_acquire_state_buffer_for_tests(&mut cursor)
+                    .unwrap();
 
-        let frame_payload_len = stream.try_consume_varint().unwrap();
+                let frame_payload_len =
+                    stream.try_consume_varint_from_buf(b).unwrap();
+                assert!(stream
+                    .mark_state_buffer_consumed_for_tests(
+                        stream.get_state_len(),
+                        &mut cursor
+                    )
+                    .is_ok());
+                frame_payload_len
+            } else {
+                stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+                stream.try_consume_varint().unwrap()
+            };
         assert_eq!(frame_payload_len, 6);
         stream.set_frame_payload_len(frame_payload_len).unwrap();
         assert_eq!(stream.state, State::FramePayload);
 
         // Parse the SETTINGS frame payload.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
 
-        assert_eq!(stream.try_consume_frame(), Ok((frame, 6)));
+            assert_eq!(stream.try_consume_frame_from_buf(b), Ok((frame, 6)));
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(6, &mut cursor)
+                .is_ok());
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            assert_eq!(stream.try_consume_frame(), Ok((frame, 6)));
+        }
         assert_eq!(stream.state, State::FrameType);
 
         // Parse the second SETTINGS frame type.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let frame_ty = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
 
-        let frame_ty = stream.try_consume_varint().unwrap();
+            let frame_ty = stream.try_consume_varint_from_buf(b).unwrap();
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(
+                    stream.get_state_len(),
+                    &mut cursor
+                )
+                .is_ok());
+            frame_ty
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            stream.try_consume_varint().unwrap()
+        };
         assert_eq!(stream.set_frame_type(frame_ty), Err(Error::FrameUnexpected));
     }
 
@@ -888,9 +1298,24 @@ mod tests {
         assert_eq!(stream.state, State::FrameType);
 
         // Parse GOAWAY.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let frame_ty = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
 
-        let frame_ty = stream.try_consume_varint().unwrap();
+            let frame_ty = stream.try_consume_varint_from_buf(b).unwrap();
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(
+                    stream.get_state_len(),
+                    &mut cursor
+                )
+                .is_ok());
+            frame_ty
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            stream.try_consume_varint().unwrap()
+        };
         assert_eq!(stream.set_frame_type(frame_ty), Err(Error::MissingSettings));
     }
 
@@ -932,30 +1357,87 @@ mod tests {
         assert_eq!(stream.state, State::FrameType);
 
         // Parse first SETTINGS frame.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let frame_ty = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
 
-        let frame_ty = stream.try_consume_varint().unwrap();
+            let frame_ty = stream.try_consume_varint_from_buf(b).unwrap();
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(
+                    stream.get_state_len(),
+                    &mut cursor
+                )
+                .is_ok());
+            frame_ty
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            stream.try_consume_varint().unwrap()
+        };
         stream.set_frame_type(frame_ty).unwrap();
 
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let frame_payload_len =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+                let b = stream
+                    .try_acquire_state_buffer_for_tests(&mut cursor)
+                    .unwrap();
 
-        let frame_payload_len = stream.try_consume_varint().unwrap();
+                let frame_payload_len =
+                    stream.try_consume_varint_from_buf(b).unwrap();
+                assert!(stream
+                    .mark_state_buffer_consumed_for_tests(
+                        stream.get_state_len(),
+                        &mut cursor
+                    )
+                    .is_ok());
+                frame_payload_len
+            } else {
+                stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+                stream.try_consume_varint().unwrap()
+            };
         stream.set_frame_payload_len(frame_payload_len).unwrap();
 
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
 
-        assert!(stream.try_consume_frame().is_ok());
+            stream.try_consume_frame_from_buf(b).unwrap();
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(6, &mut cursor)
+                .is_ok());
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
 
+            stream.try_consume_frame().unwrap();
+        }
         // Parse HEADERS.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let frame_ty = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
 
-        let frame_ty = stream.try_consume_varint().unwrap();
+            let frame_ty = stream.try_consume_varint_from_buf(b).unwrap();
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(
+                    stream.get_state_len(),
+                    &mut cursor
+                )
+                .is_ok());
+            frame_ty
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            stream.try_consume_varint().unwrap()
+        };
         assert_eq!(stream.set_frame_type(frame_ty), Err(Error::FrameUnexpected));
     }
 
     #[test]
     fn request_no_data() {
-        let mut stream = Stream::new(0, false);
+        let mut stream = Stream::new(0, false, crate::PROTOCOL_VERSION);
 
         assert_eq!(stream.ty, Some(Type::Request));
         assert_eq!(stream.state, State::FrameType);
@@ -965,7 +1447,7 @@ mod tests {
 
     #[test]
     fn request_good() {
-        let mut stream = Stream::new(0, false);
+        let mut stream = Stream::new(0, false, crate::PROTOCOL_VERSION);
 
         let mut d = vec![42; 128];
         let mut b = octets::OctetsMut::with_slice(&mut d);
@@ -983,54 +1465,142 @@ mod tests {
         let mut cursor = std::io::Cursor::new(d);
 
         // Parse the HEADERS frame type.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let frame_ty = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
 
-        let frame_ty = stream.try_consume_varint().unwrap();
+            let frame_ty = stream.try_consume_varint_from_buf(b).unwrap();
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(
+                    stream.get_state_len(),
+                    &mut cursor
+                )
+                .is_ok());
+            frame_ty
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            stream.try_consume_varint().unwrap()
+        };
         assert_eq!(frame_ty, frame::HEADERS_FRAME_TYPE_ID);
 
         stream.set_frame_type(frame_ty).unwrap();
         assert_eq!(stream.state, State::FramePayloadLen);
 
         // Parse the HEADERS frame payload length.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let frame_payload_len =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+                let b = stream
+                    .try_acquire_state_buffer_for_tests(&mut cursor)
+                    .unwrap();
 
-        let frame_payload_len = stream.try_consume_varint().unwrap();
+                let frame_payload_len =
+                    stream.try_consume_varint_from_buf(b).unwrap();
+                assert!(stream
+                    .mark_state_buffer_consumed_for_tests(
+                        stream.get_state_len(),
+                        &mut cursor
+                    )
+                    .is_ok());
+                frame_payload_len
+            } else {
+                stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+                stream.try_consume_varint().unwrap()
+            };
         assert_eq!(frame_payload_len, 12);
 
         stream.set_frame_payload_len(frame_payload_len).unwrap();
         assert_eq!(stream.state, State::FramePayload);
 
         // Parse the HEADERS frame.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
 
-        assert_eq!(stream.try_consume_frame(), Ok((hdrs, 12)));
+            assert_eq!(stream.try_consume_frame_from_buf(b), Ok((hdrs, 12)));
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(12, &mut cursor)
+                .is_ok());
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            assert_eq!(stream.try_consume_frame(), Ok((hdrs, 12)));
+        }
         assert_eq!(stream.state, State::FrameType);
 
         // Parse the DATA frame type.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let frame_ty = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
 
-        let frame_ty = stream.try_consume_varint().unwrap();
+            let frame_ty = stream.try_consume_varint_from_buf(b).unwrap();
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(
+                    stream.get_state_len(),
+                    &mut cursor
+                )
+                .is_ok());
+            frame_ty
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            stream.try_consume_varint().unwrap()
+        };
         assert_eq!(frame_ty, frame::DATA_FRAME_TYPE_ID);
 
         stream.set_frame_type(frame_ty).unwrap();
         assert_eq!(stream.state, State::FramePayloadLen);
 
         // Parse the DATA frame payload length.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let frame_payload_len =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+                let b = stream
+                    .try_acquire_state_buffer_for_tests(&mut cursor)
+                    .unwrap();
 
-        let frame_payload_len = stream.try_consume_varint().unwrap();
+                let frame_payload_len =
+                    stream.try_consume_varint_from_buf(b).unwrap();
+                assert!(stream
+                    .mark_state_buffer_consumed_for_tests(
+                        stream.get_state_len(),
+                        &mut cursor
+                    )
+                    .is_ok());
+                frame_payload_len
+            } else {
+                stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+                stream.try_consume_varint().unwrap()
+            };
         assert_eq!(frame_payload_len, 12);
 
         stream.set_frame_payload_len(frame_payload_len).unwrap();
         assert_eq!(stream.state, State::Data);
 
         // Parse the DATA payload.
-        let mut recv_buf = vec![0; payload.len()];
-        assert_eq!(
-            stream.try_consume_data_for_tests(&mut cursor, &mut recv_buf),
-            Ok(payload.len())
-        );
-        assert_eq!(payload, recv_buf);
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(
+                stream
+                    .try_acquire_data_for_tests(&mut cursor)
+                    .unwrap()
+                    .len(),
+                payload.len()
+            );
+            assert!(stream
+                .mark_data_consumed_for_tests(payload.len(), &mut cursor)
+                .is_ok());
+        } else {
+            let mut recv_buf = vec![0; payload.len()];
+            assert_eq!(
+                stream.try_consume_data_for_tests(&mut cursor, &mut recv_buf),
+                Ok(payload.len())
+            );
+            assert_eq!(payload, recv_buf);
+        }
 
         assert_eq!(stream.state, State::FrameType);
     }
@@ -1058,64 +1628,166 @@ mod tests {
         assert_eq!(stream.state, State::PushId);
 
         // Parse push ID.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let push_id = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
 
-        let push_id = stream.try_consume_varint().unwrap();
+            let push_id = stream.try_consume_varint_from_buf(b).unwrap();
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(
+                    stream.get_state_len(),
+                    &mut cursor
+                )
+                .is_ok());
+            push_id
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            stream.try_consume_varint().unwrap()
+        };
         assert_eq!(push_id, 1);
 
         stream.set_push_id(push_id).unwrap();
         assert_eq!(stream.state, State::FrameType);
 
         // Parse the HEADERS frame type.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let frame_ty = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
 
-        let frame_ty = stream.try_consume_varint().unwrap();
+            let frame_ty = stream.try_consume_varint_from_buf(b).unwrap();
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(
+                    stream.get_state_len(),
+                    &mut cursor
+                )
+                .is_ok());
+            frame_ty
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            stream.try_consume_varint().unwrap()
+        };
         assert_eq!(frame_ty, frame::HEADERS_FRAME_TYPE_ID);
 
         stream.set_frame_type(frame_ty).unwrap();
         assert_eq!(stream.state, State::FramePayloadLen);
 
         // Parse the HEADERS frame payload length.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let frame_payload_len =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+                let b = stream
+                    .try_acquire_state_buffer_for_tests(&mut cursor)
+                    .unwrap();
 
-        let frame_payload_len = stream.try_consume_varint().unwrap();
+                let frame_payload_len =
+                    stream.try_consume_varint_from_buf(b).unwrap();
+                assert!(stream
+                    .mark_state_buffer_consumed_for_tests(
+                        stream.get_state_len(),
+                        &mut cursor
+                    )
+                    .is_ok());
+                frame_payload_len
+            } else {
+                stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+                stream.try_consume_varint().unwrap()
+            };
         assert_eq!(frame_payload_len, 12);
 
         stream.set_frame_payload_len(frame_payload_len).unwrap();
         assert_eq!(stream.state, State::FramePayload);
 
         // Parse the HEADERS frame.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
 
-        assert_eq!(stream.try_consume_frame(), Ok((hdrs, 12)));
+            assert_eq!(stream.try_consume_frame_from_buf(b), Ok((hdrs, 12)));
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(12, &mut cursor)
+                .is_ok());
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            assert_eq!(stream.try_consume_frame(), Ok((hdrs, 12)));
+        }
         assert_eq!(stream.state, State::FrameType);
 
         // Parse the DATA frame type.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let frame_ty = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
 
-        let frame_ty = stream.try_consume_varint().unwrap();
+            let frame_ty = stream.try_consume_varint_from_buf(b).unwrap();
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(
+                    stream.get_state_len(),
+                    &mut cursor
+                )
+                .is_ok());
+            frame_ty
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            stream.try_consume_varint().unwrap()
+        };
         assert_eq!(frame_ty, frame::DATA_FRAME_TYPE_ID);
 
         stream.set_frame_type(frame_ty).unwrap();
         assert_eq!(stream.state, State::FramePayloadLen);
 
         // Parse the DATA frame payload length.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let frame_payload_len =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+                let b = stream
+                    .try_acquire_state_buffer_for_tests(&mut cursor)
+                    .unwrap();
 
-        let frame_payload_len = stream.try_consume_varint().unwrap();
+                let frame_payload_len =
+                    stream.try_consume_varint_from_buf(b).unwrap();
+                assert!(stream
+                    .mark_state_buffer_consumed_for_tests(
+                        stream.get_state_len(),
+                        &mut cursor
+                    )
+                    .is_ok());
+                frame_payload_len
+            } else {
+                stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+                stream.try_consume_varint().unwrap()
+            };
         assert_eq!(frame_payload_len, 12);
 
         stream.set_frame_payload_len(frame_payload_len).unwrap();
         assert_eq!(stream.state, State::Data);
 
         // Parse the DATA payload.
-        let mut recv_buf = vec![0; payload.len()];
-        assert_eq!(
-            stream.try_consume_data_for_tests(&mut cursor, &mut recv_buf),
-            Ok(payload.len())
-        );
-        assert_eq!(payload, recv_buf);
-
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            assert_eq!(
+                stream
+                    .try_acquire_data_for_tests(&mut cursor)
+                    .unwrap()
+                    .len(),
+                payload.len()
+            );
+            assert!(stream
+                .mark_data_consumed_for_tests(payload.len(), &mut cursor)
+                .is_ok());
+        } else {
+            let mut recv_buf = vec![0; payload.len()];
+            assert_eq!(
+                stream.try_consume_data_for_tests(&mut cursor, &mut recv_buf),
+                Ok(payload.len())
+            );
+            assert_eq!(payload, recv_buf);
+        }
         assert_eq!(stream.state, State::FrameType);
     }
 
@@ -1129,9 +1801,24 @@ mod tests {
         let mut cursor = std::io::Cursor::new(d);
 
         // Parse stream type.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let stream_ty = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
 
-        let stream_ty = stream.try_consume_varint().unwrap();
+            let stream_ty = stream.try_consume_varint_from_buf(b).unwrap();
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(
+                    stream.get_state_len(),
+                    &mut cursor
+                )
+                .is_ok());
+            stream_ty
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            stream.try_consume_varint().unwrap()
+        };
         assert_eq!(stream_ty, 33);
         stream
             .set_ty(Type::deserialize(stream_ty).unwrap())
@@ -1141,7 +1828,7 @@ mod tests {
 
     #[test]
     fn data_before_headers() {
-        let mut stream = Stream::new(0, false);
+        let mut stream = Stream::new(0, false, crate::PROTOCOL_VERSION);
 
         let mut d = vec![42; 128];
         let mut b = octets::OctetsMut::with_slice(&mut d);
@@ -1155,9 +1842,24 @@ mod tests {
         let mut cursor = std::io::Cursor::new(d);
 
         // Parse the DATA frame type.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+        let frame_ty = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
 
-        let frame_ty = stream.try_consume_varint().unwrap();
+            let frame_ty = stream.try_consume_varint_from_buf(b).unwrap();
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(
+                    stream.get_state_len(),
+                    &mut cursor
+                )
+                .is_ok());
+            frame_ty
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            stream.try_consume_varint().unwrap()
+        };
         assert_eq!(frame_ty, frame::DATA_FRAME_TYPE_ID);
 
         assert_eq!(stream.set_frame_type(frame_ty), Err(Error::FrameUnexpected));
@@ -1195,16 +1897,50 @@ mod tests {
         parse_skip_frame(&mut stream, &mut cursor).unwrap();
 
         // Parse frame type.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
-        let frame_ty = stream.try_consume_varint().unwrap();
+        let frame_ty = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
+
+            let frame_ty = stream.try_consume_varint_from_buf(b).unwrap();
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(
+                    stream.get_state_len(),
+                    &mut cursor
+                )
+                .is_ok());
+            frame_ty
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            stream.try_consume_varint().unwrap()
+        };
         assert_eq!(frame_ty, frame::GOAWAY_FRAME_TYPE_ID);
 
         stream.set_frame_type(frame_ty).unwrap();
         assert_eq!(stream.state, State::FramePayloadLen);
 
         // Parse frame payload length.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
-        let frame_payload_len = stream.try_consume_varint().unwrap();
+        let frame_payload_len =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+                let b = stream
+                    .try_acquire_state_buffer_for_tests(&mut cursor)
+                    .unwrap();
+
+                let frame_payload_len =
+                    stream.try_consume_varint_from_buf(b).unwrap();
+                assert!(stream
+                    .mark_state_buffer_consumed_for_tests(
+                        stream.get_state_len(),
+                        &mut cursor
+                    )
+                    .is_ok());
+                frame_payload_len
+            } else {
+                stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+                stream.try_consume_varint().unwrap()
+            };
         assert_eq!(
             Err(Error::FrameError),
             stream.set_frame_payload_len(frame_payload_len)
@@ -1216,7 +1952,7 @@ mod tests {
         let mut d = vec![42; 128];
         let mut b = octets::OctetsMut::with_slice(&mut d);
 
-        let mut stream = Stream::new(0, false);
+        let mut stream = Stream::new(0, false, crate::PROTOCOL_VERSION);
 
         assert_eq!(stream.ty, Some(Type::Request));
         assert_eq!(stream.state, State::FrameType);
@@ -1228,16 +1964,50 @@ mod tests {
         let mut cursor = std::io::Cursor::new(d);
 
         // Parse frame type.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
-        let frame_ty = stream.try_consume_varint().unwrap();
+        let frame_ty = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
+
+            let frame_ty = stream.try_consume_varint_from_buf(b).unwrap();
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(
+                    stream.get_state_len(),
+                    &mut cursor
+                )
+                .is_ok());
+            frame_ty
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            stream.try_consume_varint().unwrap()
+        };
         assert_eq!(frame_ty, frame::PUSH_PROMISE_FRAME_TYPE_ID);
 
         stream.set_frame_type(frame_ty).unwrap();
         assert_eq!(stream.state, State::FramePayloadLen);
 
         // Parse frame payload length.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
-        let frame_payload_len = stream.try_consume_varint().unwrap();
+        let frame_payload_len =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+                let b = stream
+                    .try_acquire_state_buffer_for_tests(&mut cursor)
+                    .unwrap();
+
+                let frame_payload_len =
+                    stream.try_consume_varint_from_buf(b).unwrap();
+                assert!(stream
+                    .mark_state_buffer_consumed_for_tests(
+                        stream.get_state_len(),
+                        &mut cursor
+                    )
+                    .is_ok());
+                frame_payload_len
+            } else {
+                stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+                stream.try_consume_varint().unwrap()
+            };
         assert_eq!(
             Err(Error::FrameError),
             stream.set_frame_payload_len(frame_payload_len)
@@ -1276,16 +2046,50 @@ mod tests {
         parse_skip_frame(&mut stream, &mut cursor).unwrap();
 
         // Parse frame type.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
-        let frame_ty = stream.try_consume_varint().unwrap();
+        let frame_ty = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
+
+            let frame_ty = stream.try_consume_varint_from_buf(b).unwrap();
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(
+                    stream.get_state_len(),
+                    &mut cursor
+                )
+                .is_ok());
+            frame_ty
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            stream.try_consume_varint().unwrap()
+        };
         assert_eq!(frame_ty, frame::CANCEL_PUSH_FRAME_TYPE_ID);
 
         stream.set_frame_type(frame_ty).unwrap();
         assert_eq!(stream.state, State::FramePayloadLen);
 
         // Parse frame payload length.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
-        let frame_payload_len = stream.try_consume_varint().unwrap();
+        let frame_payload_len =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+                let b = stream
+                    .try_acquire_state_buffer_for_tests(&mut cursor)
+                    .unwrap();
+
+                let frame_payload_len =
+                    stream.try_consume_varint_from_buf(b).unwrap();
+                assert!(stream
+                    .mark_state_buffer_consumed_for_tests(
+                        stream.get_state_len(),
+                        &mut cursor
+                    )
+                    .is_ok());
+                frame_payload_len
+            } else {
+                stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+                stream.try_consume_varint().unwrap()
+            };
         assert_eq!(
             Err(Error::FrameError),
             stream.set_frame_payload_len(frame_payload_len)
@@ -1324,16 +2128,50 @@ mod tests {
         parse_skip_frame(&mut stream, &mut cursor).unwrap();
 
         // Parse frame type.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
-        let frame_ty = stream.try_consume_varint().unwrap();
+        let frame_ty = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+            let b = stream
+                .try_acquire_state_buffer_for_tests(&mut cursor)
+                .unwrap();
+
+            let frame_ty = stream.try_consume_varint_from_buf(b).unwrap();
+            assert!(stream
+                .mark_state_buffer_consumed_for_tests(
+                    stream.get_state_len(),
+                    &mut cursor
+                )
+                .is_ok());
+            frame_ty
+        } else {
+            stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+            stream.try_consume_varint().unwrap()
+        };
         assert_eq!(frame_ty, frame::MAX_PUSH_FRAME_TYPE_ID);
 
         stream.set_frame_type(frame_ty).unwrap();
         assert_eq!(stream.state, State::FramePayloadLen);
 
         // Parse frame payload length.
-        stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
-        let frame_payload_len = stream.try_consume_varint().unwrap();
+        let frame_payload_len =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V3 {
+                let b = stream
+                    .try_acquire_state_buffer_for_tests(&mut cursor)
+                    .unwrap();
+
+                let frame_payload_len =
+                    stream.try_consume_varint_from_buf(b).unwrap();
+                assert!(stream
+                    .mark_state_buffer_consumed_for_tests(
+                        stream.get_state_len(),
+                        &mut cursor
+                    )
+                    .is_ok());
+                frame_payload_len
+            } else {
+                stream.try_fill_buffer_for_tests(&mut cursor).unwrap();
+
+                stream.try_consume_varint().unwrap()
+            };
         assert_eq!(
             Err(Error::FrameError),
             stream.set_frame_payload_len(frame_payload_len)

@@ -91,8 +91,9 @@ impl Args for CommonArgs {
         let (alpns, dgrams_enabled) = match (http_version, dgram_proto) {
             ("HTTP/0.9", "none") => (alpns::HTTP_09.to_vec(), false),
 
-            ("HTTP/0.9", _) =>
-                panic!("Unsupported HTTP version and DATAGRAM protocol."),
+            ("HTTP/0.9", _) => {
+                panic!("Unsupported HTTP version and DATAGRAM protocol.")
+            },
 
             ("HTTP/3", "none") => (alpns::HTTP_3.to_vec(), false),
 
