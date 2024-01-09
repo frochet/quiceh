@@ -106,15 +106,17 @@ impl FlowControl {
     /// Autotune the window size. When there is an another update
     /// within RTT x 2, bump the window x 1.5, capped by
     /// max_window.
-    pub fn autotune_window(&mut self, now: Instant, rtt: Duration) {
+    pub fn autotune_window(&mut self, now: Instant, rtt: Duration) -> bool {
         if let Some(last_update) = self.last_update {
             if now - last_update < rtt * WINDOW_TRIGGER_FACTOR {
                 self.window = std::cmp::min(
                     self.window * WINDOW_INCREASE_FACTOR,
                     self.max_window,
                 );
+                return true;
             }
         }
+        false
     }
 
     /// Make sure the lower bound of the window is same to

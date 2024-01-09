@@ -76,6 +76,8 @@ qlog = { version = "0.12", path = "../qlog", optional = true }
 sfv = { version = "0.9", optional = true }
 smallvec = { version = "1.10", features = ["serde", "union"] }
 likely_stable = "0.1.2"
+cpu-time = "1.0.0"
+itertools = "0.12.1"
 
 [target."cfg(windows)".dependencies]
 winapi = { version = "0.3", features = ["wincrypt", "ws2def", "ws2ipdef", "ws2tcpip"] }
@@ -83,6 +85,22 @@ winapi = { version = "0.3", features = ["wincrypt", "ws2def", "ws2ipdef", "ws2tc
 [dev-dependencies]
 mio = { version = "0.8", features = ["net", "os-poll"] }
 url = "2.5"
+pprof = { version = "0.13.0", features = ["flamegraph", "criterion"] }
+# criterion = { version = "0.5.1", features = ["html_reports"] }
+criterion = { version = "0.5.1"}
 
 [lib]
 crate-type = ["lib", "staticlib", "cdylib"]
+
+
+[[bench]]
+name = "quic_benchmarks"
+harness = false
+
+[[bench]]
+name = "initial_cwin_bench"
+harness = false
+
+[[bench]]
+name = "h3_benchmarks"
+harness = false
