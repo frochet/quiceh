@@ -1,5 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId, Throughput,
 BatchSize};
+use pprof::criterion::{PProfProfiler, Output};
+
 use quiche::testing::Pipe;
 
 fn bench_v1_receive(pipe: &mut Pipe, flight: &mut Vec<(Vec<u8>, quiche::SendInfo)>, buf: &mut [u8]) {
@@ -67,14 +69,14 @@ fn criterion_benchmark(c: &mut Criterion) {
     config_v3.set_initial_max_stream_data_bidi_remote(10_000_000_000);
     config_v3.verify_peer(false);
 
-    let mut group = c.benchmark_group("Quiche Recv path");
+    let mut group = c.benchmark_group("Quiche_Recv_path");
     let sendbuf = vec![0; 10000];
     group.throughput(Throughput::Bytes(10000));
 
     // We only Micro-benchmark processing the QUIC packets and emitting them to the application
     // through the stream_recv() call in V1 or the stream_recv_v3() call in V3.
     // We do this for a full cwnd.
-    group.bench_with_input(BenchmarkId::new("Quic V1 Recv Path", 10000), &sendbuf,
+    group.bench_with_input(BenchmarkId::new("Quic_V1_Recv_path", 10000), &sendbuf,
         |b, sendbuf| {
             //recv buffer initialization
             let mut buf = vec![0; 32768];
@@ -91,7 +93,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             BatchSize::SmallInput,
             )
         });
-    group.bench_with_input(BenchmarkId::new("Quic V3 Recv Path", 10000), &sendbuf,
+    group.bench_with_input(BenchmarkId::new("Quic_V3_Recv_Path", 10000), &sendbuf,
         |b, sendbuf| {
             b.iter_batched_ref( || {
                 let mut pipe_v3 = Pipe::with_config(&mut config_v3).unwrap();
@@ -118,6 +120,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 criterion_group!{
     name = benches;
     config = Criterion::default()
+        .with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)))
         .measurement_time(std::time::Duration::from_secs(15))
         .sample_size(5000);
     targets = criterion_benchmark

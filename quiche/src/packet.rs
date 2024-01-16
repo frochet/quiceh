@@ -783,6 +783,7 @@ pub fn decode_pkt_num(largest_pn: u64, truncated_pn: u64, pn_len: usize) -> u64 
 
     candidate_pn
 }
+
 #[inline]
 pub fn decode_pkt_offset(current_offset: u64, truncated_offset: u64, offset_len: usize) -> u64 {
     decode_pkt_num(current_offset, truncated_offset, offset_len)

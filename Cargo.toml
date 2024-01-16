@@ -3,7 +3,7 @@ members = [ "apps", "octets", "qlog", "quiche" ]
 exclude = [ "fuzz", "tools/http3_test" ]
 
 [profile.bench]
-debug = false
+debug = true
 
 [profile.release]
 debug = true
