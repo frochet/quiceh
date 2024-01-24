@@ -408,6 +408,7 @@ pub fn connect(
                     args.dump_json,
                     dgram_sender,
                     Rc::clone(&output_sink),
+                    args.perf
                 ));
 
                 app_proto_selected = true;

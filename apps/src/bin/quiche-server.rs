@@ -107,7 +107,7 @@ fn main() {
     trace!("GSO detected: {}", enable_gso);
 
     // Create the configuration for the QUIC connections.
-    let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
+    let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION_V1).unwrap();
 
     config.load_cert_chain_from_pem_file(&args.cert).unwrap();
     config.load_priv_key_from_pem_file(&args.key).unwrap();

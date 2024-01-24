@@ -757,6 +757,7 @@ pub struct Http3Conn {
     dump_json: bool,
     dgram_sender: Option<Http3DgramSender>,
     output_sink: Rc<RefCell<dyn FnMut(String)>>,
+    perf: bool,
 }
 
 impl Http3Conn {
@@ -769,6 +770,7 @@ impl Http3Conn {
         qpack_blocked_streams: Option<u64>, dump_json: Option<usize>,
         dgram_sender: Option<Http3DgramSender>,
         output_sink: Rc<RefCell<dyn FnMut(String)>>,
+        perf: bool,
     ) -> Box<dyn HttpConn> {
         let mut reqs = Vec::new();
         for url in urls {
@@ -850,6 +852,7 @@ impl Http3Conn {
             dump_json: dump_json.is_some(),
             dgram_sender,
             output_sink,
+            perf,
         };
 
         Box::new(h_conn)
@@ -882,6 +885,7 @@ impl Http3Conn {
             dump_json: false,
             dgram_sender,
             output_sink,
+            perf: false,
         };
 
         Ok(Box::new(h_conn))
@@ -1263,7 +1267,7 @@ impl HttpConn for Http3Conn {
                             },
 
                             None =>
-                                if !self.dump_json {
+                                if !self.dump_json && !self.perf {
                                     self.output_sink.borrow_mut()(unsafe {
                                         String::from_utf8_unchecked(
                                             buf[..read].to_vec(),

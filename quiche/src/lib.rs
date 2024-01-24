@@ -420,7 +420,7 @@ use likely_stable::if_likely;
 
 
 /// The current QUIC wire version.
-pub const PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_V3;
+pub const PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_V1;
 
 /// Supported QUIC versions.
 pub const PROTOCOL_VERSION_V1: u32 = 0x0000_0001;
@@ -4962,7 +4962,8 @@ impl Connection {
         if complete {
             self.streams.collect(stream_id, local);
         }
-        // TODO: we might actually want to change this event too?
+        // TODO: we might actually want to change this event too? in V3,
+        // the received data isn't moved.
         qlog_with_type!(QLOG_DATA_MV, self.qlog, q, {
             let ev_data = EventData::DataMoved(qlog::events::quic::DataMoved {
                 stream_id: Some(stream_id),
@@ -4981,7 +4982,7 @@ impl Connection {
             // Shuffle the incremental stream to the back of the queue.
             self.streams.remove_readable(&priority_key);
             self.streams.insert_readable(&priority_key);
-        }
+    }
 
 
         Ok((outbuf, read, fin))
