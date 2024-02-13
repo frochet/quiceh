@@ -808,6 +808,10 @@ impl Stream {
         self.state_len
     }
 
+    pub fn get_state_off(&self) -> usize {
+        self.state_off
+    }
+
     /// Returns true if the state buffer has enough data to complete the state.
     fn state_buffer_complete(&self) -> bool {
         // with stream_recv_v3, we may read more than the state buffer

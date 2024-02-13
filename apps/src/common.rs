@@ -57,6 +57,8 @@ pub fn stdout_sink(out: String) {
 
 const H3_MESSAGE_ERROR: u64 = 0x10E;
 
+const MIN_FLUSH_SIZE: usize = 512_000;
+
 /// ALPN helpers.
 ///
 /// This module contains constants and functions for working with ALPN.
@@ -343,6 +345,11 @@ pub trait HttpConn {
         req_start: &std::time::Instant,
     );
 
+    fn handle_responses_on_quic_v3(
+        &mut self, conn: &mut quiche::Connection,
+        app_buffers: &mut quiche::AppRecvBufMap, req_start: &std::time::Instant,
+    );
+
     fn report_incomplete(&self, start: &std::time::Instant) -> bool;
 
     fn handle_requests(
@@ -350,6 +357,13 @@ pub trait HttpConn {
         partial_requests: &mut HashMap<u64, PartialRequest>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
         index: &str, buf: &mut [u8],
+    ) -> quiche::h3::Result<()>;
+
+    fn handle_requests_on_quic_v3(
+        &mut self, conn: &mut quiche::Connection,
+        partial_requests: &mut HashMap<u64, PartialRequest>,
+        partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
+        index: &str, app_buffers: &mut quiche::AppRecvBufMap,
     ) -> quiche::h3::Result<()>;
 
     fn handle_writable(
@@ -473,6 +487,13 @@ impl HttpConn for Http09Conn {
         }
 
         self.reqs_sent += reqs_done;
+    }
+
+    fn handle_responses_on_quic_v3(
+        &mut self, conn: &mut quiche::Connection, app_buffers: &mut quiche::AppRecvBufMap,
+        req_start: &std::time::Instant,
+    ) {
+        unimplemented!()
     }
 
     fn handle_responses(
@@ -1211,6 +1232,155 @@ impl HttpConn for Http3Conn {
             }
 
             ds.dgrams_sent += dgrams_done;
+        }
+    }
+
+    fn handle_responses_on_quic_v3(
+        &mut self, conn: &mut quiche::Connection, app_buffers: &mut quiche::AppRecvBufMap,
+        req_start: &std::time::Instant,
+    ) {
+        loop {
+            match self.h3_conn.poll_v3(conn, app_buffers) {
+                Ok((stream_id, quiche::h3::Event::Headers { list, .. })) => {
+                    debug!(
+                        "got response headers {:?} on stream id {}",
+                        hdrs_to_strings(&list),
+                        stream_id
+                    );
+
+                    let req = self
+                        .reqs
+                        .iter_mut()
+                        .find(|r| r.stream_id == Some(stream_id))
+                        .unwrap();
+
+                    req.response_hdrs = list;
+                },
+
+                Ok((stream_id, quiche::h3::Event::Data)) =>  {
+                   let (b, tot_exp_len) =  match self.h3_conn.recv_body_v3(conn, stream_id, app_buffers) {
+                        Ok((b, tot_exp_len)) => {
+                            debug!(
+                                "got {} bytes of response data on stream {}",
+                                b.len(), stream_id
+                            );
+
+                            (b, tot_exp_len)
+                        },
+
+                        Err(quiche::h3::Error::Done) => break,
+
+                        Err(e) => panic!("Error reading conn: {:?}", e),
+
+                    };
+
+                   let req = self
+                       .reqs
+                       .iter_mut()
+                       .find(|r| r.stream_id == Some(stream_id))
+                       .unwrap();
+
+                   match &mut req.response_writer {
+                        Some(rw) => {
+                            if b.len() < tot_exp_len {
+                                // Consume data if we have more than MIN_FLUSH_SIZE
+                                if b.len() > MIN_FLUSH_SIZE {
+                                    rw.write_all(b).ok();
+                                    self.h3_conn.body_consumed(conn, stream_id, b.len(), app_buffers).unwrap();
+                                }
+                            } else {
+                                // Consume data if we have all of it.
+                                rw.write_all(b).ok();
+                                self.h3_conn.body_consumed(conn, stream_id, b.len(), app_buffers).unwrap();
+                            }
+                        },
+                        None => {
+                            if b.len() < tot_exp_len && b.len() > MIN_FLUSH_SIZE {
+                                self.h3_conn.body_consumed(conn, stream_id, b.len(), app_buffers).unwrap();
+                            } else if b.len() == tot_exp_len {
+                                self.h3_conn.body_consumed(conn, stream_id, b.len(), app_buffers).unwrap();
+                            }
+                        }
+                    }
+                },
+
+                Ok((_stream_id, quiche::h3::Event::Finished)) => {
+                    self.reqs_complete += 1;
+                    let reqs_count = self.reqs.len();
+
+                    debug!(
+                        "{}/{} responses received",
+                        self.reqs_complete, reqs_count
+                    );
+
+                    if self.reqs_complete == reqs_count {
+                        info!(
+                            "{}/{} response(s) received in {:?}, closing...",
+                            self.reqs_complete,
+                            reqs_count,
+                            req_start.elapsed()
+                        );
+
+                        if self.dump_json {
+                            dump_json(
+                                &self.reqs,
+                                &mut *self.output_sink.borrow_mut(),
+                            );
+                        }
+
+                        match conn.close(true, 0x100, b"kthxbye") {
+                            // Already closed.
+                            Ok(_) | Err(quiche::Error::Done) => (),
+
+                            Err(e) => panic!("error closing conn: {:?}", e),
+                        }
+
+                        break;
+                    }
+                },
+
+                Ok((_stream_id, quiche::h3::Event::Reset(e))) => {
+                    error!("request was reset by peer with {}, closing...", e);
+
+                    match conn.close(true, 0x100, b"kthxbye") {
+                        // Already closed.
+                        Ok(_) | Err(quiche::Error::Done) => (),
+
+                        Err(e) => panic!("error closing conn: {:?}", e),
+                    }
+
+                    break;
+                },
+
+                Ok((
+                    prioritized_element_id,
+                    quiche::h3::Event::PriorityUpdate,
+                )) => {
+                    info!(
+                        "{} PRIORITY_UPDATE triggered for element ID={}",
+                        conn.trace_id(),
+                        prioritized_element_id
+                    );
+                },
+
+                Ok((goaway_id, quiche::h3::Event::GoAway)) => {
+                    info!(
+                        "{} got GOAWAY with ID {} ",
+                        conn.trace_id(),
+                        goaway_id
+                    );
+                },
+
+                Err(quiche::h3::Error::Done) => {
+                    break;
+                },
+
+                Err(e) => {
+                    error!("HTTP/3 processing failed: {:?}", e);
+
+                    break;
+                },
+            }
         }
     }
 

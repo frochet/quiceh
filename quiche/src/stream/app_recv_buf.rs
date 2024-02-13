@@ -44,9 +44,19 @@ impl AppRecvBufMap {
     }
 
     /// Todo
+    pub fn get(&self, stream_id: u64) -> Option<&[u8]> {
+        match self.buffers.get(&stream_id) {
+            Some(buf) => Some(buf.get_consumed()),
+            None => None,
+        }
+    }
+
+    /// Todo
     pub fn get_mut(&mut self, stream_id: u64) -> Option<&mut [u8]> {
-        Some(self.buffers.get_mut(&stream_id)?
-             .get_mut_consumed())
+        match self.buffers.get_mut(&stream_id) {
+            Some(buf) => Some(buf.get_mut_consumed()),
+            None => None,
+         }
     }
 
     pub(crate) fn read_mut(&mut self, stream_id: u64, stream: &mut Stream) -> Result<&mut [u8]> {
@@ -148,6 +158,10 @@ impl AppRecvBuf {
 
     pub fn get_mut(&mut self) -> &mut [u8] {
         &mut self.outbuf
+    }
+
+    pub fn get_consumed(&self) -> &[u8] {
+        &self.outbuf[self.consumed..]
     }
 
     pub fn get_mut_consumed(&mut self) -> &mut [u8] {
