@@ -683,6 +683,11 @@ impl Stream {
         };
         let left = std::cmp::min(b.len(), self.state_len - self.state_off);
 
+        // The stream is not readable anymore, so re-arm the Data event.
+        if !conn.stream_readable(self.id) {
+            self.reset_data_event();
+        }
+
         Ok((&b[..left], len, fin))
     }
 
@@ -733,11 +738,6 @@ impl Stream {
         // We can transition if we consumed the whole data frame.
         if self.state_buffer_complete() {
             self.state_transition(State::FrameType, 1, true)?;
-        }
-
-        // The stream is not readable anymore, so re-arm the Data event.
-        if !conn.stream_readable(self.id) {
-            self.reset_data_event();
         }
 
         Ok(())

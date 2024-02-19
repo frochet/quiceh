@@ -418,7 +418,7 @@ pub fn connect(
         // process received data.
         if let Some(h_conn) = http_conn.as_mut() {
             h_conn.send_requests(&mut conn, &args.dump_response_path);
-            if conn.version == quiche::PROTOCOL_VERSION_V3 {
+            if conn.version() == quiche::PROTOCOL_VERSION_V3 {
                 h_conn.handle_responses_on_quic_v3(&mut conn, &mut app_buffers, &app_data_start);
             } else {
                 h_conn.handle_responses(&mut conn, &mut buf, &app_data_start);

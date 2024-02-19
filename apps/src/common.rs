@@ -100,6 +100,8 @@ pub struct Client {
     pub loss_rate: f64,
 
     pub max_send_burst: usize,
+
+    pub app_buffers: quiche::AppRecvBufMap,
 }
 
 pub type ClientIdMap = HashMap<ConnectionId<'static>, ClientId>;
@@ -356,12 +358,11 @@ pub trait HttpConn {
         &mut self, conn: &mut quiche::Connection,
         partial_requests: &mut HashMap<u64, PartialRequest>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
-        index: &str, buf: &mut [u8],
+        index: &str, buf: &mut [u8], app_buffers: Option<&mut quiche::AppRecvBufMap>,
     ) -> quiche::h3::Result<()>;
 
     fn handle_requests_on_quic_v3(
         &mut self, conn: &mut quiche::Connection,
-        partial_requests: &mut HashMap<u64, PartialRequest>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
         index: &str, app_buffers: &mut quiche::AppRecvBufMap,
     ) -> quiche::h3::Result<()>;
@@ -583,11 +584,19 @@ impl HttpConn for Http09Conn {
         false
     }
 
+    fn handle_requests_on_quic_v3(
+        &mut self, conn: &mut quiche::Connection,
+        partial_responses: &mut HashMap<u64, PartialResponse>,
+        root: &str, index: &str, app_buffers: &mut quiche::AppRecvBufMap
+    ) -> quiche::h3::Result<()> {
+        unimplemented!()
+    }
+
     fn handle_requests(
         &mut self, conn: &mut quiche::Connection,
         partial_requests: &mut HashMap<u64, PartialRequest>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
-        index: &str, buf: &mut [u8],
+        index: &str, buf: &mut [u8], app_buffers: Option<&mut quiche::AppRecvBufMap>,
     ) -> quiche::h3::Result<()> {
         // Process all readable streams.
         for s in conn.readable() {
@@ -907,6 +916,18 @@ impl Http3Conn {
 
         Ok(Box::new(h_conn))
     }
+
+    /// poll the h3_conn with either poll() or poll_v3() depending on the connection context.
+    fn poll_internal(
+        &mut self, conn: &mut quiche::Connection, app_buffers: &mut Option<&mut quiche::AppRecvBufMap>
+    ) -> quiche::h3::Result<(u64, quiche::h3::Event)> {
+        if let Some(ref mut app_buffers) = app_buffers {
+            self.h3_conn.poll_v3(conn, app_buffers)
+        } else {
+            self.h3_conn.poll(conn)
+        }
+    }
+
 
     /// Builds an HTTP/3 response given a request.
     fn build_h3_response(
@@ -1261,8 +1282,8 @@ impl HttpConn for Http3Conn {
                    let (b, tot_exp_len) =  match self.h3_conn.recv_body_v3(conn, stream_id, app_buffers) {
                         Ok((b, tot_exp_len)) => {
                             debug!(
-                                "got {} bytes of response data on stream {}",
-                                b.len(), stream_id
+                                "got {} bytes of response data on stream {}. Total expected will be {}",
+                                b.len(), stream_id, tot_exp_len
                             );
 
                             (b, tot_exp_len)
@@ -1304,10 +1325,9 @@ impl HttpConn for Http3Conn {
                     }
                 },
 
-                Ok((_stream_id, quiche::h3::Event::Finished)) => {
+                Ok((stream_id, quiche::h3::Event::Finished)) => {
                     self.reqs_complete += 1;
                     let reqs_count = self.reqs.len();
-
                     debug!(
                         "{}/{} responses received",
                         self.reqs_complete, reqs_count
@@ -1556,15 +1576,25 @@ impl HttpConn for Http3Conn {
         false
     }
 
+    fn handle_requests_on_quic_v3(
+        &mut self, conn: &mut quiche::Connection,
+        partial_responses: &mut HashMap<u64, PartialResponse>,
+        root: &str, index: &str, app_buffers: &mut quiche::AppRecvBufMap
+    ) -> quiche::h3::Result<()> {
+        self.handle_requests(
+            conn, &mut HashMap::new(), partial_responses, root, index, &mut [0; 0], Some(app_buffers)
+        )
+    }
+
     fn handle_requests(
         &mut self, conn: &mut quiche::Connection,
         _partial_requests: &mut HashMap<u64, PartialRequest>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
-        index: &str, buf: &mut [u8],
+        index: &str, buf: &mut [u8], mut app_buffers: Option<&mut quiche::AppRecvBufMap>,
     ) -> quiche::h3::Result<()> {
         // Process HTTP stream-related events.
         loop {
-            match self.h3_conn.poll(conn) {
+            match self.poll_internal(conn, &mut app_buffers) {
                 Ok((stream_id, quiche::h3::Event::Headers { list, .. })) => {
                     info!(
                         "{} got request {:?} on stream id {}",

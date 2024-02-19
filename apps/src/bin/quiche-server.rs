@@ -43,8 +43,6 @@ use std::cell::RefCell;
 
 use ring::rand::*;
 
-use quiche::AppRecvBufMap;
-
 use quiche_apps::args::*;
 
 use quiche_apps::common::*;
@@ -72,8 +70,6 @@ fn main() {
     // Setup the event loop.
     let mut poll = mio::Poll::new().unwrap();
     let mut events = mio::Events::with_capacity(1024);
-
-    let mut app_buffers = AppRecvBufMap::new(3);
 
     // Create the UDP listening socket, and register it with the event loop.
     let mut socket =
@@ -392,6 +388,7 @@ fn main() {
                     max_datagram_size,
                     loss_rate: 0.0,
                     max_send_burst: MAX_BUF_SIZE,
+                    app_buffers: quiche::AppRecvBufMap::new(3),
                 };
 
                 clients.insert(client_id, client);
@@ -416,7 +413,7 @@ fn main() {
             };
 
             // Process potentially coalesced packets.
-            let read = match client.conn.recv(pkt_buf, &mut app_buffers, recv_info) {
+            let read = match client.conn.recv(pkt_buf, &mut client.app_buffers, recv_info) {
                 Ok(v) => v,
 
                 Err(e) => {
@@ -492,18 +489,36 @@ fn main() {
                     http_conn.handle_writable(conn, partial_responses, stream_id);
                 }
 
-                if http_conn
-                    .handle_requests(
-                        conn,
-                        &mut client.partial_requests,
-                        partial_responses,
-                        &args.root,
-                        &args.index,
-                        &mut buf,
-                    )
-                    .is_err()
-                {
-                    continue 'read;
+                if conn.version() == quiche::PROTOCOL_VERSION_V3 {
+                    if http_conn
+                        .handle_requests(
+                            conn,
+                            &mut client.partial_requests,
+                            partial_responses,
+                            &args.root,
+                            &args.index,
+                            &mut buf,
+                            Some(&mut client.app_buffers),
+                        )
+                        .is_err()
+                    {
+                        continue 'read;
+                    }
+                } else {
+                    if http_conn
+                        .handle_requests(
+                            conn,
+                            &mut client.partial_requests,
+                            partial_responses,
+                            &args.root,
+                            &args.index,
+                            &mut buf,
+                            None,
+                        )
+                        .is_err()
+                    {
+                        continue 'read;
+                    }
                 }
             }
 

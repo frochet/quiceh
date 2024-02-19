@@ -2682,10 +2682,15 @@ impl Connection {
                         offset = outbuf.to_outbuf_offset(offset, &s.recv).map_err(|e| {
                             // This could happen if the network flipped some bits in the QUIC
                             // header.
+                            trace!("Dropping packet due to incorrect decoded offset {}", offset);
                             drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
                         })?;
                         let oct_out = octets::OctetsMut::with_slice(&mut outbuf.get_mut()[offset as usize..]);
                         if payload_len-aead_tag_len > oct_out.cap() {
+                            debug!(
+                                "Payload_len: {}, aead_tag_len: {}, outbuf cap: {}",
+                                 payload_len, aead_tag_len, oct_out.cap()
+                            );
                             // This could happen if the offset bytes are modified on the way.
                             return Err(drop_pkt_on_err(
                                     Error::InvalidPacket,
@@ -2711,7 +2716,10 @@ impl Connection {
                                         self.version
                                 ) {
                               Ok(v) => v,
-                              Err(e) => return Err(drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)),
+                              Err(e) => {
+                                trace!("Dropping packet due to stream creation issue {}", hdr.expected_stream_id);
+                                return Err(drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id));
+                              },
                         };
                         let outbuf = app_buffers.get_or_create_stream_buffer(hdr.expected_stream_id);
                         let mut offset = s.recv.off_front();
@@ -4949,7 +4957,13 @@ impl Connection {
         let read = outbuf.len();
         let fin = stream.recv.is_fin();
 
-        if stream.recv.almost_full() {
+        let almost_full = stream.recv.almost_full();
+
+        if !stream.is_readable() {
+            self.streams.remove_readable(&priority_key);
+        }
+
+        if almost_full {
             self.streams.insert_almost_full(stream_id);
         }
 
@@ -8240,7 +8254,7 @@ fn drop_pkt_on_err(
     if is_server && recv_count == 0 {
         return e;
     }
-    trace!("{} dropped invalid packet", trace_id);
+    trace!("{} dropped invalid packet with error {:?}", trace_id, e);
 
     // Ignore other invalid packets that haven't been authenticated to prevent
     // man-in-the-middle and man-on-the-side attacks.
@@ -9319,6 +9333,7 @@ pub mod testing {
                             // This could happen if the network flipped some bits in the
                             // header. Or in case of aggressive retransmission, lost ack, data
                             // duplication.
+                            trace!("Dropping packet due to incorrect decoded offset {}", offset);
                             drop_pkt_on_err(e, conn.recv_count, conn.is_server, &conn.trace_id)
                         })?;
                         let oct_out = octets::OctetsMut::with_slice(&mut outbuf.get_mut()[offset as usize..]);
@@ -9347,7 +9362,10 @@ pub mod testing {
                                         conn.version
                                 ) {
                               Ok(v) => v,
-                              Err(e) => return Err(drop_pkt_on_err(e, conn.recv_count, conn.is_server, &conn.trace_id)),
+                              Err(e) => {
+                                  trace!("No stream {}", hdr.expected_stream_id);
+                                  return Err(drop_pkt_on_err(e, conn.recv_count, conn.is_server, &conn.trace_id));
+                              },
                         };
                         let outbuf = app_buffers.get_or_create_stream_buffer(hdr.expected_stream_id);
                         let mut offset = s.recv.off_front();
@@ -9357,6 +9375,7 @@ pub mod testing {
                             Err(e) => {
                                 // This could happen if the network flipped some bits in the
                                 // header.
+                                trace!("Dropping packet due to incorrect decoded offset {}", offset);
                                 conn.streams.collect_on_recv_error(hdr.expected_stream_id);
                                 app_buffers.collect(hdr.expected_stream_id);
                                 return Err(drop_pkt_on_err(e, conn.recv_count, conn.is_server, &conn.trace_id));
