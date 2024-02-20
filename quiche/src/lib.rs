@@ -2679,28 +2679,17 @@ impl Connection {
                         let outbuf = app_buffers.get_or_create_stream_buffer(hdr.expected_stream_id);
                         let mut offset = s.recv.off_front();
                         offset = packet::decode_pkt_offset(offset, hdr.expected_offset, hdr.expected_offset_len);
-                        offset = outbuf.to_outbuf_offset(offset, &s.recv).map_err(|e| {
+                        offset = outbuf.to_outbuf_offset(offset, payload_len-aead_tag_len, &s.recv).map_err(|e| {
                             // This could happen if the network flipped some bits in the QUIC
                             // header.
-                            trace!("Dropping packet due to incorrect decoded offset {}", offset);
+                            trace!(
+                            "Dropping packet due to incorrect decoded offset {}, or due to a\
+                             buffer too short", offset
+                            );
                             drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
                         })?;
                         let oct_out = octets::OctetsMut::with_slice(&mut outbuf.get_mut()[offset as usize..]);
-                        if payload_len-aead_tag_len > oct_out.cap() {
-                            debug!(
-                                "Payload_len: {}, aead_tag_len: {}, outbuf cap: {}",
-                                 payload_len, aead_tag_len, oct_out.cap()
-                            );
-                            // This could happen if the offset bytes are modified on the way.
-                            return Err(drop_pkt_on_err(
-                                    Error::InvalidPacket,
-                                    self.recv_count,
-                                    self.is_server,
-                                    &self.trace_id,
-                            ));
-                        } else {
-                            Some(oct_out)
-                        }
+                        Some(oct_out)
                     },
                     None => {
                         // This could have been touch by someone on the network.
@@ -2724,35 +2713,26 @@ impl Connection {
                         let outbuf = app_buffers.get_or_create_stream_buffer(hdr.expected_stream_id);
                         let mut offset = s.recv.off_front();
                         offset = packet::decode_pkt_offset(offset, hdr.expected_offset, hdr.expected_offset_len);
-                        offset = match outbuf.to_outbuf_offset(offset, &s.recv) {
+                        offset = match outbuf.to_outbuf_offset(offset, payload_len-aead_tag_len, &s.recv) {
                             Ok(v) => v,
                             Err(e) => {
+                                debug!(
+                                    "A new stream has been created for id {}, and the offset: {} is unexpected",
+                                    hdr.expected_stream_id, offset
+                                );
                                 // This could happen if the network flipped some bits in the
-                                // header.
-                                //
+                                // QUIC header. Let's clean the memory for that stream, and drop
+                                // the packet.
                                 self.streams.collect_on_recv_error(hdr.expected_stream_id);
                                 app_buffers.collect(hdr.expected_stream_id);
                                 return Err(drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id));
                             }
                         };
                         let oct_out = octets::OctetsMut::with_slice(&mut outbuf.get_mut()[offset as usize..]);
-                        if payload_len-aead_tag_len > oct_out.cap() {
-                            // This could happen if the offset bytes are modified on the way.
-                            self.streams.collect_on_recv_error(hdr.expected_stream_id);
-                            app_buffers.collect(hdr.expected_stream_id);
-                            return Err(drop_pkt_on_err(
-                                    Error::InvalidPacket,
-                                    self.recv_count,
-                                    self.is_server,
-                                    &self.trace_id,
-                            ));
-                        } else {
-                            // We need to remember to collect buffer & stream in case the
-                            // authentication of this packet fails.
-                            clean_on_dec_error = true;
-                            Some(oct_out)
-                        }
-
+                        // We need to remember to collect buffer & stream in case the
+                        // authentication of this packet fails.
+                        clean_on_dec_error = true;
+                        Some(oct_out)
                     },
 
                 }
@@ -9329,7 +9309,8 @@ pub mod testing {
                         let outbuf = app_buffers.get_or_create_stream_buffer(hdr.expected_stream_id);
                         let mut offset = s.recv.off_front();
                         offset = packet::decode_pkt_offset(offset, hdr.expected_offset, hdr.expected_offset_len);
-                        offset = outbuf.to_outbuf_offset(offset, &s.recv).map_err(|e| {
+                        offset = outbuf.to_outbuf_offset(offset, payload_len-aead.alg().tag_len(), &s.recv)
+                            .map_err(|e| {
                             // This could happen if the network flipped some bits in the
                             // header. Or in case of aggressive retransmission, lost ack, data
                             // duplication.
@@ -9337,17 +9318,7 @@ pub mod testing {
                             drop_pkt_on_err(e, conn.recv_count, conn.is_server, &conn.trace_id)
                         })?;
                         let oct_out = octets::OctetsMut::with_slice(&mut outbuf.get_mut()[offset as usize..]);
-                        if payload_len-aead.alg().tag_len() > oct_out.cap() {
-                            // This could happen if the offset bytes are modified on the way.
-                            return Err(drop_pkt_on_err(
-                                    Error::InvalidPacket,
-                                    conn.recv_count,
-                                    conn.is_server,
-                                    &conn.trace_id,
-                            ));
-                        } else {
-                            Some(oct_out)
-                        }
+                        Some(oct_out)
                     }
                     None =>  {
                         // This could have been touch by someone on the network.
@@ -9370,7 +9341,7 @@ pub mod testing {
                         let outbuf = app_buffers.get_or_create_stream_buffer(hdr.expected_stream_id);
                         let mut offset = s.recv.off_front();
                         offset = packet::decode_pkt_offset(offset, hdr.expected_offset, hdr.expected_offset_len);
-                        offset = match outbuf.to_outbuf_offset(offset, &s.recv) {
+                        offset = match outbuf.to_outbuf_offset(offset, payload_len-aead.alg().tag_len(), &s.recv) {
                             Ok(v) => v,
                             Err(e) => {
                                 // This could happen if the network flipped some bits in the
@@ -9382,19 +9353,7 @@ pub mod testing {
                             }
                         };
                         let oct_out = octets::OctetsMut::with_slice(&mut outbuf.get_mut()[offset as usize..]);
-                        if payload_len-aead.alg().tag_len() > oct_out.cap() {
-                            // This could happen if the offset bytes are modified on the way.
-                            conn.streams.collect_on_recv_error(hdr.expected_stream_id);
-                            app_buffers.collect(hdr.expected_stream_id);
-                            return Err(drop_pkt_on_err(
-                                    Error::InvalidPacket,
-                                    conn.recv_count,
-                                    conn.is_server,
-                                    &conn.trace_id,
-                            ));
-                        } else {
-                            Some(oct_out)
-                        }
+                        Some(oct_out)
                     },
                 }
             }

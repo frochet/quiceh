@@ -128,7 +128,11 @@ pub struct AppRecvBuf {
     /// Track the offset of contiguous data within outbuf.
     output_off: u64,
 
+    /// Stream id of the stream linked to this buffer.
     stream_id: u64,
+
+    /// Max authorized size for this buffer.
+    max_size: usize,
 }
 
 impl AppRecvBuf {
@@ -138,6 +142,7 @@ impl AppRecvBuf {
             let mut appbuf = AppRecvBuf {
                 stream_id,
                 outbuf: vec![0; capacity],
+                max_size: super::MAX_STREAM_WINDOW as usize,
                 ..Default::default()
             };
             // set_len is safe assuming
@@ -149,6 +154,7 @@ impl AppRecvBuf {
             let mut appbuf = AppRecvBuf {
                 stream_id,
                 outbuf: vec![0; DEFAULT_STREAM_WINDOW as usize],
+                max_size: super::MAX_STREAM_WINDOW as usize,
                 ..Default::default()
             };
             unsafe { appbuf.outbuf.set_len(DEFAULT_STREAM_WINDOW as usize) };
@@ -170,7 +176,7 @@ impl AppRecvBuf {
 
     pub fn read_mut(&mut self, recv: &mut RecvBuf) -> Result<&mut [u8]> {
         // The stream window might have changed since the last time we used the buffer
-        self.ensures_size(recv.window() as usize);
+        self.ensures_size(recv.window() as usize)?;
         let mut len = 0;
         let mut max_off = 0;
         while recv.ready() {
@@ -257,27 +263,46 @@ impl AppRecvBuf {
     /// Make sure we didn't already received contiguous data above stream_offset.
     /// if that's the case, decrypting this packet could lead to overwrite contiguous
     /// data not yet read by the application.
-    pub fn to_outbuf_offset(&self, stream_offset: u64, recv: &RecvBuf) -> Result<u64> {
+    pub fn to_outbuf_offset(&mut self, stream_offset: u64, to_reserve: usize, recv: &RecvBuf) -> Result<u64> {
         if stream_offset < recv.contiguous_off {
             // In V3, we do not accept a packet that would overlap a contiguous range of data already
             // processed but not yet read by the application. This could happen due to aggressive
-            // retransmission; or intential duplication.
+            // retransmission; or intentional duplication.
             return Err(Error::InvalidOffset);
         }
 
         let outbuf_off = stream_offset.checked_sub(self.tot_rewind)
             .ok_or(Error::InvalidOffset)?;
-        if outbuf_off > self.outbuf.capacity() as u64 {
+
+        // TODO I need the configured stream_window here instead.
+        // We're having an offset that is definitely outside of logical bounds.
+        if outbuf_off > self.outbuf.capacity() as u64 + super::DEFAULT_STREAM_WINDOW as u64{
             return Err(Error::InvalidOffset);
         }
+
+        // If this triggers a BufferToShort Error, it may be sign the application didn't consume.
+        // We lose the packet and return the error to the application.
+        self.ensures_size(outbuf_off as usize + to_reserve)?;
+
+        if outbuf_off > self.outbuf.capacity().checked_sub(to_reserve).ok_or(Error::InvalidOffset)?  as u64 {
+            return Err(Error::BufferTooShort);
+        }
+
         Ok(outbuf_off)
     }
 
-    pub fn ensures_size(&mut self, size: usize) {
-        if self.outbuf.capacity() <  size {
-            self.outbuf.resize(size, 0);
-            unsafe { self.outbuf.set_len(size) };
+    fn ensures_size(&mut self, size: usize) -> Result<()> {
+        if self.outbuf.capacity() <  size && size <= self.max_size {
+            // In case we don't have enough room to store the data; we double the size of outbuf,
+            // or set to size
+            let minmax = std::cmp::min(std::cmp::max(self.outbuf.capacity() * 2, size), self.max_size);
+            self.outbuf.resize(minmax, 0);
+            unsafe { self.outbuf.set_len(minmax) };
+        } else if size > self.max_size {
+            return Err(Error::BufferTooShort);
         }
+
+        Ok(())
     }
 
     /// Clear the buffer meta-data
@@ -287,5 +312,4 @@ impl AppRecvBuf {
         self.output_off = 0;
         self.stream_id = 0;
     }
-
 }
