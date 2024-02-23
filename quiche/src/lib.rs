@@ -2683,7 +2683,7 @@ impl Connection {
                             // This could happen if the network flipped some bits in the QUIC
                             // header.
                             trace!(
-                            "Dropping packet due to incorrect decoded offset {}, or due to a\
+                            "Dropping packet due to incorrect decoded offset {}, or due to a \
                              buffer too short", offset
                             );
                             drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)

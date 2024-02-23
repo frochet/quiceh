@@ -491,8 +491,8 @@ impl HttpConn for Http09Conn {
     }
 
     fn handle_responses_on_quic_v3(
-        &mut self, conn: &mut quiche::Connection, app_buffers: &mut quiche::AppRecvBufMap,
-        req_start: &std::time::Instant,
+        &mut self, _conn: &mut quiche::Connection, _app_buffers: &mut quiche::AppRecvBufMap,
+        _req_start: &std::time::Instant,
     ) {
         unimplemented!()
     }
@@ -585,9 +585,9 @@ impl HttpConn for Http09Conn {
     }
 
     fn handle_requests_on_quic_v3(
-        &mut self, conn: &mut quiche::Connection,
-        partial_responses: &mut HashMap<u64, PartialResponse>,
-        root: &str, index: &str, app_buffers: &mut quiche::AppRecvBufMap
+        &mut self, _conn: &mut quiche::Connection,
+        _partial_responses: &mut HashMap<u64, PartialResponse>,
+        _root: &str, _index: &str, _app_buffers: &mut quiche::AppRecvBufMap
     ) -> quiche::h3::Result<()> {
         unimplemented!()
     }
@@ -596,7 +596,7 @@ impl HttpConn for Http09Conn {
         &mut self, conn: &mut quiche::Connection,
         partial_requests: &mut HashMap<u64, PartialRequest>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
-        index: &str, buf: &mut [u8], app_buffers: Option<&mut quiche::AppRecvBufMap>,
+        index: &str, buf: &mut [u8], _app_buffers: Option<&mut quiche::AppRecvBufMap>,
     ) -> quiche::h3::Result<()> {
         // Process all readable streams.
         for s in conn.readable() {
@@ -1294,38 +1294,31 @@ impl HttpConn for Http3Conn {
                         Err(e) => panic!("Error reading conn: {:?}", e),
 
                     };
+                   // If this condition is not satified, we can conn.recv() more
+                   // before processing what we already have.
+                   // As long as MIN_FLUSH_SIZE < --max-data; this is okay.
+                   if b.len() >= MIN_FLUSH_SIZE || b.len() == tot_exp_len {
 
-                   let req = self
-                       .reqs
-                       .iter_mut()
-                       .find(|r| r.stream_id == Some(stream_id))
-                       .unwrap();
+                       let req = self
+                           .reqs
+                           .iter_mut()
+                           .find(|r| r.stream_id == Some(stream_id))
+                           .unwrap();
 
-                   match &mut req.response_writer {
-                        Some(rw) => {
-                            if b.len() < tot_exp_len {
-                                // Consume data if we have more than MIN_FLUSH_SIZE
-                                if b.len() > MIN_FLUSH_SIZE {
-                                    rw.write_all(b).ok();
-                                    self.h3_conn.body_consumed(conn, stream_id, b.len(), app_buffers).unwrap();
-                                }
-                            } else {
-                                // Consume data if we have all of it.
+                       match &mut req.response_writer {
+                            Some(rw) => {
                                 rw.write_all(b).ok();
                                 self.h3_conn.body_consumed(conn, stream_id, b.len(), app_buffers).unwrap();
-                            }
-                        },
-                        None => {
-                            if b.len() < tot_exp_len && b.len() > MIN_FLUSH_SIZE {
-                                self.h3_conn.body_consumed(conn, stream_id, b.len(), app_buffers).unwrap();
-                            } else if b.len() == tot_exp_len {
+                            },
+                            None => {
                                 self.h3_conn.body_consumed(conn, stream_id, b.len(), app_buffers).unwrap();
                             }
                         }
-                    }
+                   }
+
                 },
 
-                Ok((stream_id, quiche::h3::Event::Finished)) => {
+                Ok((_stream_id, quiche::h3::Event::Finished)) => {
                     self.reqs_complete += 1;
                     let reqs_count = self.reqs.len();
                     debug!(

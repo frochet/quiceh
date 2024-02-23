@@ -133,6 +133,9 @@ pub struct AppRecvBuf {
 
     /// Max authorized size for this buffer.
     max_size: usize,
+
+    /// Configured by the application; default to a full congestion window
+    almost_full_window: u64,
 }
 
 impl AppRecvBuf {
@@ -143,6 +146,7 @@ impl AppRecvBuf {
                 stream_id,
                 outbuf: vec![0; capacity],
                 max_size: super::MAX_STREAM_WINDOW as usize,
+                almost_full_window: 512_000,
                 ..Default::default()
             };
             // set_len is safe assuming
@@ -155,6 +159,7 @@ impl AppRecvBuf {
                 stream_id,
                 outbuf: vec![0; DEFAULT_STREAM_WINDOW as usize],
                 max_size: super::MAX_STREAM_WINDOW as usize,
+                almost_full_window: 512_000,
                 ..Default::default()
             };
             unsafe { appbuf.outbuf.set_len(DEFAULT_STREAM_WINDOW as usize) };
@@ -271,12 +276,20 @@ impl AppRecvBuf {
             return Err(Error::InvalidOffset);
         }
 
+        if self.is_almost_full() {
+            // If the application has a correct pacing, this should not happen.
+            self.outbuf.copy_within(self.consumed..self.max_size, 0);
+            self.tot_rewind = self.tot_rewind.saturating_add(self.consumed as u64);
+            self.output_off = self.output_off - self.consumed as u64;
+            self.consumed = 0;
+        }
+
         let outbuf_off = stream_offset.checked_sub(self.tot_rewind)
             .ok_or(Error::InvalidOffset)?;
 
         // TODO I need the configured stream_window here instead.
         // We're having an offset that is definitely outside of logical bounds.
-        if outbuf_off > self.outbuf.capacity() as u64 + super::DEFAULT_STREAM_WINDOW as u64{
+        if outbuf_off > self.outbuf.capacity() as u64 + super::DEFAULT_STREAM_WINDOW as u64 {
             return Err(Error::InvalidOffset);
         }
 
@@ -291,6 +304,7 @@ impl AppRecvBuf {
         Ok(outbuf_off)
     }
 
+    /// todo
     fn ensures_size(&mut self, size: usize) -> Result<()> {
         if self.outbuf.capacity() <  size && size <= self.max_size {
             // In case we don't have enough room to store the data; we double the size of outbuf,
@@ -303,6 +317,15 @@ impl AppRecvBuf {
         }
 
         Ok(())
+    }
+
+    fn is_almost_full(&self) -> bool {
+        let available_space = (self.max_size - self.consumed) as u64;
+
+        // The notion of "almost full" for the application buffer depends
+        // on the chunk size that the application consumes. The application should
+        // set almost_full_window to their larger chunk size they could be waiting on.
+        available_space  < self.almost_full_window
     }
 
     /// Clear the buffer meta-data
