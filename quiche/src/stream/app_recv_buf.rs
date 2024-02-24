@@ -146,7 +146,7 @@ impl AppRecvBuf {
                 stream_id,
                 outbuf: vec![0; capacity],
                 max_size: super::MAX_STREAM_WINDOW as usize,
-                almost_full_window: 512_000,
+                almost_full_window: super::DEFAULT_STREAM_WINDOW / 2,
                 ..Default::default()
             };
             // set_len is safe assuming
@@ -159,7 +159,7 @@ impl AppRecvBuf {
                 stream_id,
                 outbuf: vec![0; DEFAULT_STREAM_WINDOW as usize],
                 max_size: super::MAX_STREAM_WINDOW as usize,
-                almost_full_window: 512_000,
+                almost_full_window: super::DEFAULT_STREAM_WINDOW / 2,
                 ..Default::default()
             };
             unsafe { appbuf.outbuf.set_len(DEFAULT_STREAM_WINDOW as usize) };
@@ -179,9 +179,8 @@ impl AppRecvBuf {
         &mut self.outbuf[self.consumed..]
     }
 
+    #[inline]
     pub fn read_mut(&mut self, recv: &mut RecvBuf) -> Result<&mut [u8]> {
-        // The stream window might have changed since the last time we used the buffer
-        self.ensures_size(recv.window() as usize)?;
         let mut len = 0;
         let mut max_off = 0;
         while recv.ready() {
@@ -204,6 +203,9 @@ impl AppRecvBuf {
             // Hopefully rare event; especially if we make sure packets are in order before
             // starting to decrypt them from the read() buffer.
             if let Some(buf) = recvbufinfo.data() {
+                trace!(
+                    "Packet wasn't received in order; a copy is necessary",
+                );
                 self.outbuf[this_offset as usize..this_offset as usize+recvbufinfo.len as
                     usize].copy_from_slice(&buf[..recvbufinfo.len]);
             }
@@ -223,6 +225,7 @@ impl AppRecvBuf {
         Ok(&mut self.outbuf[self.consumed..self.output_off as usize])
     }
 
+    #[inline]
     pub fn has_consumed(&mut self, stream: Option<&Stream>, consumed: usize) -> Result<(bool, usize)> {
         self.consumed = self.consumed.saturating_add(consumed);
         if let Some(stream) = stream {
@@ -258,6 +261,7 @@ impl AppRecvBuf {
         // self.output_off_end but the heap isn't empty?
     }
 
+    #[inline]
     pub fn is_consumed(&self) -> bool {
         self.consumed as u64 == self.output_off
     }
@@ -268,6 +272,7 @@ impl AppRecvBuf {
     /// Make sure we didn't already received contiguous data above stream_offset.
     /// if that's the case, decrypting this packet could lead to overwrite contiguous
     /// data not yet read by the application.
+    #[inline]
     pub fn to_outbuf_offset(&mut self, stream_offset: u64, to_reserve: usize, recv: &RecvBuf) -> Result<u64> {
         if stream_offset < recv.contiguous_off {
             // In V3, we do not accept a packet that would overlap a contiguous range of data already
@@ -278,6 +283,9 @@ impl AppRecvBuf {
 
         if self.is_almost_full() {
             // If the application has a correct pacing, this should not happen.
+            trace!(
+                "We're almost full! Copying {} bytes", self.max_size - self.consumed,
+            );
             self.outbuf.copy_within(self.consumed..self.max_size, 0);
             self.tot_rewind = self.tot_rewind.saturating_add(self.consumed as u64);
             self.output_off = self.output_off - self.consumed as u64;
@@ -289,7 +297,7 @@ impl AppRecvBuf {
 
         // TODO I need the configured stream_window here instead.
         // We're having an offset that is definitely outside of logical bounds.
-        if outbuf_off > self.outbuf.capacity() as u64 + super::DEFAULT_STREAM_WINDOW as u64 {
+        if outbuf_off > self.output_off + super::DEFAULT_STREAM_WINDOW as u64 {
             return Err(Error::InvalidOffset);
         }
 
@@ -310,6 +318,9 @@ impl AppRecvBuf {
             // In case we don't have enough room to store the data; we double the size of outbuf,
             // or set to size
             let minmax = std::cmp::min(std::cmp::max(self.outbuf.capacity() * 2, size), self.max_size);
+            trace!(
+                "Resizing the output buffer of stream {} to {}", self.stream_id, minmax,
+            );
             self.outbuf.resize(minmax, 0);
             unsafe { self.outbuf.set_len(minmax) };
         } else if size > self.max_size {
@@ -319,6 +330,7 @@ impl AppRecvBuf {
         Ok(())
     }
 
+    ///todo
     fn is_almost_full(&self) -> bool {
         let available_space = (self.max_size - self.consumed) as u64;
 
@@ -329,6 +341,7 @@ impl AppRecvBuf {
     }
 
     /// Clear the buffer meta-data
+    #[inline]
     pub fn clear(&mut self) {
         self.tot_rewind = 0;
         self.consumed = 0;
