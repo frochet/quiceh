@@ -165,7 +165,7 @@ impl Open {
     }
 
     pub fn open_with_u64_counter_into(
-        &self, counter: u64, ad: &[u8], buf: &[u8], into: &mut [u8]
+        &self, counter: u64, ad: &[u8], buf: &[u8], into: &mut [u8],
     ) -> Result<usize> {
         if cfg!(feature = "fuzzing") {
             return Ok(buf.len());
@@ -183,7 +183,7 @@ impl Open {
         let rc = unsafe {
             EVP_AEAD_CTX_open(
                 &self.packet.ctx,   // ctx
-                into.as_mut_ptr(),   // out
+                into.as_mut_ptr(),  // out
                 &mut out_len,       // out_len
                 max_out_len,        // max_out_len
                 nonce[..].as_ptr(), // nonce
@@ -200,7 +200,6 @@ impl Open {
         }
 
         Ok(out_len)
-
     }
 
     pub fn open_with_u64_counter(

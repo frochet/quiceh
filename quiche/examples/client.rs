@@ -137,7 +137,7 @@ fn main() {
     let req_start = std::time::Instant::now();
 
     let mut req_sent = false;
-    let mut app_buffers = AppRecvBufMap::new(3);
+    let mut app_buffers = AppRecvBufMap::new(3, 10_000_000, 100, 100);
 
     loop {
         poll.poll(&mut events, conn.timeout()).unwrap();
@@ -178,14 +178,15 @@ fn main() {
             };
 
             // Process potentially coalesced packets.
-            let read = match conn.recv(&mut buf[..len], &mut app_buffers, recv_info) {
-                Ok(v) => v,
+            let read =
+                match conn.recv(&mut buf[..len], &mut app_buffers, recv_info) {
+                    Ok(v) => v,
 
-                Err(e) => {
-                    error!("recv failed: {:?}", e);
-                    continue 'read;
-                },
-            };
+                    Err(e) => {
+                        error!("recv failed: {:?}", e);
+                        continue 'read;
+                    },
+                };
 
             debug!("processed {} bytes", read);
         }

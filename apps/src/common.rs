@@ -57,8 +57,6 @@ pub fn stdout_sink(out: String) {
 
 const H3_MESSAGE_ERROR: u64 = 0x10E;
 
-const MIN_FLUSH_SIZE: usize = 512_000;
-
 /// ALPN helpers.
 ///
 /// This module contains constants and functions for working with ALPN.
@@ -358,7 +356,8 @@ pub trait HttpConn {
         &mut self, conn: &mut quiche::Connection,
         partial_requests: &mut HashMap<u64, PartialRequest>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
-        index: &str, buf: &mut [u8], app_buffers: Option<&mut quiche::AppRecvBufMap>,
+        index: &str, buf: &mut [u8],
+        app_buffers: Option<&mut quiche::AppRecvBufMap>,
     ) -> quiche::h3::Result<()>;
 
     fn handle_requests_on_quic_v3(
@@ -491,7 +490,8 @@ impl HttpConn for Http09Conn {
     }
 
     fn handle_responses_on_quic_v3(
-        &mut self, _conn: &mut quiche::Connection, _app_buffers: &mut quiche::AppRecvBufMap,
+        &mut self, _conn: &mut quiche::Connection,
+        _app_buffers: &mut quiche::AppRecvBufMap,
         _req_start: &std::time::Instant,
     ) {
         unimplemented!()
@@ -586,8 +586,8 @@ impl HttpConn for Http09Conn {
 
     fn handle_requests_on_quic_v3(
         &mut self, _conn: &mut quiche::Connection,
-        _partial_responses: &mut HashMap<u64, PartialResponse>,
-        _root: &str, _index: &str, _app_buffers: &mut quiche::AppRecvBufMap
+        _partial_responses: &mut HashMap<u64, PartialResponse>, _root: &str,
+        _index: &str, _app_buffers: &mut quiche::AppRecvBufMap,
     ) -> quiche::h3::Result<()> {
         unimplemented!()
     }
@@ -596,7 +596,8 @@ impl HttpConn for Http09Conn {
         &mut self, conn: &mut quiche::Connection,
         partial_requests: &mut HashMap<u64, PartialRequest>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
-        index: &str, buf: &mut [u8], _app_buffers: Option<&mut quiche::AppRecvBufMap>,
+        index: &str, buf: &mut [u8],
+        _app_buffers: Option<&mut quiche::AppRecvBufMap>,
     ) -> quiche::h3::Result<()> {
         // Process all readable streams.
         for s in conn.readable() {
@@ -917,9 +918,11 @@ impl Http3Conn {
         Ok(Box::new(h_conn))
     }
 
-    /// poll the h3_conn with either poll() or poll_v3() depending on the connection context.
+    /// poll the h3_conn with either poll() or poll_v3() depending on the
+    /// connection context.
     fn poll_internal(
-        &mut self, conn: &mut quiche::Connection, app_buffers: &mut Option<&mut quiche::AppRecvBufMap>
+        &mut self, conn: &mut quiche::Connection,
+        app_buffers: &mut Option<&mut quiche::AppRecvBufMap>,
     ) -> quiche::h3::Result<(u64, quiche::h3::Event)> {
         if let Some(ref mut app_buffers) = app_buffers {
             self.h3_conn.poll_v3(conn, app_buffers)
@@ -927,7 +930,6 @@ impl Http3Conn {
             self.h3_conn.poll(conn)
         }
     }
-
 
     /// Builds an HTTP/3 response given a request.
     fn build_h3_response(
@@ -1257,8 +1259,8 @@ impl HttpConn for Http3Conn {
     }
 
     fn handle_responses_on_quic_v3(
-        &mut self, conn: &mut quiche::Connection, app_buffers: &mut quiche::AppRecvBufMap,
-        req_start: &std::time::Instant,
+        &mut self, conn: &mut quiche::Connection,
+        app_buffers: &mut quiche::AppRecvBufMap, req_start: &std::time::Instant,
     ) {
         loop {
             match self.h3_conn.poll_v3(conn, app_buffers) {
@@ -1278,8 +1280,12 @@ impl HttpConn for Http3Conn {
                     req.response_hdrs = list;
                 },
 
-                Ok((stream_id, quiche::h3::Event::Data)) =>  {
-                   let (b, tot_exp_len) =  match self.h3_conn.recv_body_v3(conn, stream_id, app_buffers) {
+                Ok((stream_id, quiche::h3::Event::Data)) => {
+                    let (b, tot_exp_len) = match self.h3_conn.recv_body_v3(
+                        conn,
+                        stream_id,
+                        app_buffers,
+                    ) {
                         Ok((b, tot_exp_len)) => {
                             debug!(
                                 "got {} bytes of response data on stream {}. Total expected will be {}",
@@ -1292,30 +1298,43 @@ impl HttpConn for Http3Conn {
                         Err(quiche::h3::Error::Done) => break,
 
                         Err(e) => panic!("Error reading conn: {:?}", e),
-
                     };
-                   // If this condition is not satified, we can conn.recv() more
-                   // before processing what we already have.
-                   // As long as MIN_FLUSH_SIZE < --max-data; this is okay.
-                   if b.len() >= MIN_FLUSH_SIZE || b.len() == tot_exp_len {
+                    // If this condition is not satified, we can conn.recv() more
+                    // before processing what we already have.
+                    // As long as MAX_FLUSH_SIZE < --max-data/2; this is okay.
+                    if b.len() >= crate::client::MAX_FLUSH_SIZE ||
+                        b.len() == tot_exp_len
+                    {
+                        let req = self
+                            .reqs
+                            .iter_mut()
+                            .find(|r| r.stream_id == Some(stream_id))
+                            .unwrap();
 
-                       let req = self
-                           .reqs
-                           .iter_mut()
-                           .find(|r| r.stream_id == Some(stream_id))
-                           .unwrap();
-
-                       match &mut req.response_writer {
+                        match &mut req.response_writer {
                             Some(rw) => {
                                 rw.write_all(b).ok();
-                                self.h3_conn.body_consumed(conn, stream_id, b.len(), app_buffers).unwrap();
+                                self.h3_conn
+                                    .body_consumed(
+                                        conn,
+                                        stream_id,
+                                        b.len(),
+                                        app_buffers,
+                                    )
+                                    .unwrap();
                             },
                             None => {
-                                self.h3_conn.body_consumed(conn, stream_id, b.len(), app_buffers).unwrap();
-                            }
+                                self.h3_conn
+                                    .body_consumed(
+                                        conn,
+                                        stream_id,
+                                        b.len(),
+                                        app_buffers,
+                                    )
+                                    .unwrap();
+                            },
                         }
-                   }
-
+                    }
                 },
 
                 Ok((_stream_id, quiche::h3::Event::Finished)) => {
@@ -1441,17 +1460,18 @@ impl HttpConn for Http3Conn {
                         req.response_body.extend_from_slice(&buf[..len]);
 
                         match &mut req.response_writer {
-                            Some(rw) => {
-                                rw.write_all(&buf[..read]).ok();
+                            Some(_rw) => {
+                                // for fair comparison
+                                //rw.write_all(&buf[..read]).ok();
                             },
 
                             None =>
                                 if !self.dump_json {
-                                    self.output_sink.borrow_mut()(unsafe {
-                                        String::from_utf8_unchecked(
-                                            buf[..read].to_vec(),
-                                        )
-                                    });
+                                    //self.output_sink.borrow_mut()(unsafe {
+                                        //String::from_utf8_unchecked(
+                                            //buf[..read].to_vec(),
+                                        //)
+                                    //});
                                 },
                         }
                     }
@@ -1571,11 +1591,17 @@ impl HttpConn for Http3Conn {
 
     fn handle_requests_on_quic_v3(
         &mut self, conn: &mut quiche::Connection,
-        partial_responses: &mut HashMap<u64, PartialResponse>,
-        root: &str, index: &str, app_buffers: &mut quiche::AppRecvBufMap
+        partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
+        index: &str, app_buffers: &mut quiche::AppRecvBufMap,
     ) -> quiche::h3::Result<()> {
         self.handle_requests(
-            conn, &mut HashMap::new(), partial_responses, root, index, &mut [0; 0], Some(app_buffers)
+            conn,
+            &mut HashMap::new(),
+            partial_responses,
+            root,
+            index,
+            &mut [0; 0],
+            Some(app_buffers),
         )
     }
 
@@ -1583,7 +1609,8 @@ impl HttpConn for Http3Conn {
         &mut self, conn: &mut quiche::Connection,
         _partial_requests: &mut HashMap<u64, PartialRequest>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
-        index: &str, buf: &mut [u8], mut app_buffers: Option<&mut quiche::AppRecvBufMap>,
+        index: &str, buf: &mut [u8],
+        mut app_buffers: Option<&mut quiche::AppRecvBufMap>,
     ) -> quiche::h3::Result<()> {
         // Process HTTP stream-related events.
         loop {

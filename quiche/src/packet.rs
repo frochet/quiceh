@@ -64,7 +64,7 @@ pub enum Epoch {
 }
 
 static EPOCHS: [Epoch; 3] =
-[Epoch::Initial, Epoch::Handshake, Epoch::Application];
+    [Epoch::Initial, Epoch::Handshake, Epoch::Application];
 
 impl Epoch {
     /// Returns an ordered slice containing the `Epoch`s that fit in the
@@ -92,7 +92,7 @@ impl From<Epoch> for usize {
 
 impl<T> Index<Epoch> for [T]
 where
-T: Sized,
+    T: Sized,
 {
     type Output = T;
 
@@ -103,7 +103,7 @@ T: Sized,
 
 impl<T> IndexMut<Epoch> for [T]
 where
-T: Sized,
+    T: Sized,
 {
     fn index_mut(&mut self, index: Epoch) -> &mut Self::Output {
         self.index_mut(usize::from(index))
@@ -177,7 +177,9 @@ impl Type {
 }
 
 impl Default for Type {
-    fn default() -> Self { Type::Initial }
+    fn default() -> Self {
+        Type::Initial
+    }
 }
 
 /// A QUIC connection ID.
@@ -311,21 +313,23 @@ pub struct Header<'a> {
     /// protection is removed.
     pub(crate) pkt_num_len: usize,
 
-    /// The expected Streamid of the leftmost stream frame within the packet, if any.
-    /// It's only meaningful if version is PROTOCOL_VERSION_V3 and after the
-    /// header protection is removed.
+    /// The expected Streamid of the leftmost stream frame within the packet, if
+    /// any. It's only meaningful if version is PROTOCOL_VERSION_V3 and
+    /// after the header protection is removed.
     pub(crate) expected_stream_id: u64,
 
-    /// The expected offset of the data within the leftmost stream frame within the packet.
-    /// It is only meaningful if version is PROTOCOL_VERSION_V3, and if the packets contains
-    /// a stream frame matching expected_stream_id.
+    /// The expected offset of the data within the leftmost stream frame within
+    /// the packet. It is only meaningful if version is PROTOCOL_VERSION_V3,
+    /// and if the packets contains a stream frame matching
+    /// expected_stream_id.
     pub(crate) expected_offset: u64,
 
     /// The length of the offset number. It's only meaningful after the header
     /// protection is removed.
     pub(crate) expected_offset_len: usize,
 
-    /// The length of the stream_id. It's only meaningful after header decryption.
+    /// The length of the stream_id. It's only meaningful after header
+    /// decryption.
     pub(crate) expected_stream_id_len: usize,
 
     /// The address verification token of the packet. Only present in `Initial`
@@ -362,14 +366,14 @@ impl<'a> Header<'a> {
     #[inline]
     pub fn from_slice<'b>(
         buf: &'b mut [u8], dcid_len: usize,
-        ) -> Result<Header<'a>> {
+    ) -> Result<Header<'a>> {
         let mut b = octets::OctetsMut::with_slice(buf);
         Header::from_bytes(&mut b, dcid_len)
     }
 
     pub(crate) fn from_bytes<'b>(
         b: &'b mut octets::OctetsMut, dcid_len: usize,
-        ) -> Result<Header<'a>> {
+    ) -> Result<Header<'a>> {
         let first = b.get_u8()?;
 
         if !Header::is_long(first) {
@@ -576,19 +580,19 @@ impl<'a> std::fmt::Debug for Header<'a> {
 /// bits are containing information for the length of the next
 /// element.
 pub fn num_len_to_encode(num: u64) -> usize {
-	if num  <= 63u64 {
-		0
-	} else if num < 16_383u64 {
-		1
-	} else if num < 1_073_741_823u64 {
-		2
-	} else {
-		3
-	}
+    if num <= 63u64 {
+        0
+    } else if num < 16_383u64 {
+        1
+    } else if num < 1_073_741_823u64 {
+        2
+    } else {
+        3
+    }
 }
 
-/// This should be base10 binary encoding of the 4 possible byte lengths, 1, 2, 3 or 4.
-/// so it should returns 0,1,2 or 3
+/// This should be base10 binary encoding of the 4 possible byte lengths, 1, 2,
+/// 3 or 4. so it should returns 0,1,2 or 3
 #[inline]
 pub fn offset_len_to_encode(offset: u64) -> Result<usize> {
     pkt_num_len(offset)
@@ -610,7 +614,7 @@ pub fn pkt_num_len(pn: u64) -> Result<usize> {
     Ok(len)
 }
 #[inline]
-pub fn unpack_var_int_in_hdr(len: usize, b: &mut octets::Octets) -> Result<u64>{
+pub fn unpack_var_int_in_hdr(len: usize, b: &mut octets::Octets) -> Result<u64> {
     let val = match len {
         1 => u64::from(b.get_u8()?),
 
@@ -627,13 +631,13 @@ pub fn unpack_var_int_in_hdr(len: usize, b: &mut octets::Octets) -> Result<u64>{
 pub fn decrypt_hdr(
     b: &mut octets::OctetsMut, hdr: &mut Header, aead: &crypto::Open,
     version: u32,
-    ) -> Result<()> {
+) -> Result<()> {
     let mut first = {
         let (first_buf, _) = b.split_at(1)?;
         first_buf.as_ref()[0]
     };
 
-    if_likely!{version == crate::PROTOCOL_VERSION_V3 => {
+    if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
         let mut pn_stream_and_sample = b.peek_bytes_mut(MAX_PKT_NUM_STREAMID_OFFSET_LEN + SAMPLE_LEN)?;
 
         let (mut ciphertext, sample) = pn_stream_and_sample.split_at(MAX_PKT_NUM_STREAMID_OFFSET_LEN)?;
@@ -752,7 +756,7 @@ pub fn decrypt_hdr(
 }
 
 #[inline]
-pub fn decode_num_and_nextelem_len(num: u64, num_len: usize) -> (u64, usize)  {
+pub fn decode_num_and_nextelem_len(num: u64, num_len: usize) -> (u64, usize) {
     let (num, nextelem_len) = match num_len {
         1 => (num & 0x3f, (num >> 6) as usize),
         2 => (num & 0x3fff, (num >> 14) as usize),
@@ -760,7 +764,7 @@ pub fn decode_num_and_nextelem_len(num: u64, num_len: usize) -> (u64, usize)  {
         4 => (num & 0x3fffffff, (num >> 30) as usize),
         _ => panic!("Unvalid num_len"), // Internal bug
     };
-    (num, nextelem_len+1)
+    (num, nextelem_len + 1)
 }
 
 #[inline]
@@ -785,14 +789,17 @@ pub fn decode_pkt_num(largest_pn: u64, truncated_pn: u64, pn_len: usize) -> u64 
 }
 
 #[inline]
-pub fn decode_pkt_offset(current_offset: u64, truncated_offset: u64, offset_len: usize) -> u64 {
+pub fn decode_pkt_offset(
+    current_offset: u64, truncated_offset: u64, offset_len: usize,
+) -> u64 {
     decode_pkt_num(current_offset, truncated_offset, offset_len)
 }
 
 pub fn decrypt_pkt_v3<'a>(
-    b: &'a mut octets::OctetsMut, pn: u64, hdr_enc_len: usize, payload_len: usize,
-    outbuf: Option<&'a mut octets::OctetsMut>, aead: &crypto::Open,
-    ) -> Result<(octets::Octets<'a>, usize)> {
+    b: &'a mut octets::OctetsMut, pn: u64, hdr_enc_len: usize,
+    payload_len: usize, outbuf: Option<&'a mut octets::OctetsMut>,
+    aead: &crypto::Open,
+) -> Result<(octets::Octets<'a>, usize)> {
     // PROTOCOL_REVERSO: temporary for testing
     let payload_offset = b.off();
 
@@ -804,22 +811,27 @@ pub fn decrypt_pkt_v3<'a>(
 
     let mut ciphertext = payload.peek_bytes_mut(payload_len_enc)?;
     if let Some(outbuf) = outbuf {
-        let payload_len = aead.open_with_u64_counter_into(pn, header.as_ref(), ciphertext.as_ref(), outbuf.as_mut())?;
+        let payload_len = aead.open_with_u64_counter_into(
+            pn,
+            header.as_ref(),
+            ciphertext.as_ref(),
+            outbuf.as_mut(),
+        )?;
         // Number of read bytes is computed from b's offset. We need skip since
         // we process the frame from another buffer in V3.
         b.skip(payload_len)?;
         Ok((outbuf.get_bytes(payload_len)?, payload_len))
     } else {
-        let payload_len = aead.open_with_u64_counter(pn, header.as_ref(), ciphertext.as_mut())?;
+        let payload_len =
+            aead.open_with_u64_counter(pn, header.as_ref(), ciphertext.as_mut())?;
         Ok((b.get_bytes(payload_len)?, payload_len))
     }
-
 }
 
 pub fn decrypt_pkt<'a>(
     b: &'a mut octets::OctetsMut, pn: u64, pn_len: usize, payload_len: usize,
     aead: &crypto::Open,
-    ) -> Result<(octets::Octets<'a>, usize)> {
+) -> Result<(octets::Octets<'a>, usize)> {
     let payload_offset = b.off();
 
     let (header, mut payload) = b.split_at(payload_offset)?;
@@ -837,18 +849,14 @@ pub fn decrypt_pkt<'a>(
 }
 
 pub fn encrypt_hdr(
-    b: &mut octets::OctetsMut,
-    enc_len: usize,
-    payload: &[u8],
-    aead: &crypto::Seal,
-    version: u32,
-    ) -> Result<()> {
-
+    b: &mut octets::OctetsMut, enc_len: usize, payload: &[u8],
+    aead: &crypto::Seal, version: u32,
+) -> Result<()> {
     let sample;
     let (mut first, mut rest) = b.split_at(1)?;
     let first = first.as_mut();
 
-    if_likely!{version == crate::PROTOCOL_VERSION_V3 => {
+    if_likely! {version == crate::PROTOCOL_VERSION_V3 => {
         // considering max 4 bytes for the streamid and 4 bytes for the buffer offset.
         // for which the encoding/decoding would work in a similar fashion than for the packet number.
         sample = &payload
@@ -887,7 +895,7 @@ pub fn encrypt_pkt(
     b: &mut octets::OctetsMut, pn: u64, hdr_enc_len: usize, payload_len: usize,
     payload_offset: usize, extra_in: Option<&[u8]>, aead: &crypto::Seal,
     version: u32,
-    ) -> Result<usize> {
+) -> Result<usize> {
     let (mut header, mut payload) = b.split_at(payload_offset)?;
 
     let ciphertext_len = aead.seal_with_u64_counter(
@@ -896,28 +904,27 @@ pub fn encrypt_pkt(
         payload.as_mut(),
         payload_len,
         extra_in,
-        )?;
+    )?;
 
     encrypt_hdr(&mut header, hdr_enc_len, payload.as_ref(), aead, version)?;
 
     Ok(payload_offset + ciphertext_len)
 }
 
-
-
 /// Encode a u64 value with its most significant two bits indicating the length
 /// of the next element to be encoded.
 #[inline]
 pub fn encode_u64_num_and_nextelem_len(
-	num: u64,
-	nextelem_len: usize,
-	b: &mut octets::OctetsMut
-	) -> Result<()> {
+    num: u64, nextelem_len: usize, b: &mut octets::OctetsMut,
+) -> Result<()> {
     match num {
-        0..=63 => b.put_u8((num | ((nextelem_len-1) << 6) as u64) as u8)?,
-        64..=16_383 => b.put_u16((num | ((nextelem_len-1) << 14) as u64) as u16)?,
-        16384..=4_194_303 => b.put_u24((num | ((nextelem_len-1) << 22) as u64) as u32)?,
-        4_194_304..=1_073_741_823 => b.put_u32((num | ((nextelem_len-1) << 30) as u64) as u32)?,
+        0..=63 => b.put_u8((num | ((nextelem_len - 1) << 6) as u64) as u8)?,
+        64..=16_383 =>
+            b.put_u16((num | ((nextelem_len - 1) << 14) as u64) as u16)?,
+        16384..=4_194_303 =>
+            b.put_u24((num | ((nextelem_len - 1) << 22) as u64) as u32)?,
+        4_194_304..=1_073_741_823 =>
+            b.put_u32((num | ((nextelem_len - 1) << 30) as u64) as u32)?,
         _ => return Err(Error::InvalidPacket),
     };
     Ok(())
@@ -949,7 +956,7 @@ pub fn encode_pkt_num(pn: u64, b: &mut octets::OctetsMut) -> Result<()> {
 
 pub fn negotiate_version(
     scid: &[u8], dcid: &[u8], out: &mut [u8],
-    ) -> Result<usize> {
+) -> Result<usize> {
     let mut b = octets::OctetsMut::with_slice(out);
 
     let first = rand::rand_u8() | FORM_BIT;
@@ -970,7 +977,7 @@ pub fn negotiate_version(
 pub fn retry(
     scid: &[u8], dcid: &[u8], new_scid: &[u8], token: &[u8], version: u32,
     out: &mut [u8],
-    ) -> Result<usize> {
+) -> Result<usize> {
     let mut b = octets::OctetsMut::with_slice(out);
 
     if !crate::version_is_supported(version) {
@@ -997,21 +1004,21 @@ pub fn retry(
 
 pub fn verify_retry_integrity(
     b: &octets::OctetsMut, odcid: &[u8], version: u32,
-    ) -> Result<()> {
+) -> Result<()> {
     let tag = compute_retry_integrity_tag(b, odcid, version)?;
 
     ring::constant_time::verify_slices_are_equal(
         &b.as_ref()[..aead::AES_128_GCM.tag_len()],
         tag.as_ref(),
-        )
-        .map_err(|_| Error::CryptoFail)?;
+    )
+    .map_err(|_| Error::CryptoFail)?;
 
     Ok(())
 }
 
 fn compute_retry_integrity_tag(
     b: &octets::OctetsMut, odcid: &[u8], version: u32,
-    ) -> Result<aead::Tag> {
+) -> Result<aead::Tag> {
     const RETRY_INTEGRITY_KEY_V1: [u8; 16] = [
         0xbe, 0x0c, 0x69, 0x0b, 0x9f, 0x66, 0x57, 0x5a, 0x1d, 0x76, 0x6b, 0x54,
         0xe3, 0x68, 0xc8, 0x4e,
@@ -1040,8 +1047,8 @@ fn compute_retry_integrity_tag(
 
     let key = aead::LessSafeKey::new(
         aead::UnboundKey::new(&aead::AES_128_GCM, key)
-        .map_err(|_| Error::CryptoFail)?,
-        );
+            .map_err(|_| Error::CryptoFail)?,
+    );
 
     let nonce = aead::Nonce::assume_unique_for_key(nonce);
 
@@ -1127,7 +1134,7 @@ impl PktNumSpace {
                 true,
                 stream::MAX_STREAM_WINDOW,
                 crate::PROTOCOL_VERSION_V1,
-                ),
+            ),
         }
     }
 
@@ -1140,7 +1147,7 @@ impl PktNumSpace {
             true,
             stream::MAX_STREAM_WINDOW,
             crate::PROTOCOL_VERSION_V1,
-            );
+        );
 
         self.ack_elicited = false;
     }
@@ -1218,9 +1225,9 @@ mod tests {
             version: 0xafafafaf,
             dcid: vec![0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba]
                 .into(),
-                scid: vec![0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb].into(),
-                token: Some(vec![0xba; 24]),
-                ..Default::default()
+            scid: vec![0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb].into(),
+            token: Some(vec![0xba; 24]),
+            ..Default::default()
         };
 
         let mut d = [0; 63];
@@ -1242,9 +1249,9 @@ mod tests {
             version: 0xafafafaf,
             dcid: vec![0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba]
                 .into(),
-                scid: vec![0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb].into(),
-                token: Some(vec![0x05, 0x06, 0x07, 0x08]),
-                ..Default::default()
+            scid: vec![0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb].into(),
+            token: Some(vec![0x05, 0x06, 0x07, 0x08]),
+            ..Default::default()
         };
 
         let mut d = [0; 50];
@@ -1265,10 +1272,10 @@ mod tests {
                 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba,
                 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba,
             ]
-                .into(),
-                scid: vec![0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb].into(),
-                token: Some(vec![0x05, 0x06, 0x07, 0x08]),
-                ..Default::default()
+            .into(),
+            scid: vec![0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb].into(),
+            token: Some(vec![0x05, 0x06, 0x07, 0x08]),
+            ..Default::default()
         };
 
         let mut d = [0; 50];
@@ -1287,13 +1294,13 @@ mod tests {
             version: crate::PROTOCOL_VERSION,
             dcid: vec![0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba]
                 .into(),
-                scid: vec![
-                    0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb,
-                    0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb,
-                ]
-                    .into(),
-                    token: Some(vec![0x05, 0x06, 0x07, 0x08]),
-                    ..Default::default()
+            scid: vec![
+                0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb,
+                0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb,
+            ]
+            .into(),
+            token: Some(vec![0x05, 0x06, 0x07, 0x08]),
+            ..Default::default()
         };
 
         let mut d = [0; 50];
@@ -1312,13 +1319,13 @@ mod tests {
             version: 0xafafafaf,
             dcid: vec![0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba]
                 .into(),
-                scid: vec![
-                    0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb,
-                    0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb,
-                ]
-                    .into(),
-                    token: Some(vec![0x05, 0x06, 0x07, 0x08]),
-                    ..Default::default()
+            scid: vec![
+                0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb,
+                0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb,
+            ]
+            .into(),
+            token: Some(vec![0x05, 0x06, 0x07, 0x08]),
+            ..Default::default()
         };
 
         let mut d = [0; 50];
@@ -1337,8 +1344,8 @@ mod tests {
             version: 0xafafafaf,
             dcid: vec![0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba, 0xba]
                 .into(),
-                scid: vec![0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb].into(),
-                ..Default::default()
+            scid: vec![0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb].into(),
+            ..Default::default()
         };
 
         let mut d = [0; 50];
@@ -1483,7 +1490,7 @@ mod tests {
     fn assert_decrypt_initial_pkt(
         pkt: &mut [u8], dcid: &[u8], is_server: bool, expected_frames: &[u8],
         expected_pn: u64, expected_pn_len: usize,
-        ) {
+    ) {
         let mut b = octets::OctetsMut::with_slice(pkt);
 
         let mut hdr = Header::from_bytes(&mut b, 0).unwrap();
@@ -1493,7 +1500,7 @@ mod tests {
 
         let (aead, _) =
             crypto::derive_initial_key_material(dcid, hdr.version, is_server)
-            .unwrap();
+                .unwrap();
 
         decrypt_hdr(&mut b, &mut hdr, &aead, crate::PROTOCOL_VERSION).unwrap();
         assert_eq!(hdr.pkt_num_len, expected_pn_len);
@@ -1622,7 +1629,7 @@ mod tests {
                 0xd4, 0xa9, 0xa7, 0xf9, 0x47, 0x42, 0x41, 0x10, 0x92, 0xab, 0xbd,
                 0xf8, 0xb8, 0x89, 0xe5, 0xc1, 0x99, 0xd0, 0x96, 0xe3, 0xf2, 0x47,
                 0x88,
-                ];
+            ];
 
             let dcid = [0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08];
 
@@ -1650,7 +1657,7 @@ mod tests {
                 0x01, 0x04, 0x80, 0x00, 0x75, 0x30, 0x09, 0x01, 0x10, 0x0f, 0x08,
                 0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08, 0x06, 0x04, 0x80,
                 0x00, 0xff, 0xff,
-                ];
+            ];
 
             assert_decrypt_initial_pkt(&mut pkt, &dcid, true, &frames, 2, 4);
         }
@@ -1733,7 +1740,7 @@ mod tests {
     fn assert_encrypt_initial_pkt(
         header: &mut [u8], dcid: &[u8], frames: &[u8], pn: u64, pn_len: usize,
         is_server: bool, expected_pkt: &[u8],
-        ) {
+    ) {
         let mut b = octets::OctetsMut::with_slice(header);
 
         let hdr = Header::from_bytes(&mut b, 0).unwrap();
@@ -1746,7 +1753,7 @@ mod tests {
 
         let (_, aead) =
             crypto::derive_initial_key_material(dcid, hdr.version, is_server)
-            .unwrap();
+                .unwrap();
 
         let payload_len = frames.len();
 
@@ -1763,8 +1770,8 @@ mod tests {
             None,
             &aead,
             crate::PROTOCOL_VERSION_V1,
-            )
-            .unwrap();
+        )
+        .unwrap();
 
         assert_eq!(written, expected_pkt.len());
         assert_eq!(&out[..written], expected_pkt);
@@ -1886,7 +1893,7 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ];
+        ];
 
         let pkt = [
             0xc0, 0x00, 0x00, 0x00, 0x01, 0x08, 0x83, 0x94, 0xc8, 0xf0, 0x3e,
@@ -1999,7 +2006,7 @@ mod tests {
             0xd4, 0xa9, 0xa7, 0xf9, 0x47, 0x42, 0x41, 0x10, 0x92, 0xab, 0xbd,
             0xf8, 0xb8, 0x89, 0xe5, 0xc1, 0x99, 0xd0, 0x96, 0xe3, 0xf2, 0x47,
             0x88,
-            ];
+        ];
 
         assert_encrypt_initial_pkt(
             &mut header,
@@ -2009,7 +2016,7 @@ mod tests {
             4,
             false,
             &pkt,
-            );
+        );
     }
 
     #[test]
@@ -2057,17 +2064,22 @@ mod tests {
         use core::convert::TryInto;
 
         // This is not exaustive test cases (we would need 4x4x2 "block" to cover
-        // all pn ranges and streamid ranges -- we cover one range of each independently)
+        // all pn ranges and streamid ranges -- we cover one range of each
+        // independently)
         let mut header_part = [0x40, 0x00];
         let pn = 42; // it is below 63. Should be encoded with 1 byte
         {
             let mut b = octets::OctetsMut::with_slice(&mut header_part);
             b.skip(1).expect("skip issue");
-            assert!(crate::packet::encode_u64_num_and_nextelem_len(pn, 2, &mut b).is_ok());
+            assert!(crate::packet::encode_u64_num_and_nextelem_len(
+                pn, 2, &mut b
+            )
+            .is_ok());
             let expected_header_part = [0x40, 0x6a];
             assert_eq!(&header_part, &expected_header_part);
             let header_pn = header_part[1] as u64;
-            let (expected_pn, num_len) = crate::packet::decode_num_and_nextelem_len(header_pn, 1);
+            let (expected_pn, num_len) =
+                crate::packet::decode_num_and_nextelem_len(header_pn, 1);
             let expected_pn = crate::packet::decode_pkt_num(41, expected_pn, 1);
             assert_eq!(expected_pn, pn);
             assert_eq!(num_len, 2);
@@ -2076,8 +2088,12 @@ mod tests {
         {
             let mut b = octets::OctetsMut::with_slice(&mut header_part);
             b.skip(2).expect("skip issue");
-            let offset_len = offset_len_to_encode(234_232_223).expect("number issue");
-            assert!(crate::packet::encode_u64_num_and_nextelem_len(10000, offset_len, &mut b).is_ok());
+            let offset_len =
+                offset_len_to_encode(234_232_223).expect("number issue");
+            assert!(crate::packet::encode_u64_num_and_nextelem_len(
+                10000, offset_len, &mut b
+            )
+            .is_ok());
             let expected_header_part = [0x40, 0xaa, 0xe7, 0x10];
             assert_eq!(&header_part, &expected_header_part);
         }
@@ -2086,11 +2102,16 @@ mod tests {
         {
             let mut b = octets::OctetsMut::with_slice(&mut header_part);
             b.skip(1).expect("skip issue");
-            assert!(crate::packet::encode_u64_num_and_nextelem_len(pn, 2, &mut b).is_ok());
+            assert!(crate::packet::encode_u64_num_and_nextelem_len(
+                pn, 2, &mut b
+            )
+            .is_ok());
             let expected_header_part = [0x40, 0x40, 0x48];
             assert_eq!(&header_part, &expected_header_part);
-            let header_pn = u16::from_be_bytes(header_part[1..=2].try_into().unwrap()) as u64;
-            let (expected_pn, num_len) = crate::packet::decode_num_and_nextelem_len(header_pn, 2);
+            let header_pn =
+                u16::from_be_bytes(header_part[1..=2].try_into().unwrap()) as u64;
+            let (expected_pn, num_len) =
+                crate::packet::decode_num_and_nextelem_len(header_pn, 2);
             let expected_pn = crate::packet::decode_pkt_num(71, expected_pn, 2);
             assert_eq!(expected_pn, pn);
             assert_eq!(num_len, 2);
@@ -2100,7 +2121,10 @@ mod tests {
             let mut b = octets::OctetsMut::with_slice(&mut header_part);
             b.skip(3).expect("skip issue");
             let offset_len = offset_len_to_encode(13_000).expect("number issue");
-            assert!(crate::packet::encode_u64_num_and_nextelem_len(1, offset_len, &mut b).is_ok());
+            assert!(crate::packet::encode_u64_num_and_nextelem_len(
+                1, offset_len, &mut b
+            )
+            .is_ok());
             let expected_header_part = [0x40, 0x40, 0x48, 0x41];
             assert_eq!(&header_part, &expected_header_part);
         }
@@ -2112,11 +2136,11 @@ mod tests {
             let expected_header_part = [0x40, 0x40, 0x48, 0x41, 0x32, 0xc8];
             assert_eq!(&header_part, &expected_header_part);
             let header_num = header_part[3] as u64;
-            let (num, next_elem_len) = crate::packet::decode_num_and_nextelem_len(header_num, 1);
+            let (num, next_elem_len) =
+                crate::packet::decode_num_and_nextelem_len(header_num, 1);
             assert_eq!(num, 1);
             assert_eq!(next_elem_len, 2);
         }
-
     }
 
     #[test]
@@ -2170,8 +2194,8 @@ mod tests {
             None,
             &aead,
             crate::PROTOCOL_VERSION_V1,
-            )
-            .unwrap();
+        )
+        .unwrap();
 
         assert_eq!(written, expected_pkt.len());
     }
@@ -2199,7 +2223,7 @@ mod tests {
         assert_eq!(
             decrypt_pkt(&mut b, 0, 1, payload_len, &aead),
             Err(Error::InvalidPacket)
-            );
+        );
     }
 
     #[test]

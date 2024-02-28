@@ -49,7 +49,7 @@ use likely_stable::if_likely;
 #[derive(Debug, Default)]
 pub struct RecvBuf {
     /// Todo -- compare speed with BTreeMap
-    //heap: BinaryHeap<std::cmp::Reverse<RecvBufInfo>>,
+    // heap: BinaryHeap<std::cmp::Reverse<RecvBufInfo>>,
     pub heap: BTreeMap<u64, RecvBufInfo>,
     /// Chunks of data received from the peer that have not yet been read by
     /// the application, ordered by offset.
@@ -58,7 +58,8 @@ pub struct RecvBuf {
     /// The lowest data offset that has yet to be read by the application.
     pub off: u64,
 
-    /// The highest contiguous data offset that has yet to be read by the application.
+    /// The highest contiguous data offset that has yet to be read by the
+    /// application.
     pub contiguous_off: u64,
 
     /// The total length of data received on this stream.
@@ -204,7 +205,6 @@ impl RecvBuf {
         Ok(())
     }
 
-
     pub fn write_v3(&mut self, mut buf: RecvBufInfo) -> Result<()> {
         if buf.max_off() > self.max_data() {
             return Err(Error::FlowControl);
@@ -255,15 +255,16 @@ impl RecvBuf {
 
         if buf.start_off < self.contiguous_off {
             // overlap with contiguous received data not yet read.
-            // This should not happen because the overlap is checked before decryption, and the
-            // packet is dropped.
+            // This should not happen because the overlap is checked before
+            // decryption, and the packet is dropped.
             return Err(Error::InvalidOffset);
         }
 
-        // Should overlapping ranges be treated as PROTOCOL_VIOLATION?  This likely can
-        // get abused by middleboxes. Indeed, Stream DATA isn't globally AE-Secure because of
-        // this, which could be considered a missuse of the AEAD primitive. Note: this is
-        // not particularly an issue of quiche, but rather something silly in the Quic design
+        // Should overlapping ranges be treated as PROTOCOL_VIOLATION?  This
+        // likely can get abused by middleboxes. Indeed, Stream DATA isn't
+        // globally AE-Secure because of this, which could be considered a
+        // missuse of the AEAD primitive. Note: this is not particularly
+        // an issue of quiche, but rather something silly in the Quic design
         // itself, due to UDP.
 
         if self.off_front() > buf.off() && self.off_front() < buf.max_off() {
@@ -368,7 +369,7 @@ impl RecvBuf {
         // Clear all data already buffered.
         self.off = final_size;
 
-        if_likely!{ self.version == crate::PROTOCOL_VERSION_V3 => {
+        if_likely! { self.version == crate::PROTOCOL_VERSION_V3 => {
             self.heap.clear();
 
             let bufinfo = RecvBufInfo::from(final_size, 0, true);
@@ -427,7 +428,7 @@ impl RecvBuf {
 
         self.drain = true;
 
-        if_likely!{self.version == crate::PROTOCOL_VERSION_V3 => {
+        if_likely! {self.version == crate::PROTOCOL_VERSION_V3 => {
             self.heap.clear();
         } else {
             self.data.clear();
@@ -472,7 +473,7 @@ impl RecvBuf {
 
     /// Returns true if the stream has data to be read.
     pub fn ready(&self) -> bool {
-        let ready = if_likely!{self.version == crate::PROTOCOL_VERSION_V3 => {
+        let ready = if_likely! {self.version == crate::PROTOCOL_VERSION_V3 => {
             match self.heap.first_key_value() {
                 Some((_, recvinfo)) => recvinfo.start_off <= self.off,
                 None => false,
@@ -495,7 +496,11 @@ mod tests {
 
     #[test]
     fn empty_read() {
-        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW, crate::PROTOCOL_VERSION);
+        let mut recv = RecvBuf::new(
+            u64::MAX,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -505,12 +510,13 @@ mod tests {
 
     #[test]
     fn empty_stream_frame() {
-        let mut recv = RecvBuf::new(15, DEFAULT_STREAM_WINDOW, crate::PROTOCOL_VERSION);
+        let mut recv =
+            RecvBuf::new(15, DEFAULT_STREAM_WINDOW, crate::PROTOCOL_VERSION);
         assert_eq!(recv.len, 0);
 
         let buf = RangeBuf::from(b"hello", 0, false);
         let bufinfo = RecvBufInfo::from(0, 5, false);
-        let mut app_buf = AppRecvBuf::new(1, Some(42));
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert!(recv.write(buf).is_ok());
             assert_eq!(recv.data.len(), 1);
@@ -526,7 +532,10 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert_eq!(recv.emit(&mut buf), Ok((5, false)));
         } else {
-            assert_eq!((app_buf.read_mut(&mut recv).unwrap().len(), recv.is_fin()), (5, false));
+            assert_eq!(
+                (app_buf.read_mut(&mut recv).unwrap().len(), recv.is_fin()),
+                (5, false)
+            );
             assert!(app_buf.has_consumed(None, 5).is_ok());
         }
 
@@ -604,17 +613,24 @@ mod tests {
             assert_eq!(recv.write_v3(bufinfo), Err(Error::FinalSize));
             let bufinfo = RecvBufInfo::from(4, 0, true);
             assert_eq!(recv.write_v3(bufinfo), Err(Error::FinalSize));
-            assert_eq!((app_buf.read_mut(&mut recv).unwrap().len(), recv.is_fin()), (0, true));
+            assert_eq!(
+                (app_buf.read_mut(&mut recv).unwrap().len(), recv.is_fin()),
+                (0, true)
+            );
         }
     }
 
     #[test]
     fn ordered_read() {
-        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW, crate::PROTOCOL_VERSION);
+        let mut recv = RecvBuf::new(
+            u64::MAX,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
-        let mut app_buf = AppRecvBuf::new(1, Some(42));
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
 
         let first = RangeBuf::from(b"hello", 0, false);
         let firstinfo = RecvBufInfo::from(0, 5, false);
@@ -622,7 +638,6 @@ mod tests {
         let secondinfo = RecvBufInfo::from(5, 5, false);
         let third = RangeBuf::from(b"something", 10, true);
         let thirdinfo = RecvBufInfo::from(10, 9, false);
-
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert!(recv.write(second).is_ok());
@@ -634,7 +649,6 @@ mod tests {
         }
         assert_eq!(recv.len, 10);
         assert_eq!(recv.off, 0);
-
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert!(recv.write(third).is_ok());
@@ -665,14 +679,17 @@ mod tests {
         }
         assert_eq!(recv.len, 19);
         assert_eq!(recv.off, 19);
-
     }
 
     #[test]
     fn split_read() {
         // TODO Double check; we don't need split logic in V3.
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
-            let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW, crate::PROTOCOL_VERSION);
+            let mut recv = RecvBuf::new(
+                u64::MAX,
+                DEFAULT_STREAM_WINDOW,
+                crate::PROTOCOL_VERSION,
+            );
             assert_eq!(recv.len, 0);
 
             let mut buf = [0; 32];
@@ -713,17 +730,20 @@ mod tests {
 
     #[test]
     fn incomplete_read() {
-        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW, crate::PROTOCOL_VERSION);
+        let mut recv = RecvBuf::new(
+            u64::MAX,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
-        let mut app_buf = AppRecvBuf::new(1, Some(42));
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
 
         let first = RangeBuf::from(b"something", 0, false);
         let firstinfo = RecvBufInfo::from(0, 9, false);
         let second = RangeBuf::from(b"helloworld", 9, true);
         let secondinfo = RecvBufInfo::from(9, 10, true);
-
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert!(recv.write(second).is_ok());
@@ -757,11 +777,15 @@ mod tests {
 
     #[test]
     fn zero_len_read() {
-        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW, crate::PROTOCOL_VERSION);
+        let mut recv = RecvBuf::new(
+            u64::MAX,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
-        let mut app_buf = AppRecvBuf::new(1, Some(42));
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
 
         let first = RangeBuf::from(b"something", 0, false);
         let firstinfo = RecvBufInfo::from(0, 9, false);
@@ -788,7 +812,7 @@ mod tests {
         assert_eq!(recv.len, 9);
         assert_eq!(recv.off, 0);
 
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 { 
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             let (len, fin) = recv.emit(&mut buf).unwrap();
             assert_eq!(len, 9);
             assert_eq!(fin, true);
@@ -803,11 +827,15 @@ mod tests {
 
     #[test]
     fn past_read() {
-        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW, crate::PROTOCOL_VERSION);
+        let mut recv = RecvBuf::new(
+            u64::MAX,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
-        let mut app_buf = AppRecvBuf::new(1, Some(42));
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
 
         let first = RangeBuf::from(b"something", 0, false);
         let firstinfo = RecvBufInfo::from(0, 9, false);
@@ -840,7 +868,7 @@ mod tests {
         assert_eq!(recv.len, 9);
         assert_eq!(recv.off, 9);
 
-        if crate::PROTOCOL_VERSION != crate::PROTOCOL_VERSION_V3 { 
+        if crate::PROTOCOL_VERSION != crate::PROTOCOL_VERSION_V3 {
             assert!(recv.write(second).is_ok());
             assert_eq!(recv.data.len(), 0);
         } else {
@@ -850,12 +878,11 @@ mod tests {
         assert_eq!(recv.len, 9);
         assert_eq!(recv.off, 9);
 
-        if crate::PROTOCOL_VERSION != crate::PROTOCOL_VERSION_V3 { 
+        if crate::PROTOCOL_VERSION != crate::PROTOCOL_VERSION_V3 {
             assert_eq!(recv.write(third), Err(Error::FinalSize));
         } else {
             assert_eq!(recv.write_v3(thirdinfo), Err(Error::FinalSize));
         }
-
 
         if crate::PROTOCOL_VERSION != crate::PROTOCOL_VERSION_V3 {
             assert!(recv.write(fourth).is_ok());
@@ -874,8 +901,12 @@ mod tests {
 
     #[test]
     fn fully_overlapping_read() {
-        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW, crate::PROTOCOL_VERSION);
-        let mut app_buf = AppRecvBuf::new(1, Some(42));
+        let mut recv = RecvBuf::new(
+            u64::MAX,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -919,16 +950,19 @@ mod tests {
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert_eq!(recv.emit(&mut buf), Err(Error::Done));
-        }
-        else {
+        } else {
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 0);
         }
     }
 
     #[test]
     fn fully_overlapping_read2() {
-        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW, crate::PROTOCOL_VERSION);
-        let mut app_buf = AppRecvBuf::new(1, Some(42));
+        let mut recv = RecvBuf::new(
+            u64::MAX,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -979,8 +1013,12 @@ mod tests {
 
     #[test]
     fn fully_overlapping_read3() {
-        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW, crate::PROTOCOL_VERSION);
-        let mut app_buf = AppRecvBuf::new(1, Some(42));
+        let mut recv = RecvBuf::new(
+            u64::MAX,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1033,8 +1071,12 @@ mod tests {
 
     #[test]
     fn fully_overlapping_read_multi() {
-        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW, crate::PROTOCOL_VERSION);
-        let mut app_buf = AppRecvBuf::new(1, Some(42));
+        let mut recv = RecvBuf::new(
+            u64::MAX,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1097,8 +1139,12 @@ mod tests {
 
     #[test]
     fn overlapping_start_read() {
-        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW, crate::PROTOCOL_VERSION);
-        let mut app_buf = AppRecvBuf::new(1, Some(42));
+        let mut recv = RecvBuf::new(
+            u64::MAX,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1117,7 +1163,6 @@ mod tests {
         }
         assert_eq!(recv.len, 9);
         assert_eq!(recv.off, 0);
-
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert!(recv.write(second).is_ok());
@@ -1150,8 +1195,12 @@ mod tests {
 
     #[test]
     fn overlapping_end_read() {
-        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW, crate::PROTOCOL_VERSION);
-        let mut app_buf = AppRecvBuf::new(1, Some(42));
+        let mut recv = RecvBuf::new(
+            u64::MAX,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1201,8 +1250,12 @@ mod tests {
 
     #[test]
     fn overlapping_end_twice_read() {
-        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW, crate::PROTOCOL_VERSION);
-        let mut app_buf = AppRecvBuf::new(1, Some(42));
+        let mut recv = RecvBuf::new(
+            u64::MAX,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1216,7 +1269,6 @@ mod tests {
         let fourth = RangeBuf::from(b"helloworld", 0, true);
         let fourthinfo = RecvBufInfo::from(0, 10, false);
 
-
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert!(recv.write(third).is_ok());
             assert_eq!(recv.data.len(), 1);
@@ -1226,7 +1278,6 @@ mod tests {
         }
         assert_eq!(recv.len, 9);
         assert_eq!(recv.off, 0);
-
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert!(recv.write(second).is_ok());
@@ -1247,7 +1298,6 @@ mod tests {
         }
         assert_eq!(recv.len, 9);
         assert_eq!(recv.off, 0);
-
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert!(recv.write(fourth).is_ok());
@@ -1279,8 +1329,12 @@ mod tests {
 
     #[test]
     fn overlapping_end_twice_and_contained_read() {
-        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW, crate::PROTOCOL_VERSION);
-        let mut app_buf = AppRecvBuf::new(1, Some(42));
+        let mut recv = RecvBuf::new(
+            u64::MAX,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1303,7 +1357,6 @@ mod tests {
         }
         assert_eq!(recv.len, 9);
         assert_eq!(recv.off, 0);
-
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert!(recv.write(second).is_ok());
@@ -1357,8 +1410,12 @@ mod tests {
 
     #[test]
     fn partially_multi_overlapping_reordered_read() {
-        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW, crate::PROTOCOL_VERSION);
-        let mut app_buf = AppRecvBuf::new(1, Some(42));
+        let mut recv = RecvBuf::new(
+            u64::MAX,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1421,8 +1478,12 @@ mod tests {
 
     #[test]
     fn partially_multi_overlapping_reordered_read2() {
-        let mut recv = RecvBuf::new(u64::MAX, DEFAULT_STREAM_WINDOW, crate::PROTOCOL_VERSION);
-        let mut app_buf = AppRecvBuf::new(1, Some(42));
+        let mut recv = RecvBuf::new(
+            u64::MAX,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];

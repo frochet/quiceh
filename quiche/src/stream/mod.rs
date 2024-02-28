@@ -572,7 +572,6 @@ impl StreamMap {
         self.remove_flushable(&s.priority_key);
     }
 
-
     /// Creates an iterator over streams that have outstanding data to read.
     pub fn readable(&self) -> StreamIter {
         StreamIter {
@@ -666,9 +665,12 @@ impl StreamMap {
     pub fn len(&self) -> usize {
         self.streams.len()
     }
-    //TODO PROTOCOL_REVERSO
+
+    // TODO PROTOCOL_REVERSO
     /// Rewind the Stream_id's receive buffer of num bytes
-    pub fn rewind_recv_buf(&mut self, _stream_id: u64, _num: usize) -> Result<()> {
+    pub fn rewind_recv_buf(
+        &mut self, _stream_id: u64, _num: usize,
+    ) -> Result<()> {
         Ok(())
     }
 }
@@ -933,7 +935,6 @@ pub struct RecvBufInfo {
 }
 
 impl RecvBufInfo {
-
     pub fn from(start_off: u64, len: usize, fin: bool) -> RecvBufInfo {
         RecvBufInfo {
             start_off,
@@ -971,7 +972,6 @@ impl RecvBufInfo {
         self.data.as_deref()
     }
 }
-
 
 impl Ord for RecvBufInfo {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -1133,9 +1133,16 @@ mod tests {
 
     #[test]
     fn recv_flow_control() {
-        let mut stream = Stream::new(0, 15, 0, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
-        let mut app_buf = AppRecvBuf::new(1, Some(42));
+        let mut stream = Stream::new(
+            0,
+            15,
+            0,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
         assert!(!stream.recv.almost_full());
 
         let mut buf = [0; 32];
@@ -1185,8 +1192,15 @@ mod tests {
 
     #[test]
     fn recv_past_fin() {
-        let mut stream = Stream::new(0, 15, 0, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
+        let mut stream = Stream::new(
+            0,
+            15,
+            0,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
         assert!(!stream.recv.almost_full());
 
         let first = RangeBuf::from(b"hello", 0, true);
@@ -1205,9 +1219,16 @@ mod tests {
 
     #[test]
     fn recv_fin_dup() {
-        let mut stream = Stream::new(0, 15, 0, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
-        let mut app_buf = AppRecvBuf::new(1, Some(42));
+        let mut stream = Stream::new(
+            0,
+            15,
+            0,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
         assert!(!stream.recv.almost_full());
 
         let first = RangeBuf::from(b"hello", 0, true);
@@ -1233,8 +1254,15 @@ mod tests {
 
     #[test]
     fn recv_fin_change() {
-        let mut stream = Stream::new(0, 15, 0, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
+        let mut stream = Stream::new(
+            0,
+            15,
+            0,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
         assert!(!stream.recv.almost_full());
 
         let first = RangeBuf::from(b"hello", 0, true);
@@ -1253,8 +1281,15 @@ mod tests {
 
     #[test]
     fn recv_fin_lower_than_received() {
-        let mut stream = Stream::new(0, 15, 0, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
+        let mut stream = Stream::new(
+            0,
+            15,
+            0,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
         assert!(!stream.recv.almost_full());
 
         let first = RangeBuf::from(b"hello", 0, true);
@@ -1266,9 +1301,16 @@ mod tests {
 
     #[test]
     fn recv_fin_flow_control() {
-        let mut stream = Stream::new(0, 15, 0, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
-        let mut app_buf = AppRecvBuf::new(1, Some(42));
+        let mut stream = Stream::new(
+            0,
+            15,
+            0,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
         assert!(!stream.recv.almost_full());
 
         let mut buf = [0; 32];
@@ -1277,7 +1319,6 @@ mod tests {
         let firstinfo = RecvBufInfo::from(0, 5, false);
         let second = RangeBuf::from(b"world", 5, true);
         let secondinfo = RecvBufInfo::from(5, 5, true);
-
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert_eq!(stream.recv.write(first), Ok(()));
@@ -1297,8 +1338,15 @@ mod tests {
 
     #[test]
     fn recv_fin_reset_mismatch() {
-        let mut stream = Stream::new(0, 15, 0, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
+        let mut stream = Stream::new(
+            0,
+            15,
+            0,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
         assert!(!stream.recv.almost_full());
 
         let first = RangeBuf::from(b"hello", 0, true);
@@ -1314,8 +1362,15 @@ mod tests {
 
     #[test]
     fn recv_reset_dup() {
-        let mut stream = Stream::new(0, 15, 0, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
+        let mut stream = Stream::new(
+            0,
+            15,
+            0,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
         assert!(!stream.recv.almost_full());
 
         let first = RangeBuf::from(b"hello", 0, false);
@@ -1332,8 +1387,15 @@ mod tests {
 
     #[test]
     fn recv_reset_change() {
-        let mut stream = Stream::new(0, 15, 0, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
+        let mut stream = Stream::new(
+            0,
+            15,
+            0,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
         assert!(!stream.recv.almost_full());
 
         let first = RangeBuf::from(b"hello", 0, false);
@@ -1350,8 +1412,15 @@ mod tests {
 
     #[test]
     fn recv_reset_lower_than_received() {
-        let mut stream = Stream::new(0, 15, 0, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
+        let mut stream = Stream::new(
+            0,
+            15,
+            0,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
         assert!(!stream.recv.almost_full());
 
         let first = RangeBuf::from(b"hello", 0, false);
@@ -1370,8 +1439,15 @@ mod tests {
     fn send_flow_control() {
         let mut buf = [0; 25];
 
-        let mut stream = Stream::new(0, 0, 15, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
+        let mut stream = Stream::new(
+            0,
+            0,
+            15,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         let first = b"hello";
         let second = b"world";
@@ -1414,8 +1490,15 @@ mod tests {
 
     #[test]
     fn send_past_fin() {
-        let mut stream = Stream::new(0, 0, 15, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
+        let mut stream = Stream::new(
+            0,
+            0,
+            15,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         let first = b"hello";
         let second = b"world";
@@ -1431,8 +1514,15 @@ mod tests {
 
     #[test]
     fn send_fin_dup() {
-        let mut stream = Stream::new(0, 0, 15, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
+        let mut stream = Stream::new(
+            0,
+            0,
+            15,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         assert_eq!(stream.send.write(b"hello", true), Ok(5));
         assert!(stream.send.is_fin());
@@ -1443,8 +1533,15 @@ mod tests {
 
     #[test]
     fn send_undo_fin() {
-        let mut stream = Stream::new(0, 0, 15, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
+        let mut stream = Stream::new(
+            0,
+            0,
+            15,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         assert_eq!(stream.send.write(b"hello", true), Ok(5));
         assert!(stream.send.is_fin());
@@ -1459,8 +1556,15 @@ mod tests {
     fn send_fin_max_data_match() {
         let mut buf = [0; 15];
 
-        let mut stream = Stream::new(0, 0, 15, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
+        let mut stream = Stream::new(
+            0,
+            0,
+            15,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         let slice = b"hellohellohello";
 
@@ -1476,8 +1580,15 @@ mod tests {
     fn send_fin_zero_length() {
         let mut buf = [0; 5];
 
-        let mut stream = Stream::new(0, 0, 15, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
+        let mut stream = Stream::new(
+            0,
+            0,
+            15,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         assert_eq!(stream.send.write(b"hello", false), Ok(5));
         assert_eq!(stream.send.write(b"", true), Ok(0));
@@ -1493,8 +1604,15 @@ mod tests {
     fn send_ack() {
         let mut buf = [0; 5];
 
-        let mut stream = Stream::new(0, 0, 15, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
+        let mut stream = Stream::new(
+            0,
+            0,
+            15,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         assert_eq!(stream.send.write(b"hello", false), Ok(5));
         assert_eq!(stream.send.write(b"world", false), Ok(5));
@@ -1524,8 +1642,15 @@ mod tests {
     fn send_ack_reordering() {
         let mut buf = [0; 5];
 
-        let mut stream = Stream::new(0, 0, 15, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
+        let mut stream = Stream::new(
+            0,
+            0,
+            15,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         assert_eq!(stream.send.write(b"hello", false), Ok(5));
         assert_eq!(stream.send.write(b"world", false), Ok(5));
@@ -1562,14 +1687,22 @@ mod tests {
 
     #[test]
     fn recv_data_below_off() {
-        // Receiving data below off() is a violation in V3. Indeed, this MUST not happen, or the
-        // stream would not be AE-Secure. In Quic V1, to maintain AE-Security, the receiver should
-        // always retain previous received packets and memcmp() to the content of the new one if
-        // below_off() is true (the overlap MUST be the same data). This is too expensive to be an
-        // thing, so we work around this in V3.
+        // Receiving data below off() is a violation in V3. Indeed, this MUST not
+        // happen, or the stream would not be AE-Secure. In Quic V1, to
+        // maintain AE-Security, the receiver should always retain
+        // previous received packets and memcmp() to the content of the new one if
+        // below_off() is true (the overlap MUST be the same data). This is too
+        // expensive to be an thing, so we work around this in V3.
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
-            let mut stream = Stream::new(0, 15, 0, true, true, DEFAULT_STREAM_WINDOW,
-                                         crate::PROTOCOL_VERSION);
+            let mut stream = Stream::new(
+                0,
+                15,
+                0,
+                true,
+                true,
+                DEFAULT_STREAM_WINDOW,
+                crate::PROTOCOL_VERSION,
+            );
 
             let first = RangeBuf::from(b"hello", 0, false);
 
@@ -1592,9 +1725,16 @@ mod tests {
 
     #[test]
     fn stream_complete() {
-        let mut stream = Stream::new(0, 30, 30, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
-        let mut app_buf = AppRecvBuf::new(1, Some(42));
+        let mut stream = Stream::new(
+            0,
+            30,
+            30,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
+        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
 
         assert_eq!(stream.send.write(b"hello", false), Ok(5));
         assert_eq!(stream.send.write(b"world", false), Ok(5));
@@ -1654,8 +1794,15 @@ mod tests {
     fn send_fin_zero_length_output() {
         let mut buf = [0; 5];
 
-        let mut stream = Stream::new(0, 0, 15, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
+        let mut stream = Stream::new(
+            0,
+            0,
+            15,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         assert_eq!(stream.send.write(b"hello", false), Ok(5));
         assert_eq!(stream.send.off_front(), 0);
@@ -1680,8 +1827,15 @@ mod tests {
     fn send_emit() {
         let mut buf = [0; 5];
 
-        let mut stream = Stream::new(0, 0, 20, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
+        let mut stream = Stream::new(
+            0,
+            0,
+            20,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         assert_eq!(stream.send.write(b"hello", false), Ok(5));
         assert_eq!(stream.send.write(b"world", false), Ok(5));
@@ -1733,8 +1887,15 @@ mod tests {
     fn send_emit_ack() {
         let mut buf = [0; 5];
 
-        let mut stream = Stream::new(0, 0, 20, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
+        let mut stream = Stream::new(
+            0,
+            0,
+            20,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         assert_eq!(stream.send.write(b"hello", false), Ok(5));
         assert_eq!(stream.send.write(b"world", false), Ok(5));
@@ -1801,8 +1962,15 @@ mod tests {
     fn send_emit_retransmit() {
         let mut buf = [0; 5];
 
-        let mut stream = Stream::new(0, 0, 20, true, true, DEFAULT_STREAM_WINDOW,
-                                     crate::PROTOCOL_VERSION);
+        let mut stream = Stream::new(
+            0,
+            0,
+            20,
+            true,
+            true,
+            DEFAULT_STREAM_WINDOW,
+            crate::PROTOCOL_VERSION,
+        );
 
         assert_eq!(stream.send.write(b"hello", false), Ok(5));
         assert_eq!(stream.send.write(b"world", false), Ok(5));
@@ -2039,8 +2207,14 @@ mod tests {
         assert!(is_bidi(stream_id), "stream id is bidirectional");
         assert_eq!(
             streams
-                .get_or_create(stream_id, &local_tp, &peer_tp, false, true,
-                               crate::PROTOCOL_VERSION)
+                .get_or_create(
+                    stream_id,
+                    &local_tp,
+                    &peer_tp,
+                    false,
+                    true,
+                    crate::PROTOCOL_VERSION
+                )
                 .err(),
             Some(Error::StreamLimit),
             "stream limit should be exceeded"
@@ -2060,8 +2234,14 @@ mod tests {
             assert!(is_local(stream_id, false), "stream id is client initiated");
             assert!(is_bidi(stream_id), "stream id is bidirectional");
             assert!(streams
-                .get_or_create(stream_id, &local_tp, &peer_tp, false, true,
-                               crate::PROTOCOL_VERSION)
+                .get_or_create(
+                    stream_id,
+                    &local_tp,
+                    &peer_tp,
+                    false,
+                    true,
+                    crate::PROTOCOL_VERSION
+                )
                 .is_ok());
         }
     }
@@ -2075,13 +2255,20 @@ mod tests {
         let mut streams = StreamMap::new(3, 3, 3);
 
         // Highest permitted
-        let stream_id =  if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
+        let stream_id = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             8
         } else {
             12
         };
         assert!(streams
-            .get_or_create(stream_id, &local_tp, &peer_tp, false, true, crate::PROTOCOL_VERSION)
+            .get_or_create(
+                stream_id,
+                &local_tp,
+                &peer_tp,
+                false,
+                true,
+                crate::PROTOCOL_VERSION
+            )
             .is_ok());
 
         // One more than highest permitted
@@ -2092,7 +2279,14 @@ mod tests {
         };
         assert_eq!(
             streams
-                .get_or_create(stream_id, &local_tp, &peer_tp, false, true, crate::PROTOCOL_VERSION)
+                .get_or_create(
+                    stream_id,
+                    &local_tp,
+                    &peer_tp,
+                    false,
+                    true,
+                    crate::PROTOCOL_VERSION
+                )
                 .err(),
             Some(Error::StreamLimit)
         );
@@ -2116,7 +2310,14 @@ mod tests {
 
         for id in [4, 8, 12, 16] {
             assert!(streams
-                .get_or_create(id, &local_tp, &peer_tp, false, true, crate::PROTOCOL_VERSION)
+                .get_or_create(
+                    id,
+                    &local_tp,
+                    &peer_tp,
+                    false,
+                    true,
+                    crate::PROTOCOL_VERSION
+                )
                 .is_ok());
         }
 
@@ -2154,7 +2355,14 @@ mod tests {
         // same order to start with.
         for id in [16, 8, 12, 4] {
             assert!(streams
-                .get_or_create(id, &local_tp, &peer_tp, false, true, crate::PROTOCOL_VERSION)
+                .get_or_create(
+                    id,
+                    &local_tp,
+                    &peer_tp,
+                    false,
+                    true,
+                    crate::PROTOCOL_VERSION
+                )
                 .is_ok());
         }
 
@@ -2205,7 +2413,14 @@ mod tests {
             // this duplicates some code from stream_priority in order to access
             // streams and the collection they're in
             let stream = streams
-                .get_or_create(id, &local_tp, &peer_tp, false, true, crate::PROTOCOL_VERSION)
+                .get_or_create(
+                    id,
+                    &local_tp,
+                    &peer_tp,
+                    false,
+                    true,
+                    crate::PROTOCOL_VERSION,
+                )
                 .unwrap();
 
             stream.urgency = urgency;
@@ -2233,7 +2448,14 @@ mod tests {
             // this duplicates some code from stream_priority in order to access
             // streams and the collection they're in
             let stream = streams
-                .get_or_create(id, &local_tp, &peer_tp, false, true, crate::PROTOCOL_VERSION)
+                .get_or_create(
+                    id,
+                    &local_tp,
+                    &peer_tp,
+                    false,
+                    true,
+                    crate::PROTOCOL_VERSION,
+                )
                 .unwrap();
 
             stream.urgency = urgency;
@@ -2270,7 +2492,14 @@ mod tests {
 
         // Adding streams doesn't break expected ordering.
         streams
-            .get_or_create(48, &local_tp, &peer_tp, false, true, crate::PROTOCOL_VERSION)
+            .get_or_create(
+                48,
+                &local_tp,
+                &peer_tp,
+                false,
+                true,
+                crate::PROTOCOL_VERSION,
+            )
             .unwrap();
 
         let walk_5: Vec<u64> = streams.writable().collect();
@@ -2307,7 +2536,14 @@ mod tests {
             // this duplicates some code from stream_priority in order to access
             // streams and the collection they're in
             let stream = streams
-                .get_or_create(id, &local_tp, &peer_tp, false, true, crate::PROTOCOL_VERSION)
+                .get_or_create(
+                    id,
+                    &local_tp,
+                    &peer_tp,
+                    false,
+                    true,
+                    crate::PROTOCOL_VERSION,
+                )
                 .unwrap();
 
             stream.urgency = urgency;
@@ -2382,7 +2618,14 @@ mod tests {
 
         // Adding streams doesn't break expected ordering.
         let stream = streams
-            .get_or_create(48, &local_tp, &peer_tp, false, true, crate::PROTOCOL_VERSION)
+            .get_or_create(
+                48,
+                &local_tp,
+                &peer_tp,
+                false,
+                true,
+                crate::PROTOCOL_VERSION,
+            )
             .unwrap();
 
         stream.urgency = 20;
