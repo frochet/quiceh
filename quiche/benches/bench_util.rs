@@ -6,6 +6,36 @@ use criterion::Throughput;
 
 const NANOS_PER_SEC: u64 = 1_000_000_000;
 
+#[derive(Default)]
+pub struct StreamIdHasher {
+    id: u64,
+}
+
+impl std::hash::Hasher for StreamIdHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.id
+    }
+
+    #[inline]
+    fn write_u64(&mut self, id: u64) {
+        self.id = id;
+    }
+
+    #[inline]
+    fn write(&mut self, _: &[u8]) {
+        // We need a default write() for the trait but stream IDs will always
+        // be a u64 so we just delegate to write_u64.
+        unimplemented!()
+    }
+}
+
+type BuildStreamIdHasher = std::hash::BuildHasherDefault<StreamIdHasher>;
+
+pub type StreamIdHashMap<V> = std::collections::HashMap<u64, V, BuildStreamIdHasher>;
+
+/// Keeps track of QUIC streams and enforces stream limits.
+
 pub struct CPUTime;
 impl Measurement for CPUTime {
     type Intermediate = ProcessTime;
