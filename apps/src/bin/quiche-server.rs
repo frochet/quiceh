@@ -391,7 +391,7 @@ fn main() {
                     max_send_burst: MAX_BUF_SIZE,
                     app_buffers: quiche::AppRecvBufMap::new(
                         3,
-                        conn_args.max_stream_data,
+                        conn_args.max_stream_window,
                         conn_args.max_streams_bidi,
                         conn_args.max_streams_uni,
                     ),

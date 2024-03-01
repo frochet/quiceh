@@ -352,8 +352,8 @@ impl AppRecvBuf {
                     false,
                     self.output_off.checked_sub(self.consumed as u64).ok_or(
                         Error::InvalidAPICall(
-                            "You may have consumed more than what was
-                                                  available to read",
+                            "You may have consumed more than what was \
+                             available to read",
                         ),
                     )? as usize,
                 ))
@@ -396,6 +396,12 @@ impl AppRecvBuf {
         &mut self, stream_offset: u64, to_reserve: usize, recv: &RecvBuf,
     ) -> Result<u64> {
         if stream_offset < recv.contiguous_off {
+
+            trace!(
+                "We've received a packet holding an offset {} already \
+                in our contiguous buffer but not yet read by the application. \
+                consumed index is {}", stream_offset, self.consumed
+            );
             // In V3, we do not accept a packet that would overlap a contiguous
             // range of data already processed but not yet read by the
             // application. This could happen due to aggressive
@@ -403,23 +409,23 @@ impl AppRecvBuf {
             return Err(Error::InvalidOffset);
         }
 
-        if self.is_almost_full() {
-            // If the application has a correct pacing, this should not happen.
-            trace!(
-                "We're almost full! Copying {} bytes",
-                self.max_buffer_data - self.consumed,
-            );
-            self.outbuf
-                .copy_within(self.consumed..self.max_buffer_data, 0);
-            self.tot_rewind =
-                self.tot_rewind.saturating_add(self.consumed as u64);
-            self.output_off = self.output_off - self.consumed as u64;
-            self.consumed = 0;
-        }
-
-        let outbuf_off = stream_offset
+        let mut outbuf_off = stream_offset
             .checked_sub(self.tot_rewind)
             .ok_or(Error::InvalidOffset)?;
+
+        if self.is_almost_full(outbuf_off) && self.consumed > 0 {
+            trace!(
+                "We're almost full! Copying {} bytes",
+                self.max_buffer_data as u64 - outbuf_off,
+                );
+            self.outbuf
+                .copy_within(self.consumed..outbuf_off as usize, 0);
+            self.tot_rewind =
+                self.tot_rewind.saturating_add(self.consumed as u64);
+            self.output_off -= self.consumed as u64;
+            outbuf_off -= self.consumed as u64;
+            self.consumed = 0;
+        }
 
         // TODO I need the configured stream_window here instead.
         // We're having an offset that is definitely outside of logical bounds.
@@ -431,15 +437,6 @@ impl AppRecvBuf {
         // didn't consume. We lose the packet and return the error to the
         // application.
         self.ensures_size(outbuf_off as usize + to_reserve)?;
-
-        if outbuf_off >
-            self.outbuf
-                .capacity()
-                .checked_sub(to_reserve)
-                .ok_or(Error::InvalidOffset)? as u64
-        {
-            return Err(Error::BufferTooShort);
-        }
 
         Ok(outbuf_off)
     }
@@ -461,6 +458,10 @@ impl AppRecvBuf {
             self.outbuf.resize(minmax, 0);
             unsafe { self.outbuf.set_len(minmax) };
         } else if size > self.max_buffer_data {
+            trace!(
+                "BUG: asking for a size bigger than {}",
+                self.max_buffer_data
+            );
             return Err(Error::BufferTooShort);
         }
 
@@ -468,8 +469,8 @@ impl AppRecvBuf {
     }
 
     /// todo
-    fn is_almost_full(&self) -> bool {
-        let available_space = (self.max_buffer_data - self.consumed) as u64;
+    fn is_almost_full(&self, output_off: u64) -> bool {
+        let available_space = self.max_buffer_data as u64 - output_off;
 
         // The notion of "almost full" for the application buffer depends
         // on the chunk size that the application consumes. The application should

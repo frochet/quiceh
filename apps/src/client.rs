@@ -182,7 +182,7 @@ pub fn connect(
 
     let mut app_buffers = AppRecvBufMap::new(
         3,
-        conn_args.max_stream_data,
+        conn_args.max_stream_window,
         conn_args.max_streams_bidi,
         conn_args.max_streams_uni,
     );
