@@ -223,7 +223,7 @@ criterion_group! {
     config = Criterion::default()
         .measurement_time(std::time::Duration::from_secs(1))
         .with_measurement(CPUTime)
-        .sample_size(20);
+        .sample_size(5000);
     targets = criterion_benchmark
 }
 

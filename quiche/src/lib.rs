@@ -7447,7 +7447,7 @@ impl Connection {
             frame::Frame::Crypto { data } => {
                 // Push the data to the stream so it can be re-ordered.
                 // TODO Protocol Reverso: optimize away this buf allocation and 2
-                // copies
+                // copies -- and enforce stream level integrity.
                 self.pkt_num_spaces[epoch].crypto_stream.recv.write(data)?;
 
                 // Feed crypto data to the TLS state, if there's data
