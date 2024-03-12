@@ -5908,7 +5908,7 @@ mod tests {
         if s.pipe.client.version == crate::PROTOCOL_VERSION_V3 {
             assert_eq!(
                 s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
-                Ok(48),
+                Ok(51),
             );
         } else {
             assert_eq!(
@@ -7298,7 +7298,7 @@ mod tests {
         if s.pipe.client.version == crate::PROTOCOL_VERSION_V3 {
             assert_eq!(
                 s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
-                Ok(48)
+                Ok(51)
             );
         } else {
             assert_eq!(
@@ -7315,7 +7315,7 @@ mod tests {
         if s.pipe.client.version == crate::PROTOCOL_VERSION_V3 {
             assert_eq!(
                 s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
-                Ok(48)
+                Ok(51)
             );
         } else {
             assert_eq!(
@@ -7442,7 +7442,7 @@ mod tests {
         if s.pipe.client.version == crate::PROTOCOL_VERSION_V3 {
             assert_eq!(
                 s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
-                Ok(48)
+                Ok(51)
             );
         } else {
             assert_eq!(

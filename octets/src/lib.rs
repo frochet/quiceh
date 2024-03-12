@@ -201,7 +201,7 @@ impl<'a> Octets<'a> {
         get_u!(self, u8, 1)
     }
 
-    /// Decreases the buffer's offset by 1 and reads an unsigned 8-bit integer
+    /// Decreases the buffer's offset by 1 and reads an unsigned 8-bits integer
     pub fn get_u8_reverse(&mut self) -> Result<u8> {
         get_u_reverse!(self, u8, 1);
     }
@@ -222,7 +222,7 @@ impl<'a> Octets<'a> {
         get_u!(self, u16, 2)
     }
 
-    /// Decreases the buffer's offset by 2 and reads an unsigned 16-bit integer
+    /// Decreases the buffer's offset by 2 and reads an unsigned 16-bits integer
     pub fn get_u16_reverse(&mut self) -> Result<u16> {
         get_u_reverse!(self, u16, 2)
     }
@@ -233,6 +233,7 @@ impl<'a> Octets<'a> {
         get_u!(self, u32, 3)
     }
 
+    /// Decreases the buffer's offset by 3 and reads an unsigned 24-bits integer
     pub fn get_u24_reverse(&mut self) -> Result<u32> {
         get_u_reverse!(self, u32, 3)
     }
@@ -243,8 +244,15 @@ impl<'a> Octets<'a> {
         get_u!(self, u32, 4)
     }
 
+    /// Decreases the buffer's offset by 4 and reads an unsigned 32-bits integer.
     pub fn get_u32_reverse(&mut self) -> Result<u32> {
         get_u_reverse!(self, u32, 4)
+    }
+
+    /// Reads an unsigned 56-bit integer in a network byte-order from the current
+    /// offset and advances the buffer.
+    pub fn get_u56(&mut self) -> Result<u64> {
+        get_u!(self, u64, 7)
     }
 
     /// Reads an unsigned 64-bit integer in network byte-order from the current
@@ -547,6 +555,18 @@ impl<'a> OctetsMut<'a> {
     /// offset and advances the buffer.
     pub fn put_u32(&mut self, v: u32) -> Result<&mut [u8]> {
         put_u!(self, u32, v, 4)
+    }
+
+    /// Reads an unsigned 64-bit integer in network byte-order from the current
+    /// offset and advances the buffer.
+    pub fn get_u56(&mut self) -> Result<u64> {
+        get_u!(self, u64, 7)
+    }
+
+    /// Writes an unsigned 56-bit integer in network byte-order at the current
+    /// offset and advances the buffer.
+    pub fn put_u56(&mut self, v: u64) -> Result<&mut [u8]> {
+        put_u!(self, u64, v, 7)
     }
 
     /// Reads an unsigned 64-bit integer in network byte-order from the current
@@ -962,32 +982,36 @@ mod tests {
     #[test]
     fn get_u_mut() {
         let mut d = [
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25
         ];
 
         let mut b = OctetsMut::with_slice(&mut d);
-        assert_eq!(b.cap(), 18);
+        assert_eq!(b.cap(), 25);
         assert_eq!(b.off(), 0);
 
         assert_eq!(b.get_u8().unwrap(), 1);
-        assert_eq!(b.cap(), 17);
+        assert_eq!(b.cap(), 24);
         assert_eq!(b.off(), 1);
 
         assert_eq!(b.get_u16().unwrap(), 0x203);
-        assert_eq!(b.cap(), 15);
+        assert_eq!(b.cap(), 22);
         assert_eq!(b.off(), 3);
 
         assert_eq!(b.get_u24().unwrap(), 0x40506);
-        assert_eq!(b.cap(), 12);
+        assert_eq!(b.cap(), 19);
         assert_eq!(b.off(), 6);
 
         assert_eq!(b.get_u32().unwrap(), 0x0708090a);
-        assert_eq!(b.cap(), 8);
+        assert_eq!(b.cap(), 15);
         assert_eq!(b.off(), 10);
 
-        assert_eq!(b.get_u64().unwrap(), 0x0b0c0d0e0f101112);
+        assert_eq!(b.get_u56().unwrap(), 0xb0c0d0e0f1011);
+        assert_eq!(b.cap(), 8);
+        assert_eq!(b.off(), 17);
+
+        assert_eq!(b.get_u64().unwrap(), 0x1213141516171819);
         assert_eq!(b.cap(), 0);
-        assert_eq!(b.off(), 18);
+        assert_eq!(b.off(), 25);
 
         assert!(b.get_u8().is_err());
         assert!(b.get_u16().is_err());
@@ -1324,38 +1348,43 @@ mod tests {
 
     #[test]
     fn put_u() {
-        let mut d = [0; 18];
+        let mut d = [0; 25];
 
         {
             let mut b = OctetsMut::with_slice(&mut d);
-            assert_eq!(b.cap(), 18);
+            assert_eq!(b.cap(), 25);
             assert_eq!(b.off(), 0);
 
             assert!(b.put_u8(1).is_ok());
-            assert_eq!(b.cap(), 17);
+            assert_eq!(b.cap(), 24);
             assert_eq!(b.off(), 1);
 
             assert!(b.put_u16(0x203).is_ok());
-            assert_eq!(b.cap(), 15);
+            assert_eq!(b.cap(), 22);
             assert_eq!(b.off(), 3);
 
             assert!(b.put_u24(0x40506).is_ok());
-            assert_eq!(b.cap(), 12);
+            assert_eq!(b.cap(), 19);
             assert_eq!(b.off(), 6);
 
             assert!(b.put_u32(0x0708090a).is_ok());
-            assert_eq!(b.cap(), 8);
+            assert_eq!(b.cap(), 15);
             assert_eq!(b.off(), 10);
 
-            assert!(b.put_u64(0x0b0c0d0e0f101112).is_ok());
+            assert!(b.put_u56(0xb0c0d0e0f1011).is_ok());
+            assert_eq!(b.cap(), 8);
+            assert_eq!(b.off(), 17);
+
+            assert!(b.put_u64(0x1213141516171819).is_ok());
             assert_eq!(b.cap(), 0);
-            assert_eq!(b.off(), 18);
+            assert_eq!(b.off(), 25);
 
             assert!(b.put_u8(1).is_err());
         }
 
         let exp = [
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+            19, 20, 21, 22, 23, 24, 25
         ];
         assert_eq!(&d, &exp);
     }

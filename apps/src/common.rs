@@ -1302,9 +1302,9 @@ impl HttpConn for Http3Conn {
                     // If this condition is not satified, we can conn.recv() more
                     // before processing what we already have.
                     // As long as MAX_FLUSH_SIZE < --max-data/2; this is okay.
-                    if b.len() >= crate::client::MAX_FLUSH_SIZE ||
-                        b.len() == tot_exp_len
-                    {
+                    //if b.len() >= crate::client::MAX_FLUSH_SIZE ||
+                        //b.len() == tot_exp_len
+                    //{
                         let req = self
                             .reqs
                             .iter_mut()
@@ -1334,7 +1334,7 @@ impl HttpConn for Http3Conn {
                                     .unwrap();
                             },
                         }
-                    }
+                    //}
                 },
 
                 Ok((_stream_id, quiche::h3::Event::Finished)) => {

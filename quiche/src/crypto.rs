@@ -256,15 +256,15 @@ impl Open {
         Ok(mask)
     }
 
-    pub fn new_mask_13(&self, sample: &[u8]) -> Result<[u8; 13]> {
+    pub fn new_mask_16(&self, sample: &[u8]) -> Result<[u8; 16]> {
         if cfg!(feature = "fuzzing") {
-            return Ok(<[u8; 13]>::default());
+            return Ok(<[u8; 16]>::default());
         }
 
         let mask = self
             .header
             .hpk
-            .new_mask_13(sample)
+            .new_mask_16(sample)
             .map_err(|_| Error::CryptoFail)?;
         Ok(mask)
     }
@@ -400,15 +400,15 @@ impl Seal {
         Ok(mask)
     }
 
-    pub fn new_mask_13(&self, sample: &[u8]) -> Result<[u8; 13]> {
+    pub fn new_mask_16(&self, sample: &[u8]) -> Result<[u8; 16]> {
         if cfg!(feature = "fuzzing") {
-            return Ok(<[u8; 13]>::default());
+            return Ok(<[u8; 16]>::default());
         }
 
         let mask = self
             .header
             .hpk
-            .new_mask_13(sample)
+            .new_mask_16(sample)
             .map_err(|_| Error::CryptoFail)?;
         Ok(mask)
     }

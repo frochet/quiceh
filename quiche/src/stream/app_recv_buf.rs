@@ -400,7 +400,7 @@ impl AppRecvBuf {
             trace!(
                 "We've received a packet holding an offset {} already \
                 in our contiguous buffer but not yet read by the application. \
-                consumed index is {}", stream_offset, self.consumed
+                consumed index is {} and output offset is {}", stream_offset, self.consumed, self.output_off
             );
             // In V3, we do not accept a packet that would overlap a contiguous
             // range of data already processed but not yet read by the
@@ -413,7 +413,7 @@ impl AppRecvBuf {
             .checked_sub(self.tot_rewind)
             .ok_or(Error::InvalidOffset)?;
 
-        if self.is_almost_full(outbuf_off) && self.consumed > 0 {
+        if self.is_almost_full(outbuf_off)? && self.consumed > 0 {
             trace!(
                 "We're almost full! Copying {} bytes",
                 self.max_buffer_data as u64 - outbuf_off,
@@ -469,14 +469,14 @@ impl AppRecvBuf {
     }
 
     /// todo
-    fn is_almost_full(&self, output_off: u64) -> bool {
-        let available_space = self.max_buffer_data as u64 - output_off;
+    fn is_almost_full(&self, output_off: u64) -> Result<bool> {
+        let available_space = (self.max_buffer_data as u64).checked_sub(output_off).ok_or(Error::InvalidOffset)?;
 
         // The notion of "almost full" for the application buffer depends
         // on the chunk size that the application consumes. The application should
         // set almost_full_window to their larger chunk size they could be waiting
         // on.
-        available_space < self.almost_full_window
+        Ok(available_space < self.almost_full_window)
     }
 
     /// Clear the buffer meta-data

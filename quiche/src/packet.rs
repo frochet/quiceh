@@ -52,7 +52,7 @@ pub const MAX_CID_LEN: u8 = 20;
 
 pub const MAX_PKT_NUM_LEN: usize = 4;
 pub const MAX_PKT_NUM_LEN_STREAMID_OFFSET_LEN_FOR_DGRAM: usize = 6;
-pub const MAX_PKT_NUM_STREAMID_OFFSET_LEN: usize = 12;
+pub const MAX_PKT_NUM_STREAMID_OFFSET_LEN: usize = 15;
 
 const SAMPLE_LEN: usize = 16;
 
@@ -595,7 +595,24 @@ pub fn num_len_to_encode(num: u64) -> usize {
 /// 3 or 4. so it should returns 0,1,2 or 3
 #[inline]
 pub fn offset_len_to_encode(offset: u64) -> Result<usize> {
-    pkt_num_len(offset)
+    offset_num_len(offset)
+}
+
+#[inline]
+pub fn offset_num_len(offset: u64) -> Result<usize> {
+    let len = if offset < u64::from(u8::MAX) {
+        1
+    } else if offset < u64::from(u16::MAX) {
+        2
+    } else if offset < u64::from(u32::MAX) {
+        3
+    } else if offset < 72_057_594_037_927_935u64 {
+        // 2**56 - 1
+        4
+    } else {
+        return Err(Error::InvalidPacket);
+    };
+    Ok(len)
 }
 
 #[inline]
@@ -613,6 +630,22 @@ pub fn pkt_num_len(pn: u64) -> Result<usize> {
     };
     Ok(len)
 }
+
+pub fn unpack_var_offset_in_hdr(len: usize, b: &mut octets::Octets) -> Result<u64> {
+    let val = match len {
+        1 => u64::from(b.get_u8()?),
+
+        2 => u64::from(b.get_u16()?),
+
+        4 => u64::from(b.get_u32()?),
+
+        7 => u64::from(b.get_u56()?),
+        _ => return Err(Error::InvalidPacket),
+    };
+
+    Ok(val)
+}
+
 #[inline]
 pub fn unpack_var_int_in_hdr(len: usize, b: &mut octets::Octets) -> Result<u64> {
     let val = match len {
@@ -644,7 +677,7 @@ pub fn decrypt_hdr(
 
         let ciphertext = ciphertext.as_mut();
 
-        let mask = aead.new_mask_13(sample.as_ref())?;
+        let mask = aead.new_mask_16(sample.as_ref())?;
 
         if Header::is_long(first) {
             first ^= mask[0] & 0x0f;
@@ -673,14 +706,15 @@ pub fn decrypt_hdr(
         // Extract the streamid
         let stream_id_with_offset_len = unpack_var_int_in_hdr(streamid_len, &mut
                                                               octets::Octets::with_slice(&ciphertext_slice[pn_len..bound_streamid]))?;
-        let (stream_id, offset_len) = decode_num_and_nextelem_len(stream_id_with_offset_len,
+        let (stream_id, mut offset_len) = decode_num_and_nextelem_len(stream_id_with_offset_len,
                                                                   streamid_len);
+        offset_len = decode_offset_len(offset_len);
         let bound_offset = bound_streamid+offset_len;
         ciphertext_slice = &mut ciphertext[..bound_offset];
         for i in bound_streamid..bound_offset {
             ciphertext_slice[i] ^= mask[i+1];
         }
-        let offset = unpack_var_int_in_hdr(offset_len, &mut
+        let offset = unpack_var_offset_in_hdr(offset_len, &mut
                                            octets::Octets::with_slice(&ciphertext_slice[bound_streamid..bound_offset]))?;
 
         // Moving b.split here to please the mighty borrow checker, since cihphertext's ref isn't
@@ -762,9 +796,20 @@ pub fn decode_num_and_nextelem_len(num: u64, num_len: usize) -> (u64, usize) {
         2 => (num & 0x3fff, (num >> 14) as usize),
         3 => (num & 0x3fffff, (num >> 22) as usize),
         4 => (num & 0x3fffffff, (num >> 30) as usize),
-        _ => panic!("Unvalid num_len"), // Internal bug
+        _ => panic!("Unvalid num_len"), // Internal bug -- cannot be triggered from outside.
     };
     (num, nextelem_len + 1)
+}
+
+#[inline]
+pub fn decode_offset_len(num_len: usize) -> usize {
+    match num_len {
+        1 => 1,
+        2 => 2,
+        3 => 4,
+        4 => 7,
+        _ => panic!("Unvalid num_Len"), // Internal bug -- cannot be triggered from outside.
+    }
 }
 
 #[inline]
@@ -786,13 +831,6 @@ pub fn decode_pkt_num(largest_pn: u64, truncated_pn: u64, pn_len: usize) -> u64 
     }
 
     candidate_pn
-}
-
-#[inline]
-pub fn decode_pkt_offset(
-    current_offset: u64, truncated_offset: u64, offset_len: usize,
-) -> u64 {
-    decode_pkt_num(current_offset, truncated_offset, offset_len)
 }
 
 pub fn decrypt_pkt_v3<'a>(
@@ -861,7 +899,7 @@ pub fn encrypt_hdr(
         // for which the encoding/decoding would work in a similar fashion than for the packet number.
         sample = &payload
             [MAX_PKT_NUM_STREAMID_OFFSET_LEN - enc_len..SAMPLE_LEN + (MAX_PKT_NUM_STREAMID_OFFSET_LEN - enc_len)];
-        let mask = aead.new_mask_13(sample)?;
+        let mask = aead.new_mask_16(sample)?;
         if Header::is_long(first[0]) {
             first[0] ^= mask[0] & 0x0f;
         } else {
@@ -930,9 +968,28 @@ pub fn encode_u64_num_and_nextelem_len(
     Ok(())
 }
 
+/// Encode the offset based on the two-bits length representation mapping to:
+/// 1 => 1 byte
+/// 2 => 2 bytes
+/// 3 => 4 bytes
+/// 4 => 7 bytes
 #[inline]
 pub fn encode_offset_num(offset: u64, b: &mut octets::OctetsMut) -> Result<()> {
-    encode_pkt_num(offset, b)
+    let len = offset_num_len(offset)?;
+
+    match len {
+        1 => b.put_u8(offset as u8)?,
+
+        2 => b.put_u16(offset as u16)?,
+
+        3 => b.put_u32(offset as u32)?,
+
+        4 => b.put_u56(offset)?,
+
+        _ => return Err(Error::InvalidPacket),
+    };
+
+    Ok(())
 }
 
 #[inline]
@@ -2060,12 +2117,12 @@ mod tests {
     }
 
     #[test]
-    fn encode_decode_pkt_num() {
+    fn encode_decode_pkt_hdr_nums() {
         use core::convert::TryInto;
 
-        // This is not exaustive test cases (we would need 4x4x2 "block" to cover
-        // all pn ranges and streamid ranges -- we cover one range of each
-        // independently)
+        // XXX This is not exaustive test cases. We would need 4x4x[tbd] tests to cover various
+        // lengths of pn x stream_id x [offset_length] once I've settled with the offset encoding
+        // choice.  kill me now.
         let mut header_part = [0x40, 0x00];
         let pn = 42; // it is below 63. Should be encoded with 1 byte
         {
@@ -2094,7 +2151,7 @@ mod tests {
                 10000, offset_len, &mut b
             )
             .is_ok());
-            let expected_header_part = [0x40, 0xaa, 0xe7, 0x10];
+            let expected_header_part = [0x40, 0xaa, 0xa7, 0x10];
             assert_eq!(&header_part, &expected_header_part);
         }
         let mut header_part = [0x40, 0x00, 0x00];
