@@ -117,7 +117,7 @@
 //! # let local = "127.0.0.1:4321".parse().unwrap();
 //! # let mut conn = quiche::accept(&scid, None, local, peer, &mut config)?;
 //! # let to = socket.local_addr().unwrap();
-//! # let mut app_buffers = quiche::AppRecvBufMap::new(3, 1024*1024*32, 100, 100);
+//! # let mut app_buffers = quiche::AppRecvBufMap::new(3, 40_000_000, 1024*1024*32, 100, 100);
 //!
 //! loop {
 //!     let (read, from) = socket.recv_from(&mut buf).unwrap();
@@ -2230,7 +2230,7 @@ impl Connection {
     /// # let peer = "127.0.0.1:1234".parse().unwrap();
     /// # let local = socket.local_addr().unwrap();
     /// # let mut conn = quiche::accept(&scid, None, local, peer, &mut config)?;
-    /// # let mut app_buffers = quiche::AppRecvBufMap::new(3, 1024*1024*32, 100, 100);
+    /// # let mut app_buffers = quiche::AppRecvBufMap::new(3, 40_000_000, 1024*1024*32, 100, 100);
     /// loop {
     ///     let (read, from) = socket.recv_from(&mut buf).unwrap();
     ///
@@ -9072,12 +9072,12 @@ pub mod testing {
             let server_addr = Pipe::server_addr();
 
             let mut client_app_buffers =
-                AppRecvBufMap::new(3, stream::MAX_STREAM_WINDOW, 1000, 1000);
+                AppRecvBufMap::new(3, crate::MAX_CONNECTION_WINDOW, stream::MAX_STREAM_WINDOW, 1000, 1000);
             client_app_buffers
                 .set_expected_chunklen_to_consume(1000)
                 .unwrap();
             let mut server_app_buffers =
-                AppRecvBufMap::new(3, stream::MAX_STREAM_WINDOW, 1000, 1000);
+                AppRecvBufMap::new(3, crate::MAX_CONNECTION_WINDOW, stream::MAX_STREAM_WINDOW, 1000, 1000);
             server_app_buffers
                 .set_expected_chunklen_to_consume(1000)
                 .unwrap();
@@ -9132,12 +9132,14 @@ pub mod testing {
                 )?,
                 client_app_buffers: AppRecvBufMap::new(
                     3,
+                    crate::MAX_CONNECTION_WINDOW,
                     stream::MAX_STREAM_WINDOW,
                     100,
                     100,
                 ),
                 server_app_buffers: AppRecvBufMap::new(
                     3,
+                    crate::MAX_CONNECTION_WINDOW,
                     stream::MAX_STREAM_WINDOW,
                     100,
                     100,
@@ -9184,12 +9186,14 @@ pub mod testing {
                 )?,
                 client_app_buffers: AppRecvBufMap::new(
                     3,
+                    crate::MAX_CONNECTION_WINDOW,
                     stream::MAX_STREAM_WINDOW,
                     100,
                     100,
                 ),
                 server_app_buffers: AppRecvBufMap::new(
                     3,
+                    crate::MAX_CONNECTION_WINDOW,
                     stream::MAX_STREAM_WINDOW,
                     100,
                     100,
@@ -9234,12 +9238,14 @@ pub mod testing {
                 )?,
                 client_app_buffers: AppRecvBufMap::new(
                     3,
+                    crate::MAX_CONNECTION_WINDOW,
                     stream::MAX_STREAM_WINDOW,
                     100,
                     100,
                 ),
                 server_app_buffers: AppRecvBufMap::new(
                     3,
+                    crate::MAX_CONNECTION_WINDOW,
                     stream::MAX_STREAM_WINDOW,
                     100,
                     100,
@@ -9277,12 +9283,14 @@ pub mod testing {
                 )?,
                 client_app_buffers: AppRecvBufMap::new(
                     3,
+                    crate::MAX_CONNECTION_WINDOW,
                     stream::MAX_STREAM_WINDOW,
                     100,
                     100,
                 ),
                 server_app_buffers: AppRecvBufMap::new(
                     3,
+                    crate::MAX_CONNECTION_WINDOW,
                     stream::MAX_STREAM_WINDOW,
                     100,
                     100,
@@ -17505,12 +17513,14 @@ mod tests {
             .unwrap(),
             client_app_buffers: AppRecvBufMap::new(
                 3,
+                crate::MAX_CONNECTION_WINDOW,
                 stream::MAX_STREAM_WINDOW,
                 100,
                 100,
             ),
             server_app_buffers: AppRecvBufMap::new(
                 3,
+                crate::MAX_CONNECTION_WINDOW,
                 stream::MAX_STREAM_WINDOW,
                 100,
                 100,

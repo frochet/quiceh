@@ -7,14 +7,79 @@ use std::collections::VecDeque;
 use crate::Error;
 use crate::Result;
 
+// We might need a new transport parameter to announce the number of coalesced
+// packets we send; coalesced_numbers * max_payload_size would be our block size.
+const SOCKET_BUFFER_BLOCK_ASSUMING_GSO: usize = 16383;
+const SOCKET_BUFFER_NBR_BLOCKS: usize = 20;
+const SOCKET_BUFFER_DEFAULT_SIZE: usize = SOCKET_BUFFER_NBR_BLOCKS*SOCKET_BUFFER_BLOCK_ASSUMING_GSO;
+
+// Notes: Recycling bloc allocations the size of a datagram within a contiguous heap-allocated
+// array. To keep fragmentation somewhat low, we would recycle blocks using the min
+// block index availble to use, and grow the array if we need more blocks.
+//
+// Application would receive a &mut [u8] to a block for reading a datagram, and we
+// would keep track of the number of QUIC packets within each block. Once all QUIC
+// packets from a block have been decrypted, then the block can be recycled.
+//
+// We need some code to housekeep the array when streams are closed; truncating
+// the array to a lower size. We could do that each time a stream is collected?
+//
+// What data structure do we need?
+//
+// A block abstraction:
+//  - index value
+//  - len of actual data within
+//  - number of quic packets containing Stream Data
+//
+// A simple sorted list to keep track of the min bloc index available
+
+pub(crate) struct SocketBufferBlock {
+    /// Index of the block in socket_conn_buf
+    index: usize,
+    /// len of the data within the block
+    bytelen: usize,
+    /// nbr of quic packets within the bloc
+    quic_packets_len: usize,
+}
+
+#[derive(Default)]
+pub(crate) struct SocketBuffer {
+    /// Socket buffer supposed to hold bytes read from the OS network abstraction.
+    pub socket_conn_buf: Vec<u8>,
+    /// total number of encrypted bytes held by this socket buffer.
+    pub len: usize,
+    /// number blocks
+    pub blocks_len: usize,
+}
+
+impl SocketBuffer {
+
+    pub(crate) fn new() -> Self {
+        SocketBuffer {
+            socket_conn_buf: vec![0; SOCKET_BUFFER_BLOCK_ASSUMING_GSO*SOCKET_BUFFER_NBR_BLOCKS],
+            len: 0,
+            blocks_len: SOCKET_BUFFER_NBR_BLOCKS,
+        }
+    }
+}
+
 /// Buffer map containing the stream buffers
 #[derive(Default)]
 pub struct AppRecvBufMap {
+    /// Socket buffer supposed to hold bytes read from the OS network abstraction.
+    socketbuf: SocketBuffer,
+    /// Sorted list of available blocks in socket_conn_buf
+    block_index_list: Vec<usize>,
+    /// last index given to the application through get_mut_socket_buffer_block()
+    last_poped_index: usize,
     /// The stream buffers.
     buffers: crate::stream::StreamIdHashMap<AppRecvBuf>,
 
     /// Contains heap-allocated AppRecvBuf that could be recycled if needed.
     recycled_buffers: VecDeque<AppRecvBuf>,
+
+    /// The max stream data the connection can hold at any given time.
+    max_connection_window: u64,
 
     /// Max quantity of data that the buffer can hold. Default to
     /// max_streams_data.
@@ -40,16 +105,74 @@ pub struct AppRecvBufMap {
 impl AppRecvBufMap {
     /// new map passing config information about stream management
     pub fn new(
-        recycled_capacity: usize, max_buffer_data: u64, max_streams_bidi: u64,
+        recycled_capacity: usize, max_connection_window: u64, max_buffer_data: u64, max_streams_bidi: u64,
         max_streams_uni_remote: u64,
     ) -> AppRecvBufMap {
-        AppRecvBufMap {
+        let mut map = AppRecvBufMap {
+            socketbuf: SocketBuffer::new(),
+            block_index_list: (0..SOCKET_BUFFER_NBR_BLOCKS).rev().collect(),
             recycled_buffers: VecDeque::with_capacity(recycled_capacity),
+            max_connection_window,
             max_buffer_data,
             max_streams_bidi,
             max_streams_uni_remote,
             ..Default::default()
+        };
+        unsafe { map.socketbuf.socket_conn_buf.set_len(SOCKET_BUFFER_DEFAULT_SIZE as usize) };
+        map
+    }
+
+    pub fn get_mut_socket_buffer_block(&mut self) -> Result<&mut [u8]> {
+        // block_index_list is a reversed sorted list of index
+        if let Some(block_index) = self.block_index_list.pop() {
+            trace!(
+                "Getting block index {}", block_index
+            );
+            self.last_poped_index = block_index;
+            Ok(&mut
+               self.socketbuf.socket_conn_buf[block_index*SOCKET_BUFFER_BLOCK_ASSUMING_GSO..block_index*SOCKET_BUFFER_BLOCK_ASSUMING_GSO+SOCKET_BUFFER_BLOCK_ASSUMING_GSO])
+        } else {
+            // two cases: either we still have room to recv more bytes (flow-control
+            // has room); so we simply resize the socket_buffer and we add blocks
+            // Or we can't hold in memory more packets; in that case we should
+            // raise a FlowControl exception.
+            if self.socketbuf.len as u64 > self.max_connection_window {
+                return Err(crate::Error::FlowControl)
+            }
+
+            if self.socketbuf.socket_conn_buf.capacity() as u64 > self.max_connection_window*32 {
+                panic!("BUG: the buffer is not expected to grow that much");
+            } else {
+                let old_capacity = self.socketbuf.socket_conn_buf.capacity();
+                self.block_index_list = (self.socketbuf.blocks_len..self.socketbuf.blocks_len*2).rev().collect();
+                self.socketbuf.blocks_len = self.socketbuf.blocks_len*2;
+                trace!(
+                    "Doubling the socketbuffer capacity, we have now {} \
+                     blocks for UDP payload recv", self.socketbuf.blocks_len
+                );
+                self.socketbuf.socket_conn_buf.resize(old_capacity*2, 0);
+                unsafe { self.socketbuf.socket_conn_buf.set_len(old_capacity*2) };
+                //add blocks to block_index_list
+                let index = self.block_index_list.pop().unwrap();
+                self.last_poped_index = index;
+                Ok(&mut self.socketbuf.socket_conn_buf[self.last_poped_index*SOCKET_BUFFER_BLOCK_ASSUMING_GSO..self.last_poped_index*SOCKET_BUFFER_BLOCK_ASSUMING_GSO+SOCKET_BUFFER_BLOCK_ASSUMING_GSO])
+            }
         }
+    }
+
+    pub(crate) fn get_last_socketbuf_index(&self) -> usize {
+        self.last_poped_index
+    }
+
+    pub fn release_socket_buffer_block(&mut self, index: usize) {
+        trace!(
+            "Releasing block index {}", index
+        );
+        self.block_index_list.push(index)
+    }
+
+    pub fn finalize_multiple_releases(&mut self) {
+        self.block_index_list.sort_by(|a, b| b.cmp(a))
     }
 
     /// The application should set the expected chunklen they expect to consume
@@ -278,7 +401,7 @@ impl AppRecvBuf {
         &mut self.outbuf[self.consumed..]
     }
 
-    /// gives ontiguous bytes as a mutable slice from the stream buffer.
+    /// gives contiguous bytes as a mutable slice from the stream buffer.
     #[inline]
     pub fn read_mut(&mut self, recv: &mut RecvBuf) -> Result<&mut [u8]> {
         let mut len = 0;
@@ -504,7 +627,7 @@ mod tests {
 
     #[test]
     fn create_and_collect_bufs() {
-        let mut app_buf = AppRecvBufMap::new(3, 100, 10, 10);
+        let mut app_buf = AppRecvBufMap::new(3, crate::MAX_CONNECTION_WINDOW, 100, 10, 10);
         let _buf_stream_4 = app_buf.get_or_create_stream_buffer(4).unwrap();
 
         app_buf.collect(4);
@@ -518,7 +641,7 @@ mod tests {
     fn appbuf_streambuffer_read() {
         let mut recv =
             RecvBuf::new(100, DEFAULT_STREAM_WINDOW, crate::PROTOCOL_VERSION_V3);
-        let mut app_buf = AppRecvBufMap::new(3, 100, 10, 10);
+        let mut app_buf = AppRecvBufMap::new(3, crate::MAX_CONNECTION_WINDOW, 100, 10, 10);
         let buf_stream_4 = app_buf.get_or_create_stream_buffer(4).unwrap();
 
         let writeinfo = RecvBufInfo::from(0, 5, false);
@@ -527,6 +650,31 @@ mod tests {
         }
         assert_eq!(buf_stream_4.read_mut(&mut recv).unwrap().len(), 5);
     }
-    // TODO write actual good testing. This ain't gonna help getting published
-    // but it is the way. *sigh*.
+
+    #[test]
+    fn socketbuf_get_and_release() {
+        let mut app_buf = AppRecvBufMap::new(3, crate::MAX_CONNECTION_WINDOW, 100, 10, 10);
+        let mut buf = app_buf.get_mut_socket_buffer_block().unwrap();
+        assert_eq!(app_buf.get_last_socketbuf_index(), 0);
+        assert_eq!(app_buf.block_index_list.len(), 19);
+        app_buf.release_socket_buffer_block(0);
+        app_buf.finalize_multiple_releases();
+        assert_eq!(app_buf.block_index_list.len(), 20);
+        assert_eq!(app_buf.block_index_list[SOCKET_BUFFER_NBR_BLOCKS-1], 0);
+    }
+
+    #[test]
+    fn socketbuf_get_many_then_release() {
+        let mut app_buf = AppRecvBufMap::new(3, crate::MAX_CONNECTION_WINDOW, 100, 10, 10);
+        for _ in 0..=SOCKET_BUFFER_NBR_BLOCKS {
+            let _ = app_buf.get_mut_socket_buffer_block();
+        }
+        assert_eq!(app_buf.block_index_list.len(), 19);
+        assert_eq!(*app_buf.block_index_list.last().unwrap(), 21);
+        for i in 0..=SOCKET_BUFFER_NBR_BLOCKS {
+            app_buf.release_socket_buffer_block(i);
+        }
+        app_buf.finalize_multiple_releases();
+        assert_eq!(app_buf.block_index_list.len(), 40);
+    }
 }

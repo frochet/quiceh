@@ -116,7 +116,7 @@ fn main() {
 
     let local_addr = socket.local_addr().unwrap();
 
-    let mut app_buffers = AppRecvBufMap::new(3, 10_000_000, 100, 100);
+    let mut app_buffers = AppRecvBufMap::new(3, 20_000_000, 10_000_000, 100, 100);
 
     loop {
         // Find the shorter timeout from all the active connections.
