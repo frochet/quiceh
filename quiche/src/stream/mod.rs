@@ -31,6 +31,7 @@ use std::sync::Arc;
 use std::collections::hash_map;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use crate::IdHasher;
 
 use intrusive_collections::intrusive_adapter;
 use intrusive_collections::KeyAdapter;
@@ -50,35 +51,7 @@ const DEFAULT_STREAM_WINDOW: u64 = 32 * 1024;
 /// The maximum size of the receiver stream flow control window.
 pub const MAX_STREAM_WINDOW: u64 = 16 * 1024 * 1024;
 
-/// A simple no-op hasher for Stream IDs.
-///
-/// The QUIC protocol and quiche library guarantees stream ID uniqueness, so
-/// we can save effort by avoiding using a more complicated algorithm.
-#[derive(Default)]
-pub struct StreamIdHasher {
-    id: u64,
-}
-
-impl std::hash::Hasher for StreamIdHasher {
-    #[inline]
-    fn finish(&self) -> u64 {
-        self.id
-    }
-
-    #[inline]
-    fn write_u64(&mut self, id: u64) {
-        self.id = id;
-    }
-
-    #[inline]
-    fn write(&mut self, _: &[u8]) {
-        // We need a default write() for the trait but stream IDs will always
-        // be a u64 so we just delegate to write_u64.
-        unimplemented!()
-    }
-}
-
-type BuildStreamIdHasher = std::hash::BuildHasherDefault<StreamIdHasher>;
+type BuildStreamIdHasher = std::hash::BuildHasherDefault<IdHasher>;
 
 pub type StreamIdHashMap<V> = HashMap<u64, V, BuildStreamIdHasher>;
 pub type StreamIdHashSet = HashSet<u64, BuildStreamIdHasher>;

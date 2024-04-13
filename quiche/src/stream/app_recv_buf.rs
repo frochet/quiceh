@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 
 use crate::Error;
 use crate::Result;
+use crate::IdHasher;
 
 // We might need a new transport parameter to announce the number of coalesced
 // packets we send; coalesced_numbers * max_payload_size would be our block size.
@@ -33,14 +34,31 @@ const SOCKET_BUFFER_DEFAULT_SIZE: usize = SOCKET_BUFFER_NBR_BLOCKS*SOCKET_BUFFER
 //
 // A simple sorted list to keep track of the min bloc index available
 
+
+pub(crate) struct DecryptInfo {
+    pub hdr: packet::Header<'static>,
+    /// bloc index where is contained this header on the recv code path
+    pub index: usize,
+    /// position of this header within the recv socket buffer block
+    pub pos: usize,
+    /// information about the packet to being decrypted
+    pub recv_info: quiche::RecvInfo,
+    /// path id of the packet to being decrypted
+    recv_pid: Option<usize>,
+}
+
 pub(crate) struct SocketBufferBlock {
     /// Index of the block in socket_conn_buf
-    index: usize,
+    pub index: usize,
     /// len of the data within the block
-    bytelen: usize,
+    pub datalen: usize,
     /// nbr of quic packets within the bloc
-    quic_packets_len: usize,
+    pub quic_packets_nbr: usize,
 }
+
+type BuildSocketBlockIndexHasher = std::hash::BuildHasherDefault<IdHasher>;
+
+type SocketBlockIndexHashMap<V> = HashMap<usize, V, BuildSocketBlockIndexHasher>;
 
 #[derive(Default)]
 pub(crate) struct SocketBuffer {
@@ -63,6 +81,49 @@ impl SocketBuffer {
     }
 }
 
+#[derive(Default)]
+pub struct BlockMap {
+    /// map of allocated blocks containing QUIC packets yet to decrypt.
+    socketblocks: SocketBlockIndexHashMap<SocketBufferBlock>,
+}
+
+impl BlockMap {
+
+    pub(crate) fn new() -> BlockMap {
+        ..BlockMap::default()
+    }
+
+    pub(crate) fn get(&self, index: u64) -> Option<&SocketBufferBlock> {
+        self.socketblocks.get(&index)
+    }
+
+    pub(crate) fn get_mut(&mut self, index: u64) -> Option<&mut SocketBufferBlock> {
+        self.socketblocks.get_mut(&index)
+    }
+
+    pub(crate) fn get_or_create(
+        &mut self, index: u64, datalen: usize,
+    ) -> Result<&mut SocketBufferBlock> {
+        let socketblock = match self.socketblocks.entry(index) {
+            hash_map::Entry::Vacant(v) => {
+                let socketblock = SocketBufferBlock {
+                    index,
+                    datalen,
+                    quic_packets_nbr: 1
+                };
+                v.insert(socketblock)
+            },
+            hash_map::Entry::Occupied(v) => {
+                let sockblock = v.into_mut();
+                socketblock.quic_packets_nbr += 1;
+                socketblock
+            },
+        };
+
+        Ok(socketblock)
+    }
+}
+
 /// Buffer map containing the stream buffers
 #[derive(Default)]
 pub struct AppRecvBufMap {
@@ -70,7 +131,7 @@ pub struct AppRecvBufMap {
     socketbuf: SocketBuffer,
     /// Sorted list of available blocks in socket_conn_buf
     block_index_list: Vec<usize>,
-    /// last index given to the application through get_mut_socket_buffer_block()
+    /// last index given to the application through get_mut_new_socketbuf_block()
     last_poped_index: usize,
     /// The stream buffers.
     buffers: crate::stream::StreamIdHashMap<AppRecvBuf>,
@@ -122,7 +183,9 @@ impl AppRecvBufMap {
         map
     }
 
-    pub fn get_mut_socket_buffer_block(&mut self) -> Result<&mut [u8]> {
+    /// Todo
+    #[inline]
+    pub fn get_mut_new_socketbuf_block(&mut self) -> Result<&mut [u8]> {
         // block_index_list is a reversed sorted list of index
         if let Some(block_index) = self.block_index_list.pop() {
             trace!(
@@ -160,18 +223,40 @@ impl AppRecvBufMap {
         }
     }
 
-    pub(crate) fn get_last_socketbuf_index(&self) -> usize {
+    pub(crate) fn get_mut_socketbuf_block(&mut self, index: usize) -> &mut [u8] {
+        &mut &mut self.socketbuf.socket_conn_buf[index*SOCKET_BUFFER_BLOCK_ASSUMING_GSO..index*SOCKET_BUFFER_BLOCK_ASSUMING_GSO+SOCKET_BUFFER_BLOCK_ASSUMING_GSO]
+    }
+
+    pub(crate) fn get_current_socketbuf_block(&mut self) -> &mut [u8] {
+        &mut self.socketbuf.socket_conn_buf[self.last_poped_index*SOCKET_BUFFER_BLOCK_ASSUMING_GSO..self.last_poped_index*SOCKET_BUFFER_BLOCK_ASSUMING_GSO+SOCKET_BUFFER_BLOCK_ASSUMING_GSO]
+    }
+
+    pub(crate) fn get_current_socketbuf_index(&self) -> usize {
         self.last_poped_index
     }
 
-    pub fn release_socket_buffer_block(&mut self, index: usize) {
+    pub(crate) fn release_socketbuf_block(&mut self, index: usize) {
         trace!(
             "Releasing block index {}", index
-        );
-        self.block_index_list.push(index)
+            );
+        self.block_index_list.push(index);
     }
 
-    pub fn finalize_multiple_releases(&mut self) {
+    pub(crate) fn maybe_release_socketbuf_block(&mut self, index: usize, socketblock:
+                                                    &mut SocketBufferBlock)  -> bool {
+        if socketblock.quic_packets_nbr == 1 {
+            trace!(
+                "Releasing block index {}", index
+            );
+            self.block_index_list.push(index);
+            true
+        } else {
+            socketblock.quic_packets_nbr -= 1;
+            false
+        }
+    }
+
+    pub(crate) fn finalize_multiple_releases(&mut self) {
         self.block_index_list.sort_by(|a, b| b.cmp(a))
     }
 
@@ -205,8 +290,7 @@ impl AppRecvBufMap {
         self.max_buffer_data = max_buffer_data;
     }
 
-    /// retrieve or create a stream buffer for a given stream_id
-    pub(crate) fn get_or_create_stream_buffer(
+    /// retrieve or create a stream buffer foet_or_create_stream_buffer(
         &mut self, stream_id: u64,
     ) -> Result<&mut AppRecvBuf> {
         match self.buffers.entry(stream_id) {
@@ -546,7 +630,7 @@ impl AppRecvBuf {
 
         if self.is_almost_full(outbuf_off)? && self.consumed > 0 {
             trace!(
-                "We're almost full! memmoving {} bytes",
+        g       "We're almost full! memmoving {} bytes",
                 self.max_buffer_data as u64 - outbuf_off,
             );
             self.outbuf
@@ -654,8 +738,8 @@ mod tests {
     #[test]
     fn socketbuf_get_and_release() {
         let mut app_buf = AppRecvBufMap::new(3, crate::MAX_CONNECTION_WINDOW, 100, 10, 10);
-        let mut buf = app_buf.get_mut_socket_buffer_block().unwrap();
-        assert_eq!(app_buf.get_last_socketbuf_index(), 0);
+        let mut buf = app_buf.get_mut_new_socketbuf_block().unwrap();
+        assert_eq!(app_buf.get_current_socketbuf_index(), 0);
         assert_eq!(app_buf.block_index_list.len(), 19);
         app_buf.release_socket_buffer_block(0);
         app_buf.finalize_multiple_releases();
@@ -667,7 +751,7 @@ mod tests {
     fn socketbuf_get_many_then_release() {
         let mut app_buf = AppRecvBufMap::new(3, crate::MAX_CONNECTION_WINDOW, 100, 10, 10);
         for _ in 0..=SOCKET_BUFFER_NBR_BLOCKS {
-            let _ = app_buf.get_mut_socket_buffer_block();
+            let _ = app_buf.get_mut_new_socketbuf_block();
         }
         assert_eq!(app_buf.block_index_list.len(), 19);
         assert_eq!(*app_buf.block_index_list.last().unwrap(), 21);

@@ -343,9 +343,16 @@ pub struct Header<'a> {
     /// The key phase bit of the packet. It's only meaningful after the header
     /// protection is removed.
     pub(crate) key_phase: bool,
+
+    /// total wire len of this Header on the recv path
+    pub wire_len: u64,
+
+    /// tells us to clean the stream if a decryption error happens
+    /// while the stream is created during header processing.
+    pub clean_on_dec_error: bool,
 }
 
-impl<'a> Header<'a> {
+impl Header<'static> {
     /// Parses a QUIC packet header from the given buffer.
     ///
     /// The `dcid_len` parameter is the length of the destination connection ID,
@@ -364,16 +371,15 @@ impl<'a> Header<'a> {
     /// # Ok::<(), quiche::Error>(())
     /// ```
     #[inline]
-    pub fn from_slice<'b>(
-        buf: &'b mut [u8], dcid_len: usize,
-    ) -> Result<Header<'a>> {
+    pub fn from_slice(buf: &mut [u8], dcid_len: usize) -> Result<Self> {
         let mut b = octets::OctetsMut::with_slice(buf);
         Header::from_bytes(&mut b, dcid_len)
     }
 
-    pub(crate) fn from_bytes<'b>(
-        b: &'b mut octets::OctetsMut, dcid_len: usize,
-    ) -> Result<Header<'a>> {
+    pub(crate) fn from_bytes(
+        b: &mut octets::OctetsMut, dcid_len: usize,
+    ) -> Result<Self> {
+        let start_off = b.off();
         let first = b.get_u8()?;
 
         if !Header::is_long(first) {
@@ -382,7 +388,15 @@ impl<'a> Header<'a> {
 
             return Ok(Header {
                 ty: Type::Short,
+                version: 0,
                 dcid: dcid.to_vec().into(),
+                scid: ConnectionId::default(),
+                pkt_num: 0,
+                pkt_num_len: 0,
+                token: None,
+                versions: None,
+                key_phase: false,
+                wire_len: b.off() - start_off,
                 ..Default::default()
             });
         }
@@ -455,9 +469,14 @@ impl<'a> Header<'a> {
             scid: scid.into(),
             token,
             versions,
+            wire_len: b.off() - start_off,
             ..Default::default()
         })
     }
+}
+
+
+impl<'a> Header<'a> {
 
     pub(crate) fn to_bytes(&self, out: &mut octets::OctetsMut) -> Result<()> {
         let mut first = 0;

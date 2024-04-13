@@ -51,6 +51,8 @@ pub struct RecvBuf {
     /// Todo -- compare speed with BTreeMap
     // heap: BinaryHeap<std::cmp::Reverse<RecvBufInfo>>,
     pub heap: BTreeMap<u64, RecvBufInfo>,
+
+    pub heap_ord_decrypt: BTreeMap<u64, stream::app_recv_buf::DecryptInfo>,
     /// Chunks of data received from the peer that have not yet been read by
     /// the application, ordered by offset.
     data: BTreeMap<u64, RangeBuf>,
@@ -202,6 +204,21 @@ impl RecvBuf {
             }
         }
 
+        Ok(())
+    }
+
+    pub fn write_ordered_v3(&mut self, mut buf: RecvBufInfo) -> Result<()> {
+
+        // We already saved the final offset, so there's nothing else we
+        // need to keep from the RangeBuf if it's empty.
+        if self.fin_off.is_some() && buf.is_empty() {
+            return Ok(());
+        }
+
+        if buf.fin() {
+            self.fin_off = Some(buf.max_off());
+        }
+        //TODO
         Ok(())
     }
 
@@ -475,6 +492,14 @@ impl RecvBuf {
     /// Returns true if the stream is not storing incoming data.
     pub fn is_draining(&self) -> bool {
         self.drain
+    }
+
+    pub fn ready_ord_decrypt(&self) -> bool {
+        if let Some(entry) = heap_ord_decrypt.first_entry() {
+            *entry.key() == self.off
+        } else {
+            false
+        }
     }
 
     /// Returns true if the stream has data to be read.
