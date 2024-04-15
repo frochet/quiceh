@@ -1,0 +1,13 @@
+[package]
+name = "dgram"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+async = []
+
+[dependencies]
+libc = "0.2.76"
+nix = "0.26.2"
+smallvec = { version = "1.10", features = ["union"] }
+
