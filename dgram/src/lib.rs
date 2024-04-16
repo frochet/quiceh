@@ -1,4 +1,4 @@
-#[cfg(linux)]
+// #[cfg(target_os = "linux")]
 pub mod buffer;
 
 pub fn add(left: usize, right: usize) -> usize {
