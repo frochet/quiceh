@@ -148,7 +148,7 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
 }
 
 criterion_group! {
-    name = quicv1_vs_quicv3;
+    name = quicv1_vs_quicv3_cwin;
     config = Criterion::default()
         //.with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)))
         .measurement_time(std::time::Duration::from_secs(1))
@@ -157,4 +157,4 @@ criterion_group! {
     targets = criterion_benchmark
 }
 
-criterion_main!(quicv1_vs_quicv3);
+criterion_main!(quicv1_vs_quicv3_cwin);

@@ -91,8 +91,13 @@ criterion = { version = "0.5.1"}
 [lib]
 crate-type = ["lib", "staticlib", "cdylib"]
 
+
 [[bench]]
 name = "quic_benchmarks"
+harness = false
+
+[[bench]]
+name = "initial_cwin_bench"
 harness = false
 
 [[bench]]

@@ -7744,7 +7744,7 @@ impl Connection {
                 // In particular, we would need the stream & conn flow control to
                 // be moved to encrypted data layer instead. That
                 // is; we proceed the QUIC headers, reorder the
-                // packets and decrypt *only* what we have in order. This is
+                // packets by reference and decrypt *only* what we have in order. This is
                 // probably going to be one hell of a discussion
                 // if brought up to the QUIC working group, as it is
                 // making QUIC closer to a TCP/TLS1.3 userspace implementation;
@@ -7765,6 +7765,11 @@ impl Connection {
                     );
                     metadata.attach_data(Vec::from(data.as_ref()));
                 }
+                // Maybe this packet allows previously unordered reception
+                // to be appended to the buffer, which would prevent a copy
+                // at the next QUIC packet processing. We should
+                // call AppRecvBufMap::read_mut() or make a similar function
+                // to do that here.
                 stream.recv.write_v3(metadata)?;
 
                 if !was_readable && stream.is_readable() {
