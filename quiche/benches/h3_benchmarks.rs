@@ -14,6 +14,35 @@ use bench_util::*;
 
 const NUMBER_OF_REQUESTS: u32 = 80;
 
+#[derive(Default)]
+pub struct StreamIdHasher {
+    id: u64,
+}
+
+impl std::hash::Hasher for StreamIdHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.id
+    }
+
+    #[inline]
+    fn write_u64(&mut self, id: u64) {
+        self.id = id;
+    }
+
+    #[inline]
+    fn write(&mut self, _: &[u8]) {
+        // We need a default write() for the trait but stream IDs will always
+        // be a u64 so we just delegate to write_u64.
+        unimplemented!()
+    }
+}
+
+type BuildStreamIdHasher = std::hash::BuildHasherDefault<StreamIdHasher>;
+
+type StreamIdHashMap<V> =
+    std::collections::HashMap<u64, V, BuildStreamIdHasher>;
+
 fn bench_h3(
     s: &mut Session, flight: &mut Vec<(Vec<u8>, quiche::SendInfo)>,
     response_map: &mut StreamIdHashMap<Vec<u8>>,

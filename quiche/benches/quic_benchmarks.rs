@@ -91,8 +91,11 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
 
     static QUIC_PACKET_SIZE: usize = 1350;
     static MAX_RCV_BUF_SIZE: usize = 212992;
+    let mut steps: Vec<usize> = (10*QUIC_PACKET_SIZE..50*QUIC_PACKET_SIZE).step_by(5*QUIC_PACKET_SIZE).collect();
+    let secondsteps: Vec<usize> =  (50*QUIC_PACKET_SIZE..MAX_RCV_BUF_SIZE).step_by(20*QUIC_PACKET_SIZE).collect();
+    steps.extend(secondsteps);
 
-    for size in (10*QUIC_PACKET_SIZE..MAX_RCV_BUF_SIZE).step_by(70*QUIC_PACKET_SIZE) {
+    for size in steps {
         let sendbuf = vec![0; size];
         group.throughput(Throughput::Bytes(size as u64));
 
