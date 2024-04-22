@@ -20,7 +20,6 @@ mod linux_imports {
     pub(super) use smallvec::SmallVec;
 }
 
-use libc::c_int;
 use nix::errno::Errno;
 use nix::sys::socket::recvmsg;
 use nix::sys::socket::AddressFamily;
@@ -151,7 +150,10 @@ pub fn recv_from(
                     ControlMessageOwned::ScmTimestampns(val) => {
                         rx_time = SystemTime::UNIX_EPOCH.checked_add(val.into());
                     },
-                    ControlMessageOwned::UdpGroSegments(val) => gro = Some(val),
+                    ControlMessageOwned::UdpGroSegments(val) => {
+                        println!("val: {:?}", val);
+                        gro = Some(val);
+                    },
                     _ => return Err(Errno::EINVAL.into()),
                 }
             }
@@ -169,40 +171,60 @@ pub fn recv_from(
 
 #[cfg(test)]
 mod tests {
+    use nix::cmsg_space;
+    use nix::sys::socket::sockopt::UdpGroSegment;
+    use nix::sys::socket::sockopt::UdpGsoSegment;
     use nix::sys::socket::*;
+    use nix::sys::time::TimeVal;
     use std::io::IoSliceMut;
     use std::io::Result;
+    use std::str::FromStr;
 
     use super::*;
 
-    fn create_sockets() -> (i32, i32) {
-        socketpair(
-            AddressFamily::Unix,
-            SockType::Stream,
-            None,
+    fn new_sockets() -> Result<(i32, i32)> {
+        let recv = socket(
+            AddressFamily::Inet,
+            SockType::Datagram,
             SockFlag::empty(),
+            SockProtocol::Udp,
         )
-        .unwrap()
+        .unwrap();
+        setsockopt(recv, UdpGroSegment, &true)?;
+        let localhost = SockaddrIn::from_str("127.0.0.1:0").unwrap();
+        bind(recv, &localhost).unwrap();
+
+        let send = socket(
+            AddressFamily::Inet,
+            SockType::Datagram,
+            SockFlag::empty(),
+            SockProtocol::Udp,
+        )
+        .unwrap();
+        setsockopt(send, UdpGsoSegment, &1).unwrap();
+
+        Ok((send, recv))
     }
 
     #[test]
-    fn test_send_to_simple() -> Result<()> {
-        let (fd1, fd2) = create_sockets();
+    fn send_to_simple() -> Result<()> {
+        let (send, recv) = new_sockets()?;
+        let addr = getsockname::<SockaddrStorage>(recv).unwrap();
 
         let send_buf = b"njd";
         send_to(
-            fd1,
+            send,
             send_buf,
             UDP_MAX_GSO_PACKET_SIZE,
             1,
             None,
-            None::<&SockaddrStorage>,
+            Some(&addr),
         )?;
 
         let mut buf = [0; 3];
         let mut read_buf = [IoSliceMut::new(&mut buf)];
         let recv =
-            recvmsg::<()>(fd2, &mut read_buf, None, MsgFlags::empty()).unwrap();
+            recvmsg::<()>(recv, &mut read_buf, None, MsgFlags::empty()).unwrap();
 
         assert_eq!(recv.bytes, 3);
         assert_eq!(
@@ -214,12 +236,67 @@ mod tests {
     }
 
     #[test]
-    fn test_send_to_invalid_tx_time() -> Result<()> {
-        let (fd1, fd2) = create_sockets();
+    fn send_to_invalid_tx_time() -> Result<()> {
+        let (send, recv) = new_sockets()?;
+        let addr = getsockname::<SockaddrStorage>(recv).unwrap();
 
         let send_buf = b"nyj";
         send_to(
-            fd1,
+            send,
+            send_buf,
+            UDP_MAX_GSO_PACKET_SIZE,
+            1,
+            // Invalid because we pass this Instant by the time we call sendmsg()
+            Some(Instant::now()),
+            Some(&addr),
+        )?;
+
+        let mut buf = [0; 3];
+        let mut read_buf = [IoSliceMut::new(&mut buf)];
+        let recv =
+            recvmsg::<()>(recv, &mut read_buf, None, MsgFlags::empty()).unwrap();
+
+        assert_eq!(recv.bytes, 3);
+        assert_eq!(
+            String::from_utf8(buf.to_vec()).unwrap().as_bytes(),
+            send_buf
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn send_to_multiple_segments() -> Result<()> {
+        let (send, recv) = new_sockets()?;
+        let addr = getsockname::<SockaddrStorage>(recv).unwrap();
+
+        let send_buf = b"devils";
+        send_to(send, send_buf, 1, 6, None, Some(&addr))?;
+
+        let mut buf = [0; 6];
+        let mut read_buf = [IoSliceMut::new(&mut buf)];
+        let mut x = cmsg_space!(u32);
+        let recv =
+            recvmsg::<()>(recv, &mut read_buf, Some(&mut x), MsgFlags::empty())
+                .unwrap();
+        println!("{:?}", recv);
+
+        assert_eq!(recv.bytes, 6);
+        assert_eq!(
+            String::from_utf8(buf.to_vec()).unwrap().as_bytes(),
+            send_buf
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn send_to_control_messages() -> Result<()> {
+        let (send, recv) = new_sockets()?;
+
+        let send_buf = b"nyj";
+        send_to(
+            send,
             send_buf,
             UDP_MAX_GSO_PACKET_SIZE,
             1,
@@ -230,8 +307,9 @@ mod tests {
 
         let mut buf = [0; 3];
         let mut read_buf = [IoSliceMut::new(&mut buf)];
+
         let recv =
-            recvmsg::<()>(fd2, &mut read_buf, None, MsgFlags::empty()).unwrap();
+            recvmsg::<()>(recv, &mut read_buf, None, MsgFlags::empty()).unwrap();
 
         assert_eq!(recv.bytes, 3);
         assert_eq!(
@@ -243,36 +321,50 @@ mod tests {
     }
 
     #[test]
-    fn test_send_to_multiple_packets() -> Result<()> {
-        let (fd1, fd2) = create_sockets();
+    fn recv_from_simple() -> Result<()> {
+        let (send, recv) = new_sockets()?;
 
-        let send_buf = b"devils";
-        send_to(
-            fd1,
-            send_buf,
-            1,
-            6,
-            Some(Instant::now()),
-            None::<&SockaddrStorage>,
-        )?;
+        // TODO: how to handle cmsgs
+        let send_buf = b"jets";
+        let iov = [IoSlice::new(send_buf)];
+        sendmsg::<()>(send, &iov, &[], MsgFlags::empty(), None)?;
 
-        let mut buf = [0; 6];
-        let mut read_buf = [IoSliceMut::new(&mut buf)];
-        let recv =
-            recvmsg::<()>(fd2, &mut read_buf, None, MsgFlags::empty()).unwrap();
+        let mut cmsg_space = cmsg_space!(TimeVal);
+        let mut read_buf = [0; 4];
 
-        assert_eq!(recv.bytes, 6);
-        assert_eq!(
-            String::from_utf8(buf.to_vec()).unwrap(),
-            "devils".to_owned()
-        );
-        assert_eq!(
-            String::from_utf8(buf.to_vec()).unwrap().as_bytes(),
-            send_buf
-        );
+        let recv_data = recv_from(recv, &mut read_buf, &mut cmsg_space, None)?;
+
+        assert_eq!(recv_data.bytes, 4);
+        assert_eq!(&read_buf, b"jets");
 
         Ok(())
     }
 
-    fn test_recv() {}
+    #[test]
+    fn recv_from_control_message() -> Result<()> {
+        let (send, recv) = new_sockets()?;
+        let addr = getsockname::<SockaddrStorage>(recv).unwrap();
+
+        // TODO: how to handle cmsgs
+        let send_buf = b"jets";
+        let iov = [IoSlice::new(send_buf)];
+        let send_cmsgs = vec![ControlMessage::UdpGsoSegments(&2)];
+        sendmsg(send, &iov, &send_cmsgs, MsgFlags::empty(), Some(&addr))?;
+
+        let mut cmsg_space = cmsg_space!(u32);
+        let mut read_buf = [0; 4];
+
+        let recv_data = recv_from(recv, &mut read_buf, &mut cmsg_space, None)?;
+
+        // println!("read buf: {:?}", read_buf);
+        // println!("cmsg space: {:?}", cmsg_space);
+        // println!("gro {:?}", getsockopt(recv, UdpGroSegment));
+
+        assert_eq!(recv_data.bytes, 4);
+        assert_eq!(&read_buf, b"jets");
+
+        assert_eq!(recv_data.gro, Some(1));
+
+        Ok(())
+    }
 }
