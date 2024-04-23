@@ -50,6 +50,7 @@ fn bench_v3_receive(
 fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
     let mut config_v1 = quiche::Config::new(quiche::PROTOCOL_VERSION_V1).unwrap();
     let mut config_v3 = quiche::Config::new(quiche::PROTOCOL_VERSION_V3).unwrap();
+    static MAX_DATAGRAM_SIZE: usize = 1350;
 
     config_v1
         .load_cert_chain_from_pem_file("examples/cert.crt")
@@ -60,6 +61,8 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
     config_v1
         .set_application_protos(&[b"proto1", b"proto2"])
         .unwrap();
+    config_v1.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
+    config_v1.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
     config_v1.set_initial_max_data(10_000_000_000);
     config_v1.set_max_stream_window(25_165_824);
     config_v1.set_initial_max_stream_data_uni(10_000_000_000);
@@ -78,6 +81,8 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
     config_v3
         .set_application_protos(&[b"proto1", b"proto2"])
         .unwrap();
+    config_v3.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
+    config_v3.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
     config_v3.set_initial_max_data(10_000_000_000);
     config_v3.set_max_stream_window(25_165_824);
     config_v3.set_initial_max_stream_data_uni(10_000_000_000);
@@ -89,10 +94,9 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
 
     let mut group = c.benchmark_group("Quiche_Recv_path");
 
-    static QUIC_PACKET_SIZE: usize = 1350;
     static MAX_RCV_BUF_SIZE: usize = 212992;
-    let mut steps: Vec<usize> = (10*QUIC_PACKET_SIZE..50*QUIC_PACKET_SIZE).step_by(5*QUIC_PACKET_SIZE).collect();
-    let secondsteps: Vec<usize> =  (50*QUIC_PACKET_SIZE..MAX_RCV_BUF_SIZE).step_by(20*QUIC_PACKET_SIZE).collect();
+    let mut steps: Vec<usize> = (10*MAX_DATAGRAM_SIZE..50*MAX_DATAGRAM_SIZE).step_by(5*MAX_DATAGRAM_SIZE).collect();
+    let secondsteps: Vec<usize> =  (50*MAX_DATAGRAM_SIZE..MAX_RCV_BUF_SIZE).step_by(20*MAX_DATAGRAM_SIZE).collect();
     steps.extend(secondsteps);
 
     for size in steps {

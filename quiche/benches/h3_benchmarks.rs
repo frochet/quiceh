@@ -13,6 +13,7 @@ use quiche::h3::NameValue;
 use bench_util::*;
 
 const NUMBER_OF_REQUESTS: u32 = 80;
+const MAX_DATAGRAM_SIZE: usize = 1350;
 
 #[derive(Default)]
 pub struct StreamIdHasher {
@@ -136,6 +137,8 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
     config_v1
         .set_application_protos(&[b"proto1", b"proto2"])
         .unwrap();
+    config_v1.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
+    config_v1.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
     config_v1.set_initial_max_data(10_000_000_000);
     config_v1.set_max_stream_window(25_165_824);
     config_v1.set_initial_max_stream_data_uni(10_000_000_000);
@@ -156,6 +159,8 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
     config_v3
         .set_application_protos(&[b"proto1", b"proto2"])
         .unwrap();
+    config_v3.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
+    config_v3.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
     config_v3.set_initial_max_data(10_000_000_000);
     config_v3.set_max_stream_window(25_165_824);
     config_v3.set_initial_max_stream_data_uni(10_000_000_000);
