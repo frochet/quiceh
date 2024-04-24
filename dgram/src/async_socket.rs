@@ -11,7 +11,7 @@ mod linux_imports {
     pub(super) use nix::sys::socket::MsgFlags;
     pub(super) use nix::sys::socket::SockaddrStorage;
     pub(super) use std::io::ErrorKind;
-    pub(super) use std::os::fd::AsRawFd;
+    pub(super) use std::os::fd::AsFd;
     pub(super) use tokio::io::Interest;
 }
 
@@ -27,7 +27,7 @@ pub async fn send_to(
         // Important to use try_io so that Tokio can clear the socket's readiness
         // flag
         let res = socket.try_io(Interest::WRITABLE, || {
-            let fd = socket.as_raw_fd();
+            let fd = socket.as_fd();
             send_msg(
                 fd,
                 send_buf,
@@ -56,7 +56,7 @@ pub async fn recv_from(
         // Important to use try_io so that Tokio can clear the socket's readiness
         // flag
         let res = socket.try_io(Interest::READABLE, || {
-            let fd = socket.as_raw_fd();
+            let fd = socket.as_fd();
             recv_msg(fd, read_buf, cmsg_space, Some(msg_flags))
                 .map_err(Into::into)
         });
@@ -71,7 +71,7 @@ pub async fn recv_from(
 
 #[cfg(not(target_os = "linux"))]
 pub async fn send_to(
-    socket: &tokio::net::UdpSocket, client_addr: SocketAddr, send_buf: &[u8],
+    socket: &UdpSocket, client_addr: SocketAddr, send_buf: &[u8],
     _segment_size: usize, _num_pkts: usize, _tx_time: Option<Instant>,
 ) -> Result<usize> {
     socket.send_to(send_buf, client_addr).await

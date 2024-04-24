@@ -1,6 +1,5 @@
 use std::io;
-use std::os::fd::AsRawFd;
-use std::os::fd::RawFd;
+use std::os::fd::AsFd;
 
 /// Indicators of settings applied to a socket. These settings aren't "applied"
 /// to a socket. Rather, the same (maximal) settings are always applied to a
@@ -28,26 +27,23 @@ impl SocketCapabilities {
     /// Try applying maximal settings to a socket and returns indicators of
     /// which settings were successfully applied.
     #[cfg(unix)]
-    pub fn apply_all_and_get_compatibility<S>(
+    pub fn apply_all_and_get_compatibility<S: AsFd>(
         socket: &S, max_send_udp_payload_size: usize,
-    ) -> Self
-    where
-        S: AsRawFd,
-    {
-        let raw_fd = socket.as_raw_fd();
+    ) -> Self {
+        let fd = socket.as_fd();
 
         Self {
-            has_gso: set_udp_segment(raw_fd, max_send_udp_payload_size).is_ok(),
-            check_udp_drop: set_udp_rxq_ovfl(socket).is_ok(),
-            has_txtime: set_tx_time(raw_fd).is_ok(),
-            has_rxtime: set_rx_time(raw_fd).is_ok(),
-            has_gro: set_gro(raw_fd).is_ok(),
+            has_gso: set_gso_segment(&fd, max_send_udp_payload_size).is_ok(),
+            check_udp_drop: set_udp_rxq_ovfl(&fd).is_ok(),
+            has_txtime: set_tx_time(&fd).is_ok(),
+            has_rxtime: set_rx_time(&fd).is_ok(),
+            has_gro: set_gro(&fd).is_ok(),
         }
     }
 }
 
 #[cfg(target_os = "linux")]
-pub fn set_udp_segment(sock: RawFd, segment: usize) -> io::Result<()> {
+pub fn set_gso_segment(sock: &impl AsFd, segment: usize) -> io::Result<()> {
     use nix::sys::socket::setsockopt;
     use nix::sys::socket::sockopt::UdpGsoSegment;
 
@@ -56,8 +52,13 @@ pub fn set_udp_segment(sock: RawFd, segment: usize) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_os = "linux"))]
+pub fn set_gso_segment(_: &impl AsFd, _: usize) -> io::Result<()> {
+    Err("unsupported").into_io()
+}
+
 #[cfg(target_os = "linux")]
-pub fn set_gro(sock: RawFd) -> io::Result<()> {
+pub fn set_gro(sock: &impl AsFd) -> io::Result<()> {
     use nix::sys::socket::sockopt::UdpGroSegment;
     use nix::sys::socket::SetSockOpt;
 
@@ -66,30 +67,22 @@ pub fn set_gro(sock: RawFd) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(any(target_os = "android", target_os = "ios", target_os = "macos"))]
-pub fn set_gro(_: RawFd) -> io::Result<()> {
-    Err("unsupported").into_io()
-}
-
-#[cfg(any(target_os = "android", target_os = "ios", target_os = "macos"))]
-pub fn set_udp_segment(_: RawFd, _: usize) -> io::Result<()> {
+#[cfg(not(target_os = "linux"))]
+pub fn set_gro(_: &impl AsFd) -> io::Result<()> {
     Err("unsupported").into_io()
 }
 
 #[cfg(target_os = "linux")]
-fn set_udp_rxq_ovfl<S>(sock: &S) -> io::Result<()>
-where
-    S: AsRawFd,
-{
+fn set_udp_rxq_ovfl(sock: &impl AsFd) -> io::Result<()> {
     use nix::sys::socket::setsockopt;
     use nix::sys::socket::sockopt::RxqOvfl;
 
-    setsockopt(sock.as_raw_fd(), RxqOvfl, &1)?;
+    setsockopt(sock, RxqOvfl, &1)?;
 
     Ok(())
 }
 
-#[cfg(any(target_os = "android", target_os = "ios", target_os = "macos"))]
+#[cfg(not(target_os = "linux"))]
 fn set_udp_rxq_ovfl<S>(_: &S) -> io::Result<()>
 where
     S: AsRawFd,
@@ -98,7 +91,7 @@ where
 }
 
 #[cfg(target_os = "linux")]
-pub fn set_tx_time(sock: RawFd) -> io::Result<()> {
+pub fn set_tx_time(sock: &impl AsFd) -> io::Result<()> {
     use nix::sys::socket::setsockopt;
     use nix::sys::socket::sockopt::TxTime;
 
@@ -112,13 +105,13 @@ pub fn set_tx_time(sock: RawFd) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(any(target_os = "android", target_os = "ios", target_os = "macos"))]
-pub fn set_tx_time(_: RawFd) -> io::Result<()> {
+#[cfg(not(target_os = "linux"))]
+pub fn set_tx_time(_: &impl AsFd) -> io::Result<()> {
     Err("unsupported").into_io()
 }
 
 #[cfg(target_os = "linux")]
-pub fn set_rx_time(sock: RawFd) -> io::Result<()> {
+pub fn set_rx_time(sock: &impl AsFd) -> io::Result<()> {
     use nix::sys::socket::setsockopt;
     use nix::sys::socket::sockopt::ReceiveTimestampns;
 
@@ -127,7 +120,7 @@ pub fn set_rx_time(sock: RawFd) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-pub fn set_rx_time(_: RawFd) -> io::Result<()> {
+#[cfg(not(target_os = "linux"))]
+pub fn set_rx_time(_: &impl AsFd) -> io::Result<()> {
     Err("unsupported").into_io()
 }
