@@ -3,8 +3,8 @@ name = "dgram"
 version = "0.1.0"
 edition = "2021"
 
-[features]
-async = ["dep:tokio"]
+ [features]
+ async = ["dep:tokio"]
 
 [dependencies]
 libc = "0.2.76"

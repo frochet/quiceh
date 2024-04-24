@@ -1,22 +1,11 @@
 use crate::syscalls::RecvData;
 use std::io::Result;
 use std::net::SocketAddr;
+use std::os::fd::AsFd;
 use std::time::Instant;
-use tokio::net::UdpSocket;
 
 #[cfg(target_os = "linux")]
-mod linux_imports {
-    pub(super) use crate::syscalls::recv_msg;
-    pub(super) use crate::syscalls::send_msg;
-    pub(super) use nix::sys::socket::MsgFlags;
-    pub(super) use nix::sys::socket::SockaddrStorage;
-    pub(super) use std::io::ErrorKind;
-    pub(super) use std::os::fd::AsFd;
-    pub(super) use tokio::io::Interest;
-}
-
-#[cfg(target_os = "linux")]
-use self::linux_imports::*;
+use super::linux_imports::*;
 
 #[cfg(target_os = "linux")]
 pub async fn send_to(

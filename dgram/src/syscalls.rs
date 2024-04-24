@@ -1,30 +1,11 @@
 use nix::sys::socket::ControlMessageOwned;
 use std::net::SocketAddr;
 use std::os::fd::AsFd;
+use std::time::Instant;
 use std::time::SystemTime;
 
 #[cfg(target_os = "linux")]
-mod linux_imports {
-    pub(super) use nix::errno::Errno;
-    pub(super) use nix::sys::socket::recvmsg;
-    pub(super) use nix::sys::socket::sendmsg;
-    pub(super) use nix::sys::socket::AddressFamily;
-    pub(super) use nix::sys::socket::ControlMessage;
-    pub(super) use nix::sys::socket::MsgFlags;
-    pub(super) use nix::sys::socket::SockaddrLike;
-    pub(super) use nix::sys::socket::SockaddrStorage;
-    pub(super) use smallvec::SmallVec;
-    pub(super) use std::io::IoSlice;
-    pub(super) use std::io::IoSliceMut;
-    pub(super) use std::io::Result;
-    pub(super) use std::net::SocketAddrV4;
-    pub(super) use std::net::SocketAddrV6;
-    pub(super) use std::os::fd::AsRawFd;
-    pub(super) use std::time::Instant;
-}
-
-#[cfg(target_os = "linux")]
-use self::linux_imports::*;
+use super::linux_imports::*;
 
 // An instant with the value of zero, since [`Instant`] is backed by a version
 // of timespec this allows to extract raw values from an [`Instant`]

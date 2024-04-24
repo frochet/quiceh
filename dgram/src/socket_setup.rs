@@ -1,6 +1,9 @@
 use std::io;
 use std::os::fd::AsFd;
 
+#[cfg(target_os = "linux")]
+use super::linux_imports::*;
+
 /// Indicators of settings applied to a socket. These settings aren't "applied"
 /// to a socket. Rather, the same (maximal) settings are always applied to a
 /// socket, and this struct indicates which of those settings were successfully
@@ -27,8 +30,8 @@ impl SocketCapabilities {
     /// Try applying maximal settings to a socket and returns indicators of
     /// which settings were successfully applied.
     #[cfg(unix)]
-    pub fn apply_all_and_get_compatibility<S: AsFd>(
-        socket: &S, max_send_udp_payload_size: usize,
+    pub fn apply_all_and_get_compatibility(
+        socket: &impl AsFd, max_send_udp_payload_size: usize,
     ) -> Self {
         let fd = socket.as_fd();
 
@@ -44,9 +47,6 @@ impl SocketCapabilities {
 
 #[cfg(target_os = "linux")]
 pub fn set_gso_segment(sock: &impl AsFd, segment: usize) -> io::Result<()> {
-    use nix::sys::socket::setsockopt;
-    use nix::sys::socket::sockopt::UdpGsoSegment;
-
     setsockopt(sock, UdpGsoSegment, &(segment as i32))?;
 
     Ok(())
@@ -59,9 +59,6 @@ pub fn set_gso_segment(_: &impl AsFd, _: usize) -> io::Result<()> {
 
 #[cfg(target_os = "linux")]
 pub fn set_gro(sock: &impl AsFd) -> io::Result<()> {
-    use nix::sys::socket::sockopt::UdpGroSegment;
-    use nix::sys::socket::SetSockOpt;
-
     UdpGroSegment.set(sock, &true)?;
 
     Ok(())
@@ -74,27 +71,18 @@ pub fn set_gro(_: &impl AsFd) -> io::Result<()> {
 
 #[cfg(target_os = "linux")]
 fn set_udp_rxq_ovfl(sock: &impl AsFd) -> io::Result<()> {
-    use nix::sys::socket::setsockopt;
-    use nix::sys::socket::sockopt::RxqOvfl;
-
     setsockopt(sock, RxqOvfl, &1)?;
 
     Ok(())
 }
 
 #[cfg(not(target_os = "linux"))]
-fn set_udp_rxq_ovfl<S>(_: &S) -> io::Result<()>
-where
-    S: AsRawFd,
-{
+fn set_udp_rxq_ovfl<S>(_: &impl AsFd) -> io::Result<()> {
     Err("unsupported").into_io()
 }
 
 #[cfg(target_os = "linux")]
 pub fn set_tx_time(sock: &impl AsFd) -> io::Result<()> {
-    use nix::sys::socket::setsockopt;
-    use nix::sys::socket::sockopt::TxTime;
-
     let cfg = libc::sock_txtime {
         clockid: libc::CLOCK_MONOTONIC,
         flags: 0,
@@ -112,9 +100,6 @@ pub fn set_tx_time(_: &impl AsFd) -> io::Result<()> {
 
 #[cfg(target_os = "linux")]
 pub fn set_rx_time(sock: &impl AsFd) -> io::Result<()> {
-    use nix::sys::socket::setsockopt;
-    use nix::sys::socket::sockopt::ReceiveTimestampns;
-
     setsockopt(sock, ReceiveTimestampns, &true)?;
 
     Ok(())
