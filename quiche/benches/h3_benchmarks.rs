@@ -9,6 +9,7 @@ use criterion::Throughput;
 use quiche::h3::testing::Session;
 use quiche::h3::Header;
 use quiche::h3::NameValue;
+use itertools::Itertools;
 
 use bench_util::*;
 
@@ -44,46 +45,60 @@ type BuildStreamIdHasher = std::hash::BuildHasherDefault<StreamIdHasher>;
 type StreamIdHashMap<V> =
     std::collections::HashMap<u64, V, BuildStreamIdHasher>;
 
+// Process 157 packets at a time to roughly match the MAX RCV_BUF
+pub const BATCH_PACKETS_SIZE: usize = 157;
+
 fn bench_h3(
     s: &mut Session, flight: &mut Vec<(Vec<u8>, quiche::SendInfo)>,
     response_map: &mut StreamIdHashMap<Vec<u8>>,
 ) {
-    for &mut (ref mut pkt, ref mut si) in flight.iter_mut() {
-        let info = quiche::RecvInfo {
-            to: si.to,
-            from: si.from,
-        };
-        s.pipe
-            .client
-            .recv(pkt, &mut s.pipe.client_app_buffers, info)
-            .unwrap();
-    }
-    // polling!
-    let mut res_count = 0;
-
-    loop {
-        match s.client.poll(&mut s.pipe.client) {
-            Ok((stream_id, quiche::h3::Event::Headers { list, .. })) => {
-                let s = std::str::from_utf8(list[2].value()).unwrap();
-                let content_length = s.parse().unwrap();
-                // update the map with a fully allocated app receive buffer.
-                response_map.insert(stream_id, vec![0; content_length]);
-            },
-            Ok((stream_id, quiche::h3::Event::Data)) => {
-                s.recv_body_client(
-                    stream_id,
-                    response_map.get_mut(&stream_id).unwrap(),
-                )
+    // Simulate the receiver receiving BATCH_PACKETS_SIZE
+    // from the OS, and then feeding it to QUIC, and eventually
+    // polling HTTP/3 data.
+    for chunk in &flight.into_iter().chunks(BATCH_PACKETS_SIZE) {
+        for &mut (ref mut pkt, ref mut si) in chunk {
+            let info = quiche::RecvInfo {
+                to: si.to,
+                from: si.from,
+            };
+            s.pipe
+                .client
+                .recv(pkt, &mut s.pipe.client_app_buffers, info)
                 .unwrap();
-                black_box(response_map.get(&stream_id).unwrap());
-            },
-            Ok((_, quiche::h3::Event::Finished)) => {
-                res_count += 1;
-                if res_count == NUMBER_OF_REQUESTS {
-                    break; // we're done.
+        }
+        // polling!
+        let mut res_count = 0;
+
+        loop {
+            match s.client.poll(&mut s.pipe.client) {
+                Ok((stream_id, quiche::h3::Event::Headers { list, .. })) => {
+                    let s = std::str::from_utf8(list[2].value()).unwrap();
+                    let content_length = s.parse().unwrap();
+                    // update the map with a fully allocated app receive buffer.
+                    response_map.insert(stream_id, vec![0; content_length]);
+                },
+                Ok((stream_id, quiche::h3::Event::Data)) => {
+                    s.recv_body_client(
+                        stream_id,
+                        response_map.get_mut(&stream_id).unwrap(),
+                    )
+                    .unwrap();
+                    black_box(response_map.get(&stream_id).unwrap());
+                },
+                Ok((_, quiche::h3::Event::Finished)) => {
+                    res_count += 1;
+                    if res_count == NUMBER_OF_REQUESTS {
+                        break; // we're done.
+                    }
+                },
+                Err(quiche::h3::Error::Done) => {
+                    res_count += 1;
+                    if res_count == NUMBER_OF_REQUESTS {
+                        break; // we're done.
+                    }
                 }
-            },
-            _ => (),
+                _ => (),
+            }
         }
     }
 }
@@ -91,36 +106,44 @@ fn bench_h3(
 fn bench_h3_quicv3(
     s: &mut Session, flight: &mut Vec<(Vec<u8>, quiche::SendInfo)>,
 ) {
-    for &mut (ref mut pkt, ref mut si) in flight.iter_mut() {
-        let info = quiche::RecvInfo {
-            to: si.to,
-            from: si.from,
-        };
-        s.pipe
-            .client
-            .recv(pkt, &mut s.pipe.client_app_buffers, info)
-            .unwrap();
-    }
-    // polling!
-    let mut res_count = 0;
+    for chunk in &flight.into_iter().chunks(BATCH_PACKETS_SIZE) {
+        for &mut (ref mut pkt, ref mut si) in chunk {
+            let info = quiche::RecvInfo {
+                to: si.to,
+                from: si.from,
+            };
+            s.pipe
+                .client
+                .recv(pkt, &mut s.pipe.client_app_buffers, info)
+                .unwrap();
+        }
+        // polling!
+        let mut res_count = 0;
 
-    loop {
-        match s
-            .client
-            .poll_v3(&mut s.pipe.client, &mut s.pipe.client_app_buffers)
-        {
-            Ok((stream_id, quiche::h3::Event::Data)) => {
-                let (b, tot_exp_len) = s.recv_body_v3_client(stream_id).unwrap();
-                black_box(b);
-                s.body_consumed_client(stream_id, tot_exp_len).unwrap();
-            },
-            Ok((_, quiche::h3::Event::Finished)) => {
-                res_count += 1;
-                if res_count == NUMBER_OF_REQUESTS {
-                    break; // we're done.
+        loop {
+            match s
+                .client
+                .poll_v3(&mut s.pipe.client, &mut s.pipe.client_app_buffers)
+            {
+                Ok((stream_id, quiche::h3::Event::Data)) => {
+                    let (b, tot_exp_len) = s.recv_body_v3_client(stream_id).unwrap();
+                    let len = b.len();
+                    s.body_consumed_client(stream_id, len).unwrap();
+                },
+                Ok((_, quiche::h3::Event::Finished)) => {
+                    res_count += 1;
+                    if res_count == NUMBER_OF_REQUESTS {
+                        break; // we're done.
+                    }
+                },
+                Err(quiche::h3::Error::Done) => {
+                    res_count += 1;
+                    if res_count == NUMBER_OF_REQUESTS {
+                        break; // we're done.
+                    }
                 }
-            },
-            _ => (),
+                _ => (),
+            }
         }
     }
 }

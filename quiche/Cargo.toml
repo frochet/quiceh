@@ -77,6 +77,7 @@ sfv = { version = "0.9", optional = true }
 smallvec = { version = "1.10", features = ["serde", "union"] }
 likely_stable = "0.1.2"
 cpu-time = "1.0.0"
+itertools = "0.12.1"
 
 [target."cfg(windows)".dependencies]
 winapi = { version = "0.3", features = ["wincrypt", "ws2def", "ws2ipdef", "ws2tcpip"] }
