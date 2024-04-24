@@ -1,11 +1,5 @@
-use std::io::IoSlice;
-use std::io::IoSliceMut;
-use std::io::Result;
+use nix::sys::socket::ControlMessageOwned;
 use std::net::SocketAddr;
-use std::net::SocketAddrV4;
-use std::net::SocketAddrV6;
-use std::os::fd::AsRawFd;
-use std::time::Instant;
 use std::time::SystemTime;
 
 #[cfg(target_os = "linux")]
@@ -15,11 +9,17 @@ mod linux_imports {
     pub(super) use nix::sys::socket::sendmsg;
     pub(super) use nix::sys::socket::AddressFamily;
     pub(super) use nix::sys::socket::ControlMessage;
-    pub(super) use nix::sys::socket::ControlMessageOwned;
     pub(super) use nix::sys::socket::MsgFlags;
     pub(super) use nix::sys::socket::SockaddrLike;
     pub(super) use nix::sys::socket::SockaddrStorage;
     pub(super) use smallvec::SmallVec;
+    pub(super) use std::io::IoSlice;
+    pub(super) use std::io::IoSliceMut;
+    pub(super) use std::io::Result;
+    pub(super) use std::net::SocketAddrV4;
+    pub(super) use std::net::SocketAddrV6;
+    pub(super) use std::os::fd::AsRawFd;
+    pub(super) use std::time::Instant;
 }
 
 #[cfg(target_os = "linux")]
@@ -27,6 +27,7 @@ use self::linux_imports::*;
 
 // An instant with the value of zero, since [`Instant`] is backed by a version
 // of timespec this allows to extract raw values from an [`Instant`]
+#[cfg(target_os = "linux")]
 const INSTANT_ZERO: Instant = unsafe { std::mem::transmute(0u128) };
 
 #[cfg(target_os = "linux")]
@@ -94,6 +95,7 @@ impl RecvData {
 ///
 /// It is the caller's responsibility to create and clear the cmsg space. `nix`
 /// recommends that the space be created via the `cmsg_space!()` macro.
+#[cfg(target_os = "linux")]
 pub fn recv_msg(
     fd: impl AsRawFd, read_buf: &mut [u8], cmsg_space: &mut Vec<u8>,
     msg_flags: Option<MsgFlags>,
@@ -115,7 +117,7 @@ pub fn recv_msg(
 
             let address = match r.address {
                 Some(a) => a,
-                _ => return Err(Errno::EINVAL.into()),
+                _ => return Err(Errno::EINVAL),
             };
 
             let peer_addr = match address.family() {
@@ -146,7 +148,7 @@ pub fn recv_msg(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use nix::cmsg_space;
     use nix::sys::socket::sockopt::ReceiveTimestampns;

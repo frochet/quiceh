@@ -1,8 +1,6 @@
 use crate::syscalls::RecvData;
-use std::io::ErrorKind;
 use std::io::Result;
 use std::net::SocketAddr;
-use std::os::fd::AsRawFd;
 use std::time::Instant;
 use tokio::net::UdpSocket;
 
@@ -12,6 +10,8 @@ mod linux_imports {
     pub(super) use crate::syscalls::send_msg;
     pub(super) use nix::sys::socket::MsgFlags;
     pub(super) use nix::sys::socket::SockaddrStorage;
+    pub(super) use std::io::ErrorKind;
+    pub(super) use std::os::fd::AsRawFd;
     pub(super) use tokio::io::Interest;
 }
 
@@ -73,7 +73,7 @@ pub async fn recv_from(
 pub async fn send_to(
     socket: &tokio::net::UdpSocket, client_addr: SocketAddr, send_buf: &[u8],
     _segment_size: usize, _num_pkts: usize, _tx_time: Option<Instant>,
-) -> io::Result<usize> {
+) -> Result<usize> {
     socket.send_to(send_buf, client_addr).await
 }
 
