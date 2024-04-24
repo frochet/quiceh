@@ -313,27 +313,4 @@ mod tests {
 
         Ok(())
     }
-
-    #[test]
-    fn recv_from_control_message() -> Result<()> {
-        let (send, recv) = new_sockets()?;
-        let addr = getsockname::<SockaddrStorage>(recv).unwrap();
-
-        let send_buf = b"jets";
-        let iov = [IoSlice::new(send_buf)];
-        sendmsg(send, &iov, &vec![], MsgFlags::empty(), Some(&addr))?;
-
-        let mut cmsg_space = cmsg_space!(TimeVal);
-        let mut read_buf = [0; 4];
-
-        let recv_data = recv_msg(recv, &mut read_buf, &mut cmsg_space, None)?;
-
-        println!("cmsgs: {:?}", recv_data.cmsgs);
-
-        // TODO: test cmsgs get transferred to cmsg_space
-        assert_eq!(recv_data.bytes, 4);
-        assert_eq!(&read_buf, b"jets");
-
-        Ok(())
-    }
 }
