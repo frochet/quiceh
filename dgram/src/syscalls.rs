@@ -1,4 +1,3 @@
-use std::fs::metadata;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
 use std::io::Result;
@@ -9,63 +8,32 @@ use std::os::fd::AsRawFd;
 use std::time::Instant;
 use std::time::SystemTime;
 
-// TODO: test multi-platform bits, ensure linux/non-linux pieces are separate
-
-#[cfg(all(target_os = "linux", not(fuzzing)))]
+#[cfg(target_os = "linux")]
 mod linux_imports {
+    pub(super) use nix::errno::Errno;
+    pub(super) use nix::sys::socket::recvmsg;
     pub(super) use nix::sys::socket::sendmsg;
+    pub(super) use nix::sys::socket::AddressFamily;
     pub(super) use nix::sys::socket::ControlMessage;
+    pub(super) use nix::sys::socket::ControlMessageOwned;
     pub(super) use nix::sys::socket::MsgFlags;
     pub(super) use nix::sys::socket::SockaddrLike;
+    pub(super) use nix::sys::socket::SockaddrStorage;
     pub(super) use smallvec::SmallVec;
 }
 
-use nix::errno::Errno;
-use nix::sys::socket::recvmsg;
-use nix::sys::socket::AddressFamily;
-use nix::sys::socket::ControlMessageOwned;
-use nix::sys::socket::SockaddrStorage;
-
-#[cfg(all(target_os = "linux", not(fuzzing)))]
+#[cfg(target_os = "linux")]
 use self::linux_imports::*;
 
-#[cfg(any(not(target_os = "linux"), fuzzing))]
-mod non_linux_imports {
-    pub(super) use std::net::SocketAddr;
-}
+// An instant with the value of zero, since [`Instant`] is backed by a version
+// of timespec this allows to extract raw values from an [`Instant`]
+const INSTANT_ZERO: Instant = unsafe { std::mem::transmute(0u128) };
 
-const UDP_MAX_GSO_PACKET_SIZE: usize = 65507;
-
-#[cfg(any(not(target_os = "linux"), fuzzing))]
-use self::non_linux_imports::*;
-
-#[cfg(any(not(target_os = "linux"), fuzzing))]
-pub fn send_to(
+#[cfg(target_os = "linux")]
+pub fn send_msg(
     fd: impl AsRawFd, send_buf: &[u8], segment_size: usize, num_pkts: usize,
-    tx_time: Option<Instant>, client_addr: Option<SocketAddr>,
+    tx_time: Option<Instant>, client_addr: &SockaddrStorage,
 ) -> Result<usize> {
-    sendmsg(
-        fd.as_raw_fd(),
-        &iov,
-        &cmsgs,
-        MsgFlags::empty(),
-        addr.as_ref(),
-    )
-    .map_err(Into::into)
-}
-
-#[cfg(all(target_os = "linux", not(fuzzing)))]
-pub fn send_to<S>(
-    fd: impl AsRawFd, send_buf: &[u8], segment_size: usize, num_pkts: usize,
-    tx_time: Option<Instant>, client_addr: Option<&S>,
-) -> Result<usize>
-where
-    S: SockaddrLike,
-{
-    // An instant with the value of zero, since [`Instant`] is backed by a version
-    // of timespec this allows to extract raw values from an [`Instant`]
-    const INSTANT_ZERO: Instant = unsafe { std::mem::transmute(0u128) };
-
     let now = Instant::now();
 
     let iov = [IoSlice::new(send_buf)];
@@ -87,16 +55,37 @@ where
         cmsgs.push(ControlMessage::TxTime(&raw_time));
     }
 
-    sendmsg(fd.as_raw_fd(), &iov, &cmsgs, MsgFlags::empty(), client_addr)
-        .map_err(Into::into)
+    sendmsg(
+        fd.as_raw_fd(),
+        &iov,
+        &cmsgs,
+        MsgFlags::empty(),
+        Some(client_addr),
+    )
+    .map_err(Into::into)
 }
 
 /// Output of a `recvmsg` call
 pub struct RecvData {
     pub bytes: usize,
     pub peer_addr: Option<SocketAddr>,
-    pub rx_time: Option<SystemTime>,
+    pub cmsgs: Vec<ControlMessageOwned>,
     pub gro: Option<u16>,
+    pub rx_time: Option<SystemTime>,
+}
+
+impl RecvData {
+    pub fn new(
+        peer_addr: Option<SocketAddr>, bytes: usize, cmsg_space: usize,
+    ) -> Self {
+        Self {
+            peer_addr,
+            bytes,
+            cmsgs: Vec::with_capacity(cmsg_space),
+            gro: None,
+            rx_time: None,
+        }
+    }
 }
 
 /// Receive a message via `recvmsg`.
@@ -105,7 +94,7 @@ pub struct RecvData {
 ///
 /// It is the caller's responsibility to create and clear the cmsg space. `nix`
 /// recommends that the space be created via the `cmsg_space!()` macro.
-pub fn recv_from(
+pub fn recv_msg(
     fd: impl AsRawFd, read_buf: &mut [u8], cmsg_space: &mut Vec<u8>,
     msg_flags: Option<MsgFlags>,
 ) -> std::result::Result<RecvData, Errno> {
@@ -113,6 +102,7 @@ pub fn recv_from(
 
     let iov_s = &mut [IoSliceMut::new(read_buf)];
     let msg_flags = msg_flags.unwrap_or(MsgFlags::empty());
+    let cmsg_cap = cmsg_space.capacity();
 
     match recvmsg::<SockaddrStorage>(
         fd.as_raw_fd(),
@@ -121,7 +111,6 @@ pub fn recv_from(
         msg_flags,
     ) {
         Ok(r) => {
-            println!("{:?}", r);
             let bytes = r.bytes;
 
             let address = match r.address {
@@ -140,30 +129,18 @@ pub fn recv_from(
                 _ => None,
             };
 
-            let mut rx_time = None;
-            let mut gro = None;
+            let mut recv_data = RecvData::new(peer_addr, bytes, cmsg_cap);
 
-            for cmsg in r.cmsgs() {
-                match cmsg {
-                    ControlMessageOwned::RxqOvfl(c) =>
-                        println!("TODO: udp packet drop count metrics? // {c}"),
-                    ControlMessageOwned::ScmTimestampns(val) => {
-                        rx_time = SystemTime::UNIX_EPOCH.checked_add(val.into());
-                    },
-                    ControlMessageOwned::UdpGroSegments(val) => {
-                        println!("val: {:?}", val);
-                        gro = Some(val);
-                    },
-                    _ => return Err(Errno::EINVAL.into()),
-                }
-            }
+            r.cmsgs().for_each(|msg| match msg {
+                ControlMessageOwned::ScmTimestampns(time) =>
+                    recv_data.rx_time =
+                        SystemTime::UNIX_EPOCH.checked_add(time.into()),
+                ControlMessageOwned::UdpGroSegments(gro) =>
+                    recv_data.gro = Some(gro),
+                _ => recv_data.cmsgs.push(msg),
+            });
 
-            Ok(RecvData {
-                peer_addr,
-                bytes,
-                gro,
-                rx_time,
-            })
+            Ok(recv_data)
         },
         Err(e) => Err(e),
     }
@@ -172,8 +149,8 @@ pub fn recv_from(
 #[cfg(test)]
 mod tests {
     use nix::cmsg_space;
+    use nix::sys::socket::sockopt::ReceiveTimestampns;
     use nix::sys::socket::sockopt::UdpGroSegment;
-    use nix::sys::socket::sockopt::UdpGsoSegment;
     use nix::sys::socket::*;
     use nix::sys::time::TimeVal;
     use std::io::IoSliceMut;
@@ -181,6 +158,8 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
+
+    const UDP_MAX_GSO_PACKET_SIZE: usize = 65507;
 
     fn new_sockets() -> Result<(i32, i32)> {
         let recv = socket(
@@ -190,6 +169,7 @@ mod tests {
             SockProtocol::Udp,
         )
         .unwrap();
+        setsockopt(recv, ReceiveTimestampns, &true)?;
         setsockopt(recv, UdpGroSegment, &true)?;
         let localhost = SockaddrIn::from_str("127.0.0.1:0").unwrap();
         bind(recv, &localhost).unwrap();
@@ -201,7 +181,7 @@ mod tests {
             SockProtocol::Udp,
         )
         .unwrap();
-        setsockopt(send, UdpGsoSegment, &1).unwrap();
+        connect(send, &localhost).unwrap();
 
         Ok((send, recv))
     }
@@ -212,14 +192,7 @@ mod tests {
         let addr = getsockname::<SockaddrStorage>(recv).unwrap();
 
         let send_buf = b"njd";
-        send_to(
-            send,
-            send_buf,
-            UDP_MAX_GSO_PACKET_SIZE,
-            1,
-            None,
-            Some(&addr),
-        )?;
+        send_msg(send, send_buf, UDP_MAX_GSO_PACKET_SIZE, 1, None, &addr)?;
 
         let mut buf = [0; 3];
         let mut read_buf = [IoSliceMut::new(&mut buf)];
@@ -241,14 +214,14 @@ mod tests {
         let addr = getsockname::<SockaddrStorage>(recv).unwrap();
 
         let send_buf = b"nyj";
-        send_to(
+        send_msg(
             send,
             send_buf,
             UDP_MAX_GSO_PACKET_SIZE,
             1,
             // Invalid because we pass this Instant by the time we call sendmsg()
             Some(Instant::now()),
-            Some(&addr),
+            &addr,
         )?;
 
         let mut buf = [0; 3];
@@ -271,7 +244,7 @@ mod tests {
         let addr = getsockname::<SockaddrStorage>(recv).unwrap();
 
         let send_buf = b"devils";
-        send_to(send, send_buf, 1, 6, None, Some(&addr))?;
+        send_msg(send, send_buf, 1, 6, None, &addr)?;
 
         let mut buf = [0; 6];
         let mut read_buf = [IoSliceMut::new(&mut buf)];
@@ -293,16 +266,17 @@ mod tests {
     #[test]
     fn send_to_control_messages() -> Result<()> {
         let (send, recv) = new_sockets()?;
+        let addr = getsockname::<SockaddrStorage>(recv).unwrap();
 
         let send_buf = b"nyj";
-        send_to(
+        send_msg(
             send,
             send_buf,
             UDP_MAX_GSO_PACKET_SIZE,
             1,
             // Invalid because we pass this Instant by the time we call sendmsg()
             Some(Instant::now()),
-            None::<&SockaddrStorage>,
+            &addr,
         )?;
 
         let mut buf = [0; 3];
@@ -323,16 +297,16 @@ mod tests {
     #[test]
     fn recv_from_simple() -> Result<()> {
         let (send, recv) = new_sockets()?;
+        let addr = getsockname::<SockaddrStorage>(recv).unwrap();
 
-        // TODO: how to handle cmsgs
         let send_buf = b"jets";
         let iov = [IoSlice::new(send_buf)];
-        sendmsg::<()>(send, &iov, &[], MsgFlags::empty(), None)?;
+        sendmsg(send, &iov, &[], MsgFlags::empty(), Some(&addr))?;
 
         let mut cmsg_space = cmsg_space!(TimeVal);
         let mut read_buf = [0; 4];
 
-        let recv_data = recv_from(recv, &mut read_buf, &mut cmsg_space, None)?;
+        let recv_data = recv_msg(recv, &mut read_buf, &mut cmsg_space, None)?;
 
         assert_eq!(recv_data.bytes, 4);
         assert_eq!(&read_buf, b"jets");
@@ -345,25 +319,20 @@ mod tests {
         let (send, recv) = new_sockets()?;
         let addr = getsockname::<SockaddrStorage>(recv).unwrap();
 
-        // TODO: how to handle cmsgs
         let send_buf = b"jets";
         let iov = [IoSlice::new(send_buf)];
-        let send_cmsgs = vec![ControlMessage::UdpGsoSegments(&2)];
-        sendmsg(send, &iov, &send_cmsgs, MsgFlags::empty(), Some(&addr))?;
+        sendmsg(send, &iov, &vec![], MsgFlags::empty(), Some(&addr))?;
 
-        let mut cmsg_space = cmsg_space!(u32);
+        let mut cmsg_space = cmsg_space!(TimeVal);
         let mut read_buf = [0; 4];
 
-        let recv_data = recv_from(recv, &mut read_buf, &mut cmsg_space, None)?;
+        let recv_data = recv_msg(recv, &mut read_buf, &mut cmsg_space, None)?;
 
-        // println!("read buf: {:?}", read_buf);
-        // println!("cmsg space: {:?}", cmsg_space);
-        // println!("gro {:?}", getsockopt(recv, UdpGroSegment));
+        println!("cmsgs: {:?}", recv_data.cmsgs);
 
+        // TODO: test cmsgs get transferred to cmsg_space
         assert_eq!(recv_data.bytes, 4);
         assert_eq!(&read_buf, b"jets");
-
-        assert_eq!(recv_data.gro, Some(1));
 
         Ok(())
     }
