@@ -53,35 +53,17 @@ fn send_to_gso_pacing(
     socket: &mio::net::UdpSocket, buf: &[u8], send_info: &quiche::SendInfo,
     segment_size: usize,
 ) -> io::Result<usize> {
-    use nix::sys::socket::sendmsg;
-    use nix::sys::socket::ControlMessage;
-    use nix::sys::socket::MsgFlags;
-    use nix::sys::socket::SockaddrStorage;
-    use std::io::IoSlice;
-    use std::os::unix::io::AsRawFd;
+    use dgram::GsoSettings;
 
-    let iov = [IoSlice::new(buf)];
-    let segment_size = segment_size as u16;
-    let dst = SockaddrStorage::from(send_info.to);
-    let sockfd = socket.as_raw_fd();
-
-    // GSO option.
-    let cmsg_gso = ControlMessage::UdpGsoSegments(&segment_size);
-
-    // Pacing option.
-    let send_time = std_time_to_u64(&send_info.at);
-    let cmsg_txtime = ControlMessage::TxTime(&send_time);
-
-    match sendmsg(
-        sockfd,
-        &iov,
-        &[cmsg_gso, cmsg_txtime],
-        MsgFlags::empty(),
-        Some(&dst),
-    ) {
-        Ok(v) => Ok(v),
-        Err(e) => Err(e.into()),
-    }
+    dgram::sync::send_to(
+        socket,
+        buf,
+        Some(GsoSettings {
+            segment_size: segment_size as u16,
+        }),
+        Some(send_info.at),
+        &send_info.to,
+    )
 }
 
 /// For non-Linux platforms.
@@ -130,19 +112,4 @@ pub fn send_to(
     }
 
     Ok(written)
-}
-
-#[cfg(target_os = "linux")]
-fn std_time_to_u64(time: &std::time::Instant) -> u64 {
-    const NANOS_PER_SEC: u64 = 1_000_000_000;
-
-    const INSTANT_ZERO: std::time::Instant =
-        unsafe { std::mem::transmute(std::time::UNIX_EPOCH) };
-
-    let raw_time = time.duration_since(INSTANT_ZERO);
-
-    let sec = raw_time.as_secs();
-    let nsec = raw_time.subsec_nanos();
-
-    sec * NANOS_PER_SEC + nsec as u64
 }
