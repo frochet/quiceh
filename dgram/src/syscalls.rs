@@ -1,18 +1,22 @@
-use crate::GsoSettings;
-use nix::sys::socket::ControlMessageOwned;
 use std::net::SocketAddr;
-use std::os::fd::AsFd;
-use std::time::Instant;
 use std::time::SystemTime;
 
 #[cfg(target_os = "linux")]
-use super::linux_imports::*;
+mod linux {
+    pub(super) use super::super::linux_imports::*;
+    pub(super) use std::os::fd::AsFd;
+    pub(super) use std::time::Instant;
+}
+
+#[cfg(target_os = "linux")]
+use linux::*;
 
 // An instant with the value of zero, since [`Instant`] is backed by a version
 // of timespec this allows to extract raw values from an [`Instant`]
 #[cfg(target_os = "linux")]
-const INSTANT_ZERO: Instant = unsafe { std::mem::transmute(0u128) };
-
+const INSTANT_ZERO: Instant =
+    unsafe { std::mem::transmute(std::time::UNIX_EPOCH) };
+#[cfg(target_os = "linux")]
 pub(crate) type SyscallResult<T> = std::result::Result<T, Errno>;
 
 #[cfg(target_os = "linux")]
@@ -156,7 +160,7 @@ pub struct RecvMetrics {
     pub udp_packets_dropped: u64,
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, target_os = "linux", not(target_os = "android")))]
 mod tests {
     use nix::cmsg_space;
     use nix::sys::socket::sockopt::ReceiveTimestampns;
@@ -177,7 +181,7 @@ mod tests {
             AddressFamily::Inet,
             SockType::Datagram,
             SockFlag::empty(),
-            SockProtocol::Udp,
+            None,
         )
         .unwrap();
         setsockopt(&recv, ReceiveTimestampns, &true)?;
@@ -189,7 +193,7 @@ mod tests {
             AddressFamily::Inet,
             SockType::Datagram,
             SockFlag::empty(),
-            SockProtocol::Udp,
+            None,
         )
         .unwrap();
         connect(send.as_raw_fd(), &localhost).unwrap();

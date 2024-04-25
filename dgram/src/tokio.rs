@@ -1,12 +1,18 @@
 use crate::syscalls::RecvData;
-use crate::GsoSettings;
 use std::io::Result;
 use std::net::SocketAddr;
-use std::os::fd::AsFd;
 use std::time::Instant;
 
+use crate::async_imports::*;
+
 #[cfg(target_os = "linux")]
-use super::linux_imports::*;
+mod linux {
+    pub(super) use super::super::linux_imports::*;
+    pub(super) use std::os::fd::AsFd;
+}
+
+#[cfg(target_os = "linux")]
+use linux::*;
 
 #[cfg(target_os = "linux")]
 pub async fn send_to(

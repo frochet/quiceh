@@ -54,7 +54,7 @@ pub fn set_gso_segment(sock: &impl AsFd, segment: usize) -> io::Result<()> {
 
 #[cfg(not(target_os = "linux"))]
 pub fn set_gso_segment(_: &impl AsFd, _: usize) -> io::Result<()> {
-    Err("unsupported").into_io()
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
 }
 
 #[cfg(target_os = "linux")]
@@ -66,7 +66,7 @@ pub fn set_gro(sock: &impl AsFd) -> io::Result<()> {
 
 #[cfg(not(target_os = "linux"))]
 pub fn set_gro(_: &impl AsFd) -> io::Result<()> {
-    Err("unsupported").into_io()
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
 }
 
 #[cfg(target_os = "linux")]
@@ -77,8 +77,8 @@ fn set_udp_rxq_ovfl(sock: &impl AsFd) -> io::Result<()> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn set_udp_rxq_ovfl<S>(_: &impl AsFd) -> io::Result<()> {
-    Err("unsupported").into_io()
+fn set_udp_rxq_ovfl(_: &impl AsFd) -> io::Result<()> {
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
 }
 
 #[cfg(target_os = "linux")]
@@ -95,7 +95,7 @@ pub fn set_tx_time(sock: &impl AsFd) -> io::Result<()> {
 
 #[cfg(not(target_os = "linux"))]
 pub fn set_tx_time(_: &impl AsFd) -> io::Result<()> {
-    Err("unsupported").into_io()
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
 }
 
 #[cfg(target_os = "linux")]
@@ -107,5 +107,5 @@ pub fn set_rx_time(sock: &impl AsFd) -> io::Result<()> {
 
 #[cfg(not(target_os = "linux"))]
 pub fn set_rx_time(_: &impl AsFd) -> io::Result<()> {
-    Err("unsupported").into_io()
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
 }

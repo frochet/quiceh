@@ -1,5 +1,4 @@
 use crate::syscalls::RecvData;
-use crate::GsoSettings;
 use mio::net::UdpSocket;
 use std::io::Result;
 use std::net::SocketAddr;
@@ -80,7 +79,7 @@ pub async fn send_to(
     socket: &UdpSocket, client_addr: SocketAddr, send_buf: &[u8],
     _segment_size: usize, _num_pkts: usize, _tx_time: Option<Instant>,
 ) -> Result<usize> {
-    socket.send_to(send_buf, client_addr).await
+    socket.send_to(send_buf, client_addr)
 }
 
 // Signature changes because we can't use MessageFlags outside of a *NIX context
@@ -88,7 +87,7 @@ pub async fn send_to(
 pub async fn recv_from(
     socket: &UdpSocket, read_buf: &mut [u8], _cmsg_space: &mut Vec<u8>,
 ) -> Result<RecvData> {
-    let recv = socket.recv(read_buf).await?;
+    let recv = socket.recv(read_buf)?;
 
     Ok(RecvData {
         bytes: recv,

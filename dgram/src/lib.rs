@@ -13,6 +13,7 @@ pub struct GsoSettings {
 mod linux_imports {
     pub(super) use crate::syscalls::recv_msg;
     pub(super) use crate::syscalls::send_msg;
+    pub(super) use crate::GsoSettings;
     pub(super) use nix::errno::Errno;
     pub(super) use nix::sys::socket::getsockopt;
     pub(super) use nix::sys::socket::recvmsg;
@@ -25,6 +26,7 @@ mod linux_imports {
     pub(super) use nix::sys::socket::sockopt::UdpGsoSegment;
     pub(super) use nix::sys::socket::AddressFamily;
     pub(super) use nix::sys::socket::ControlMessage;
+    pub(super) use nix::sys::socket::ControlMessageOwned;
     pub(super) use nix::sys::socket::MsgFlags;
     pub(super) use nix::sys::socket::SetSockOpt;
     pub(super) use nix::sys::socket::SockaddrLike;
@@ -35,9 +37,6 @@ mod linux_imports {
     pub(super) use std::net::SocketAddrV4;
     pub(super) use std::net::SocketAddrV6;
     pub(super) use std::os::fd::AsRawFd;
-
-    #[cfg(feature = "async")]
-    pub(super) use crate::async_imports::*;
 }
 
 #[cfg(feature = "async")]
