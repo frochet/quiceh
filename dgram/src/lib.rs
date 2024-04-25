@@ -4,6 +4,11 @@ mod syscalls;
 #[cfg(feature = "async")]
 pub mod tokio;
 
+#[derive(Default, Copy, Clone)]
+pub struct GsoSettings {
+    pub segment_size: u16,
+}
+
 #[cfg(target_os = "linux")]
 mod linux_imports {
     pub(super) use crate::syscalls::recv_msg;

@@ -1,4 +1,5 @@
 use crate::syscalls::RecvData;
+use crate::GsoSettings;
 use std::io::Result;
 use std::net::SocketAddr;
 use std::os::fd::AsFd;
@@ -9,7 +10,7 @@ use super::linux_imports::*;
 
 #[cfg(target_os = "linux")]
 pub async fn send_to(
-    socket: &UdpSocket, send_buf: &[u8], segment_size: usize, num_pkts: usize,
+    socket: &UdpSocket, send_buf: &[u8], gso_settings: Option<GsoSettings>,
     tx_time: Option<Instant>, client_addr: &SocketAddr,
 ) -> Result<usize> {
     loop {
@@ -20,8 +21,7 @@ pub async fn send_to(
             send_msg(
                 fd,
                 send_buf,
-                segment_size,
-                num_pkts,
+                gso_settings,
                 tx_time,
                 &SockaddrStorage::from(*client_addr),
             )
@@ -39,15 +39,20 @@ pub async fn send_to(
 #[cfg(target_os = "linux")]
 pub async fn recv_from(
     socket: &UdpSocket, read_buf: &mut [u8], cmsg_space: &mut Vec<u8>,
-    msg_flags: MsgFlags,
+    msg_flags: Option<MsgFlags>,
 ) -> Result<RecvData> {
     loop {
         // Important to use try_io so that Tokio can clear the socket's readiness
         // flag
         let res = socket.try_io(Interest::READABLE, || {
             let fd = socket.as_fd();
-            recv_msg(fd, read_buf, cmsg_space, Some(msg_flags))
-                .map_err(Into::into)
+            recv_msg(
+                fd,
+                read_buf,
+                cmsg_space,
+                msg_flags.unwrap_or(MsgFlags::empty()),
+            )
+            .map_err(Into::into)
         });
 
         match res {
