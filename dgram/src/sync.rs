@@ -14,6 +14,8 @@ pub fn send_to(
     tx_time: Option<Instant>, client_addr: &SocketAddr,
 ) -> Result<usize> {
     loop {
+        // Important to use try_io so events keep coming even if we see
+        // EAGAIN/EWOULDBLOCK
         let res = socket.try_io(|| {
             // mio::net::UdpSocket doesn't implement AsFd (yet?).
             let fd = unsafe {
@@ -21,7 +23,7 @@ pub fn send_to(
             };
 
             let sent = send_msg(
-                &fd,
+                fd,
                 send_buf,
                 gso_settings,
                 tx_time,
@@ -46,6 +48,8 @@ pub async fn recv_from(
     msg_flags: Option<MsgFlags>,
 ) -> Result<RecvData> {
     loop {
+        // Important to use try_io so events keep coming even if we see
+        // EAGAIN/EWOULDBLOCK
         let res = socket.try_io(|| {
             // mio::net::UdpSocket doesn't implement AsFd (yet?).
             let fd = unsafe {
@@ -53,7 +57,7 @@ pub async fn recv_from(
             };
 
             let recvd = recv_msg(
-                &fd,
+                fd,
                 read_buf,
                 cmsg_space,
                 msg_flags.unwrap_or(MsgFlags::empty()),
