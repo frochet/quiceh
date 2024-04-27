@@ -6,9 +6,9 @@ COPY Cargo.toml Cargo.toml
 COPY Makefile Makefile
 COPY apps/ ./apps/
 COPY fuzz/ ./fuzz/
-COPY octets/ ./octets/
+COPY octets_rev/ ./octets_rev/
 COPY qlog/ ./qlog/
-COPY quiche/ ./quiche/
+COPY quiceh/ ./quiceh/
 
 RUN apt-get update && apt-get install -y cmake && rm -rf /var/lib/apt/lists/*
 
@@ -16,9 +16,9 @@ RUN cargo install cargo-fuzz
 RUN make build-fuzz
 
 ##
-## quiche-libfuzzer: quiche image for fuzzing
+## quiceh-libfuzzer: quiceh image for fuzzing
 ##
-FROM debian:latest as quiche-libfuzzer
+FROM debian:latest as quiceh-libfuzzer
 
 LABEL maintainer="alessandro@cloudflare.com"
 

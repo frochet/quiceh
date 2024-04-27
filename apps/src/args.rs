@@ -30,7 +30,7 @@ pub trait Args {
     fn with_docopt(docopt: &docopt::Docopt) -> Self;
 }
 
-/// Contains commons arguments for creating a quiche QUIC connection.
+/// Contains commons arguments for creating a quiceh QUIC connection.
 pub struct CommonArgs {
     pub alpns: Vec<&'static [u8]>,
     pub max_data: u64,
@@ -249,8 +249,8 @@ impl Default for CommonArgs {
 }
 
 pub const CLIENT_USAGE: &str = "Usage:
-  quiche-client [options] URL...
-  quiche-client -h | --help
+  quiceh-client [options] URL...
+  quiceh-client -h | --help
 
 Options:
   --method METHOD          Use the given HTTP request method [default: GET].
@@ -430,8 +430,8 @@ impl Default for ClientArgs {
 }
 
 pub const SERVER_USAGE: &str = "Usage:
-  quiche-server [options]
-  quiche-server -h | --help
+  quiceh-server [options]
+  quiceh-server -h | --help
 
 Options:
   --listen <addr>             Listen on the given IP:port [default: 127.0.0.1:4433]

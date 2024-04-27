@@ -26,7 +26,7 @@
 
 use crate::args::*;
 use crate::common::*;
-use quiche::AppRecvBufMap;
+use quiceh::AppRecvBufMap;
 
 use std::net::ToSocketAddrs;
 
@@ -101,7 +101,7 @@ pub fn connect(
     };
 
     // Create the configuration for the QUIC connection.
-    let mut config = quiche::Config::new(args.version).unwrap();
+    let mut config = quiceh::Config::new(args.version).unwrap();
 
     if let Some(ref trust_origin_ca_pem) = args.trust_origin_ca_pem {
         config
@@ -175,16 +175,16 @@ pub fn connect(
     let rng = SystemRandom::new();
 
     let scid = if !cfg!(feature = "fuzzing") {
-        let mut conn_id = [0; quiche::MAX_CONN_ID_LEN];
+        let mut conn_id = [0; quiceh::MAX_CONN_ID_LEN];
         rng.fill(&mut conn_id[..]).unwrap();
 
         conn_id.to_vec()
     } else {
         // When fuzzing use an all zero connection ID.
-        [0; quiche::MAX_CONN_ID_LEN].to_vec()
+        [0; quiceh::MAX_CONN_ID_LEN].to_vec()
     };
 
-    let scid = quiche::ConnectionId::from_ref(&scid);
+    let scid = quiceh::ConnectionId::from_ref(&scid);
 
     let local_addr = socket.local_addr().unwrap();
 
@@ -199,7 +199,7 @@ pub fn connect(
         .unwrap();
 
     // Create a QUIC connection and initiate handshake.
-    let mut conn = quiche::connect(
+    let mut conn = quiceh::connect(
         connect_url.domain(),
         &scid,
         local_addr,
@@ -223,8 +223,8 @@ pub fn connect(
 
             conn.set_qlog(
                 std::boxed::Box::new(writer),
-                "quiche-client qlog".to_string(),
-                format!("{} id={}", "quiche-client qlog", id),
+                "quiceh-client qlog".to_string(),
+                format!("{} id={}", "quiceh-client qlog", id),
             );
         }
     }
@@ -281,7 +281,7 @@ pub fn connect(
             conn.on_timeout();
         }
 
-        // Read incoming UDP packets from the socket and feed them to quiche,
+        // Read incoming UDP packets from the socket and feed them to quiceh,
         // until there are no more packets to read.
         for event in &events {
             let socket = match event.token() {
@@ -324,7 +324,7 @@ pub fn connect(
 
                 pkt_count += 1;
 
-                let recv_info = quiche::RecvInfo {
+                let recv_info = quiceh::RecvInfo {
                     to: local_addr,
                     from,
                 };
@@ -351,7 +351,7 @@ pub fn connect(
             info!(
                 "connection closed, {:?} {:?}",
                 conn.stats(),
-                conn.path_stats().collect::<Vec<quiche::PathStats>>()
+                conn.path_stats().collect::<Vec<quiceh::PathStats>>()
             );
 
             if !conn.is_established() {
@@ -437,7 +437,7 @@ pub fn connect(
         // process received data.
         if let Some(h_conn) = http_conn.as_mut() {
             h_conn.send_requests(&mut conn, &args.dump_response_path);
-            if conn.version() == quiche::PROTOCOL_VERSION_V3 {
+            if conn.version() == quiceh::PROTOCOL_VERSION_VREVERSO {
                 h_conn.handle_responses_on_quic_v3(
                     &mut conn,
                     &mut app_buffers,
@@ -451,9 +451,9 @@ pub fn connect(
         // Handle path events.
         while let Some(qe) = conn.path_event_next() {
             match qe {
-                quiche::PathEvent::New(..) => unreachable!(),
+                quiceh::PathEvent::New(..) => unreachable!(),
 
-                quiche::PathEvent::Validated(local_addr, peer_addr) => {
+                quiceh::PathEvent::Validated(local_addr, peer_addr) => {
                     info!(
                         "Path ({}, {}) is now validated",
                         local_addr, peer_addr
@@ -462,21 +462,21 @@ pub fn connect(
                     migrated = true;
                 },
 
-                quiche::PathEvent::FailedValidation(local_addr, peer_addr) => {
+                quiceh::PathEvent::FailedValidation(local_addr, peer_addr) => {
                     info!(
                         "Path ({}, {}) failed validation",
                         local_addr, peer_addr
                     );
                 },
 
-                quiche::PathEvent::Closed(local_addr, peer_addr) => {
+                quiceh::PathEvent::Closed(local_addr, peer_addr) => {
                     info!(
                         "Path ({}, {}) is now closed and unusable",
                         local_addr, peer_addr
                     );
                 },
 
-                quiche::PathEvent::ReusedSourceConnectionId(
+                quiceh::PathEvent::ReusedSourceConnectionId(
                     cid_seq,
                     old,
                     new,
@@ -487,7 +487,7 @@ pub fn connect(
                     );
                 },
 
-                quiche::PathEvent::PeerMigrated(..) => unreachable!(),
+                quiceh::PathEvent::PeerMigrated(..) => unreachable!(),
             }
         }
 
@@ -520,7 +520,7 @@ pub fn connect(
         }
 
         // Generate outgoing QUIC packets and send them on the UDP socket, until
-        // quiche reports that there are no more packets to be sent.
+        // quiceh reports that there are no more packets to be sent.
         let mut sockets = vec![&socket];
         if let Some(migrate_socket) = migrate_socket.as_ref() {
             sockets.push(migrate_socket);
@@ -538,7 +538,7 @@ pub fn connect(
                     ) {
                         Ok(v) => v,
 
-                        Err(quiche::Error::Done) => {
+                        Err(quiceh::Error::Done) => {
                             trace!(
                                 "{} -> {}: done writing",
                                 local_addr,
@@ -588,7 +588,7 @@ pub fn connect(
             info!(
                 "connection closed, {:?} {:?}",
                 conn.stats(),
-                conn.path_stats().collect::<Vec<quiche::PathStats>>()
+                conn.path_stats().collect::<Vec<quiceh::PathStats>>()
             );
 
             if !conn.is_established() {

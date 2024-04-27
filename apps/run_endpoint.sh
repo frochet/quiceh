@@ -9,11 +9,11 @@ set -e
 # - SERVER_PARAMS contains user-supplied command line parameters
 # - CLIENT_PARAMS contains user-supplied command line parameters
 
-QUICHE_DIR=/quiche
+QUICHE_DIR=/quiceh
 WWW_DIR=/www
 DOWNLOAD_DIR=/downloads
-QUICHE_CLIENT=quiche-client
-QUICHE_SERVER=quiche-server
+QUICHE_CLIENT=quiceh-client
+QUICHE_SERVER=quiceh-server
 QUICHE_CLIENT_OPT="--no-verify --dump-responses ${DOWNLOAD_DIR} --wire-version 00000001"
 # interop container has tso off. need to disable gso as well.
 QUICHE_SERVER_OPT_COMMON="--listen [::]:443 --root $WWW_DIR --cert /certs/cert.pem --key /certs/priv.key --disable-gso --disable-pacing"
@@ -69,7 +69,7 @@ check_testcase () {
     esac
 }
 
-run_quiche_client_tests () {
+run_quiceh_client_tests () {
     # TODO: https://github.com/marten-seemann/quic-interop-runner/issues/61
     # remove this sleep when the issue above is resolved.
     sleep 3
@@ -108,27 +108,27 @@ run_quiche_client_tests () {
     esac
 }
 
-run_quiche_server_tests() {
+run_quiceh_server_tests() {
     $QUICHE_DIR/$QUICHE_SERVER $SERVER_PARAMS $QUICHE_SERVER_OPT >& $LOG
 }
 
 # Update config based on test case
 check_testcase $TESTCASE
 
-# Create quiche log directory
+# Create quiceh log directory
 mkdir -p $LOG_DIR
 
 if [ "$ROLE" == "client" ]; then
     # Wait for the simulator to start up.
     /wait-for-it.sh sim:57832 -s -t 30
-    echo "## Starting quiche client..."
+    echo "## Starting quiceh client..."
     echo "## Client params: $CLIENT_PARAMS"
     echo "## Requests: $REQUESTS"
     echo "## Test case: $TESTCASE"
-    run_quiche_client_tests $TESTCASE
+    run_quiceh_client_tests $TESTCASE
 elif [ "$ROLE" == "server" ]; then
-    echo "## Starting quiche server..."
+    echo "## Starting quiceh server..."
     echo "## Server params: $SERVER_PARAMS"
     echo "## Test case: $TESTCASE"
-    run_quiche_server_tests
+    run_quiceh_server_tests
 fi

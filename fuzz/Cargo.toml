@@ -1,5 +1,5 @@
 [package]
-name = "quiche-fuzz"
+name = "quiceh-fuzz"
 version = "0.1.0"
 authors = ["Alessandro Ghedini <alessandro@ghedini.me>"]
 edition = "2018"
@@ -13,7 +13,7 @@ opt-level = 3
 
 [dependencies]
 env_logger = "0.10"
-quiche = { path = "../quiche", features = ["fuzzing"] }
+quiceh = { path = "../quiceh", features = ["fuzzing"] }
 lazy_static = "1"
 libfuzzer-sys = { git = "https://github.com/rust-fuzz/libfuzzer-sys.git" }
 

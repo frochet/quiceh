@@ -1,6 +1,6 @@
 [workspace]
-members = [ "apps", "octets", "qlog", "quiche" ]
-exclude = [ "fuzz", "tools/http3_test" ]
+members = [ "apps", "octets_rev", "qlog", "quiceh" ]
+exclude = [ "fuzz"]
 
 [profile.bench]
 debug = true

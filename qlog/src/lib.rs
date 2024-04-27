@@ -419,7 +419,7 @@ use crate::events::Event;
 use serde::Deserialize;
 use serde::Serialize;
 
-/// A quiche qlog error.
+/// A quiceh qlog error.
 #[derive(Debug)]
 pub enum Error {
     /// There is no more work to do.
@@ -459,7 +459,7 @@ pub const QLOG_VERSION: &str = "0.3";
 pub type Bytes = String;
 pub type StatelessResetToken = Bytes;
 
-/// A specialized [`Result`] type for quiche qlog operations.
+/// A specialized [`Result`] type for quiceh qlog operations.
 ///
 /// This type is used throughout the public API for any operation that
 /// can produce an error.

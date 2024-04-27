@@ -50,7 +50,7 @@ pub fn detect_gso(_socket: &mio::net::UdpSocket, _segment_size: usize) -> bool {
 /// Send packets using sendmsg() with GSO.
 #[cfg(target_os = "linux")]
 fn send_to_gso_pacing(
-    socket: &mio::net::UdpSocket, buf: &[u8], send_info: &quiche::SendInfo,
+    socket: &mio::net::UdpSocket, buf: &[u8], send_info: &quiceh::SendInfo,
     segment_size: usize,
 ) -> io::Result<usize> {
     use nix::sys::socket::sendmsg;
@@ -87,7 +87,7 @@ fn send_to_gso_pacing(
 /// For non-Linux platforms.
 #[cfg(not(target_os = "linux"))]
 fn send_to_gso_pacing(
-    _socket: &mio::net::UdpSocket, _buf: &[u8], _send_info: &quiche::SendInfo,
+    _socket: &mio::net::UdpSocket, _buf: &[u8], _send_info: &quiceh::SendInfo,
     _segment_size: usize,
 ) -> io::Result<usize> {
     panic!("send_to_gso() should not be called on non-linux platforms");
@@ -97,7 +97,7 @@ fn send_to_gso_pacing(
 /// - when GSO and SO_TXTIME enabled, send a packet using send_to_gso().
 /// Otherwise, send packet using socket.send_to().
 pub fn send_to(
-    socket: &mio::net::UdpSocket, buf: &[u8], send_info: &quiche::SendInfo,
+    socket: &mio::net::UdpSocket, buf: &[u8], send_info: &quiceh::SendInfo,
     segment_size: usize, pacing: bool, enable_gso: bool,
 ) -> io::Result<usize> {
     if pacing && enable_gso {

@@ -1,16 +1,16 @@
 apiVersion: backstage.io/v1alpha1
 kind: Component
 metadata:
-  title: "quiche"
-  name: "quiche"
+  title: "quiceh"
+  name: "quiceh"
   description: "Savoury implementation of the QUIC transport protocol and HTTP/3."
   annotations:
-    backstage.io/source-location: url:https://github.com/cloudflare/quiche
+    backstage.io/source-location: url:https://github.com/cloudflare/quiceh
     cloudflare.com/jira-project-key: "FLPROTO"
     cloudflare.com/software-excellence-opt-in: "true"
   links:
     - title: Documentation
-      url: https://docs.quic.tech/quiche/
+      url: https://docs.quic.tech/quiceh/
       icon: docs
   tags:
     - external

@@ -12,13 +12,13 @@ use std::sync::Mutex;
 use std::sync::Once;
 
 lazy_static! {
-    static ref CONFIG: Mutex<quiche::Config> = {
+    static ref CONFIG: Mutex<quiceh::Config> = {
         let crt_path = std::env::var("QUICHE_FUZZ_CRT")
             .unwrap_or_else(|_| "fuzz/cert.crt".to_string());
         let key_path = std::env::var("QUICHE_FUZZ_KEY")
             .unwrap_or_else(|_| "fuzz/cert.key".to_string());
 
-        let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
+        let mut config = quiceh::Config::new(quiceh::PROTOCOL_VERSION).unwrap();
         config.load_cert_chain_from_pem_file(&crt_path).unwrap();
         config.load_priv_key_from_pem_file(&key_path).unwrap();
         config
@@ -39,8 +39,8 @@ lazy_static! {
     };
 }
 
-static SCID: quiche::ConnectionId<'static> =
-    quiche::ConnectionId::from_ref(&[0; quiche::MAX_CONN_ID_LEN]);
+static SCID: quiceh::ConnectionId<'static> =
+    quiceh::ConnectionId::from_ref(&[0; quiceh::MAX_CONN_ID_LEN]);
 
 static LOG_INIT: Once = Once::new();
 
@@ -53,10 +53,10 @@ fuzz_target!(|data: &[u8]| {
     let mut buf = data.to_vec();
 
     let mut conn =
-        quiche::accept(&SCID, None, to, from, &mut CONFIG.lock().unwrap())
+        quiceh::accept(&SCID, None, to, from, &mut CONFIG.lock().unwrap())
             .unwrap();
 
-    let info = quiche::RecvInfo { from, to };
+    let info = quiceh::RecvInfo { from, to };
 
     conn.recv(&mut buf, info).ok();
 

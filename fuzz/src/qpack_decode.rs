@@ -3,7 +3,7 @@
 #[macro_use]
 extern crate libfuzzer_sys;
 
-use quiche::h3::NameValue;
+use quiceh::h3::NameValue;
 
 // Fuzzer for qpack codec. Checks that decode(encode(hdrs)) == hdrs. To get the
 // initial hdrs, the fuzzer deserializes the input, and skips inputs where
@@ -13,8 +13,8 @@ use quiche::h3::NameValue;
 // input. However, that transformation is not guaranteed to be the identify
 // function, as there are multiple ways the same hdr list could be encoded.
 fuzz_target!(|data: &[u8]| {
-    let mut decoder = quiche::h3::qpack::Decoder::new();
-    let mut encoder = quiche::h3::qpack::Encoder::new();
+    let mut decoder = quiceh::h3::qpack::Decoder::new();
+    let mut encoder = quiceh::h3::qpack::Encoder::new();
 
     let hdrs = match decoder.decode(data, u64::MAX) {
         Err(_) => return,
@@ -35,7 +35,7 @@ fuzz_target!(|data: &[u8]| {
     for h in &hdrs {
         let name = h.name().to_ascii_lowercase();
 
-        expected_hdrs.push(quiche::h3::Header::new(&name, h.value()));
+        expected_hdrs.push(quiceh::h3::Header::new(&name, h.value()));
     }
 
     assert_eq!(expected_hdrs, decoded_hdrs)

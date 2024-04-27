@@ -1,85 +1,177 @@
-![quiche](quiche.svg)
+![quiceh](quiceh.png)
 
-[![crates.io](https://img.shields.io/crates/v/quiche.svg)](https://crates.io/crates/quiche)
-[![docs.rs](https://docs.rs/quiche/badge.svg)](https://docs.rs/quiche)
-[![license](https://img.shields.io/github/license/cloudflare/quiche.svg)](https://opensource.org/licenses/BSD-2-Clause)
-![build](https://img.shields.io/github/actions/workflow/status/cloudflare/quiche/stable.yml?branch=master)
+quiceh is a research implementation of QUIC VReverso, an extension of
+the QUIC transport protocol which allows implementers to achieve higher
+efficiency through the new opportunity to implement contiguous
+zero-copy in the receive code path, which is otherwise impossible with
+QUIC version 1 (RFC9000). This research implementation is forked from
+Cloudflare's [quiche](https://github.com/cloudflare/quiche)
+implementation of the QUIC transport protocol. This repository is not
+aimed to compete with the original implementation, which is qualitative
+and should be used rather than this project. This repository serves as
+reference implementation for an academic paper. However, interested
+Application developers are welcome to try it and offer feebacks. 
 
-[quiche] is an implementation of the QUIC transport protocol and HTTP/3 as
-specified by the [IETF]. It provides a low level API for processing QUIC packets
-and handling connection state. The application is responsible for providing I/O
-(e.g. sockets handling) as well as an event loop with support for timers.
+Details on why/how QUIC VReverso implementations are expected to be more
+efficient than QUIC V1 implementations can be read on the blogpost which
+we made available through QUIC V1 and QUIC VReverso.  
 
-For more information on how quiche came about and some insights into its design
-you can read a [post] on Cloudflare's blog that goes into some more detail.
+[post]: https://todo
 
-[quiche]: https://docs.quic.tech/quiche/
-[ietf]: https://quicwg.org/
-[post]: https://blog.cloudflare.com/enjoy-a-slice-of-quic-and-rust/
+Even more details are availbale in the academic paper, on .pdf:
 
-Who uses quiche?
-----------------
+[paper]: https://todo
 
-### Cloudflare
+The most desirable outcome is that this proposal eventually makes it to
+the official QUIC design, and QUIC implementations eventually take
+advantage of the new efficiency possibilities. You're most welcome to
+show support to this proposal in any way you feel is suitable. Thanks!
 
-quiche powers Cloudflare edge network's [HTTP/3 support][cloudflare-http3]. The
-[cloudflare-quic.com](https://cloudflare-quic.com) website can be used for
-testing and experimentation.
+Efficiency improvement
+----------------------
 
-### Android
+We report an improvement of ~30% over the receive code path.
 
-Android's DNS resolver uses quiche to [implement DNS over HTTP/3][android-http3].
+![zero-copy](results_perf.png)
 
-### curl
+Using quiceh
+------------
 
-quiche can be [integrated into curl][curl-http3] to provide support for HTTP/3.
+### Overview of the main differences with [quiche](https://github.com/cloudflare/quiche)
 
-### NGINX (unofficial)
+quiceh has a few API extensions, and any application using
+[quiche](https://github.com/cloudflare/quiche) would have to slightly
+change its code to hopefully benefits from the optimizations. Of course,
+these optimizations only work if the Application negotiates QUIC
+VReverso with the peer.
 
-quiche can be [integrated into NGINX](nginx/) using an unofficial patch to
-provide support for HTTP/3.
+```rust
+let mut config = quiceh::Config::new(quiceh::PROTOCOL_VERSION_VREVERSO)?;
+```
 
-[cloudflare-http3]: https://blog.cloudflare.com/http3-the-past-present-and-future/
-[android-http3]: https://security.googleblog.com/2022/07/dns-over-http3-in-android.html
-[curl-http3]: https://github.com/curl/curl/blob/master/docs/HTTP3.md#quiche-version
+Using `PROTOCOL_VERSION_VREVERSO` would make your endpoint tries to
+negotiate VReverso first, and fallback to QUIC V1 if not available.
+Client side or server side, the
+[quiche](https://github.com/cloudflare/quiche) API to initiate a
+connection stays the same:
 
-Getting Started
----------------
+```rust
+// Client connection.
+let conn = quiceh::connect(Some(&server_name), &scid, local, peer, &mut config)?;
+
+// Server connection.
+let conn = quiceh::accept(&scid, None, local, peer, &mut config)?;
+```
+
+We have slight differences in processing packets and reading data
+from a stream. quiceh exposes a type `AppRecvBufMap` that aims to
+contain the decrypted stream(s) data. This object needs to be created by
+the Application, and a mutable reference is then passed to [`recv()`]
+and [`stream_recv_v3()`]. Server-side, we need one of these for each
+connection.
+
+```rust
+let to = socket.local_addr().unwrap();
+let mut app_buffers = quiceh::AppRecvBufMap::default();
+
+loop {
+    let (len, from) = match socket.recv_from(&mut buf) {
+        Ok(v) => v,
+
+        Err(e) => {
+            // There are no more UDP packets to read, so end the read
+            // loop.
+            if e.kind() == std::io::ErrorKind::WouldBlock {
+                debug!("recv() would block");
+                break;
+            }
+
+            panic!("recv() failed: {:?}", e);
+        },
+    };
+
+    // One may either continue to drain the socket, or directly pass
+    // the data to quiceh, as done here.
+
+    let recv_info = quiceh::RecvInfo { from, to };
+
+    let read = match conn.recv(&mut buf[..read], &mut app_buffers, recv_info) {
+        Ok(v) => v,
+
+        Err(e) => {
+            // An error occurred, handle it.
+            break;
+        },
+    };
+}
+
+// The application can check whether there are any readable streams by using
+// the connection's [`readable()`] method, which returns an iterator over all
+// the streams that have outstanding data to read.
+
+if conn.is_established() {
+    // Iterate over readable streams.
+    for stream_id in conn.readable() {
+        // Stream is readable, get a reference to the internal
+        // contiguous stream data
+        let (streambuf, len, fin) = conn.stream_recv_v3(stream_id, &mut app_buffers).unwrap();
+
+        // ... do something with streambuf
+
+        // Optionally mark some data consumed to release it.
+        // If this function is not called, then the next stream_recv_v3
+        // Would point to the same bytes, + any new content appended up
+        // to a configured max_buffers_data (see AppRecvBufMap's API).
+
+        conn.stream_consumed(stream_id, len, &mut app_buffers).unwrap();
+    }
+}
+```
 
 ### Command-line apps
 
-Before diving into the quiche API, here are a few examples on how to use the
-quiche tools provided as part of the [quiche-apps](apps/) crate.
+Here are a few examples on how to use the quiceh tools provided as part
+of the [quiceh-apps](apps/) crate.
 
-After cloning the project according to the command mentioned in the [building](#building) section, the client can be run as follows:
+After cloning the project according to the command mentioned in the
+[building](#building) section, the client can be run as follows:
 
 ```bash
- $ cargo run --bin quiche-client -- https://cloudflare-quic.com/
+ $ cargo run --bin quiceh-client --wire-version 3 -- https://reverso.info.unamur.be:4433
 ```
 
-while the server can be run as follows:
+Using `--wire-version 3` configures PROTOCOL_VERSION_VREVERSO. By
+default it would do QUIC V1. The server can be run as follows:
 
 ```bash
- $ cargo run --bin quiche-server -- --cert apps/src/bin/cert.crt --key apps/src/bin/cert.key
+ $ cargo run --bin quiceh-server -- --cert apps/src/bin/cert.crt --key apps/src/bin/cert.key
 ```
 
 (note that the certificate provided is self-signed and should not be used in
-production)
+production).
 
 Use the `--help` command-line flag to get a more detailed description of each
-tool's options.
+tool's options. If you'd like to make a straightforward test on the
+loopback address, the following should work from the root of the
+repository (after `cargo build --release`):
 
-### Configuring connections
-
-The first step in establishing a QUIC connection using quiche is creating a
-[`Config`] object:
-
-```rust
-let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
-config.set_application_protos(&[b"example-proto"]);
-
-// Additional configuration specific to application and use case...
+```bash
+$ ./target/release/quiceh-server --key apps/src/bin/cert.key --cert apps/src/bin/cert.crt --root .
 ```
+
+And using the client client to fetch the readme, with some logging
+enabled on on stdout should print the README.md file on stdout with some
+logging information for the connection:
+
+```bash
+$ RUST_LOG=info ./target/release/quiceh-client --wire-version 3 --no-verify https://127.0.0.1:4433/README.md
+... <skip readme file>
+[2024-05-02T11:44:40.893910677Z INFO  quiceh_apps::client] connecting to 127.0.0.1:4433 from 0.0.0.0:49803 with scid 97dcac3544c9e1f0d7a9d3e562c8e6c3e5bd03f9
+[2024-05-02T11:44:40.907967338Z INFO  quiceh_apps::common] 1/1 response(s) received in 13.94742ms, closing...
+[2024-05-02T11:44:40.919080924Z INFO  quiceh_apps::client] connection closed, recv=18 sent=11 lost=0 retrans=0 sent_bytes=2409 recv_bytes=15345 lost_bytes=0 [local_addr=0.0.0.0:49803 peer_addr=127.0.0.1:4433 validation_state=Validated active=true recv=18 sent=11 lost=0 retrans=0 rtt=1.325962ms min_rtt=Some(1.070281ms) rttvar=583.985µs cwnd=13500 sent_bytes=2409 recv_bytes=15345 lost_bytes=0 stream_retrans_bytes=0 pmtu=1350 delivery_rate=1328623]
+```
+
+### Advanced Configurations
 
 The [`Config`] object controls important aspects of the QUIC connection such
 as QUIC version, ALPN IDs, flow control, congestion control, idle timeout
@@ -91,7 +183,7 @@ example, the permitted number of concurrent streams of any particular type
 is dependent on the application running over QUIC, and other use-case
 specific concerns.
 
-quiche defaults several properties to zero, applications most likely need
+quiceh defaults several properties to zero, applications most likely need
 to set these to something else to satisfy their needs using the following:
 
 - [`set_initial_max_streams_bidi()`]
@@ -107,54 +199,27 @@ creating a configuration using [`with_boring_ssl_ctx_builder()`].
 
 A configuration object can be shared among multiple connections.
 
-### Connection setup
-
-On the client-side the [`connect()`] utility function can be used to create
-a new connection, while [`accept()`] is for servers:
-
-```rust
-// Client connection.
-let conn = quiche::connect(Some(&server_name), &scid, local, peer, &mut config)?;
-
-// Server connection.
-let conn = quiche::accept(&scid, None, local, peer, &mut config)?;
-```
-
-### Handling incoming packets
-
-Using the connection's [`recv()`] method the application can process
-incoming packets that belong to that connection from the network:
-
-```rust
-let to = socket.local_addr().unwrap();
-
-loop {
-    let (read, from) = socket.recv_from(&mut buf).unwrap();
-
-    let recv_info = quiche::RecvInfo { from, to };
-
-    let read = match conn.recv(&mut buf[..read], recv_info) {
-        Ok(v) => v,
-
-        Err(e) => {
-            // An error occurred, handle it.
-            break;
-        },
-    };
-}
-```
+The [`AppRecvBufMap`] should be instantiated passing info about the
+chosen max_streams_bidi and max_streams_uni_remote. Each of the stream
+buffers can also be configured with a max_buffers_data value. By
+default, this value matches DEFAULT_STREAM_WINDOW, but the value can be
+much higher. We advice chosing a value to the maximum length the
+Application is expected to consume at once, such that all this
+information can be buffered in zero-copy before being eventually
+consumed.
 
 ### Generating outgoing packets
 
-Outgoing packet are generated using the connection's [`send()`] method
-instead:
+This aspect of [quiche](https://github.com/cloudflare/quiche) is
+untouched at the API level. Outgoing packet are generated using the
+connection's [`send()`] method:
 
 ```rust
 loop {
     let (write, send_info) = match conn.send(&mut out) {
         Ok(v) => v,
 
-        Err(quiche::Error::Done) => {
+        Err(quiceh::Error::Done) => {
             // Done writing.
             break;
         },
@@ -191,7 +256,7 @@ loop {
     let (write, send_info) = match conn.send(&mut out) {
         Ok(v) => v,
 
-        Err(quiche::Error::Done) => {
+        Err(quiceh::Error::Done) => {
             // Done writing.
             break;
         },
@@ -212,7 +277,7 @@ It is recommended that applications [pace] sending of outgoing packets to
 avoid creating packet bursts that could cause short-term congestion and
 losses in the network.
 
-quiche exposes pacing hints for outgoing packets through the [`at`] field
+quiceh exposes pacing hints for outgoing packets through the [`at`] field
 of the [`SendInfo`] structure that is returned by the [`send()`] method.
 This field represents the time when a specific packet should be sent into
 the network.
@@ -225,7 +290,7 @@ timers).
 [pace]: https://datatracker.ietf.org/doc/html/rfc9002#section-7.7
 [`SO_TXTIME`]: https://man7.org/linux/man-pages/man8/tc-etf.8.html
 
-### Sending and receiving stream data
+#### Sending stream data
 
 After some back and forth, the connection will complete its handshake and
 will be ready for sending or receiving application data.
@@ -239,83 +304,49 @@ if conn.is_established() {
 }
 ```
 
-The application can check whether there are any readable streams by using
-the connection's [`readable()`] method, which returns an iterator over all
-the streams that have outstanding data to read.
-
-The [`stream_recv()`] method can then be used to retrieve the application
-data from the readable stream:
-
-```rust
-if conn.is_established() {
-    // Iterate over readable streams.
-    for stream_id in conn.readable() {
-        // Stream is readable, read until there's no more data.
-        while let Ok((read, fin)) = conn.stream_recv(stream_id, &mut buf) {
-            println!("Got {} bytes on stream {}", read, stream_id);
-        }
-    }
-}
-```
-
 ### HTTP/3
 
-The quiche [HTTP/3 module] provides a high level API for sending and
+The quiceh [HTTP/3 module] provides a high level API for sending and
 receiving HTTP requests and responses on top of the QUIC transport protocol.
 
-[`Config`]: https://docs.quic.tech/quiche/struct.Config.html
-[`set_initial_max_streams_bidi()`]: https://docs.rs/quiche/latest/quiche/struct.Config.html#method.set_initial_max_streams_bidi
-[`set_initial_max_streams_uni()`]: https://docs.rs/quiche/latest/quiche/struct.Config.html#method.set_initial_max_streams_uni
-[`set_initial_max_data()`]: https://docs.rs/quiche/latest/quiche/struct.Config.html#method.set_initial_max_data
-[`set_initial_max_stream_data_bidi_local()`]: https://docs.rs/quiche/latest/quiche/struct.Config.html#method.set_initial_max_stream_data_bidi_local
-[`set_initial_max_stream_data_bidi_remote()`]: https://docs.rs/quiche/latest/quiche/struct.Config.html#method.set_initial_max_stream_data_bidi_remote
-[`set_initial_max_stream_data_uni()`]: https://docs.rs/quiche/latest/quiche/struct.Config.html#method.set_initial_max_stream_data_uni
-[`with_boring_ssl_ctx_builder()`]: https://docs.quic.tech/quiche/struct.Config.html#method.with_boring_ssl_ctx_builder
-[`connect()`]: https://docs.quic.tech/quiche/fn.connect.html
-[`accept()`]: https://docs.quic.tech/quiche/fn.accept.html
-[`recv()`]: https://docs.quic.tech/quiche/struct.Connection.html#method.recv
-[`send()`]: https://docs.quic.tech/quiche/struct.Connection.html#method.send
-[`timeout()`]: https://docs.quic.tech/quiche/struct.Connection.html#method.timeout
-[`on_timeout()`]: https://docs.quic.tech/quiche/struct.Connection.html#method.on_timeout
-[`stream_send()`]: https://docs.quic.tech/quiche/struct.Connection.html#method.stream_send
-[`readable()`]: https://docs.quic.tech/quiche/struct.Connection.html#method.readable
-[`stream_recv()`]: https://docs.quic.tech/quiche/struct.Connection.html#method.stream_recv
-[HTTP/3 module]: https://docs.quic.tech/quiche/h3/index.html
+Have a look at the [quiceh/examples/] directory for more complete examples on
+how to use the quiceh API.
 
-Have a look at the [quiche/examples/] directory for more complete examples on
-how to use the quiche API, including examples on how to use quiche in C/C++
-applications (see below for more information).
+the directory apps/ contains a more complete implementation of a HTTP/3
+client/server using the zero-copy HTTP/3 module.
 
-[examples/]: quiche/examples/
+The main differences with
+[quiche](https://github.com/cloudflare/quiche)'s HTTP/3 module are the
+use of [`poll_v3()`] replacing [`poll()`], [`recv_body_v3()`] replacing
+[`recv_body()`] and the addition of [`body_consumed()`] to tell HTTP/3
+how much of the data frame has been consumed (up to the announced max
+value that [`recv_body_v3()`] announces.  Pretty much all the rest remains
+the same.
 
-Calling quiche from C/C++
--------------------------
+[examples/]: quiceh/examples/
 
-quiche exposes a [thin C API] on top of the Rust API that can be used to more
-easily integrate quiche into C/C++ applications (as well as in other languages
-that allow calling C APIs via some form of FFI). The C API follows the same
-design of the Rust one, modulo the constraints imposed by the C language itself.
 
-When running ``cargo build``, a static library called ``libquiche.a`` will be
-built automatically alongside the Rust one. This is fully stand-alone and can
-be linked directly into C/C++ applications.
+### Limitations
 
-Note that in order to enable the FFI API, the ``ffi`` feature must be enabled (it
-is disabled by default), by passing ``--features ffi`` to ``cargo``.
+- FFIs for the VReverso are not (yet) implemented (please open an issue
+  if this is desired).
 
-[thin C API]: https://github.com/cloudflare/quiche/blob/master/quiche/include/quiche.h
+- We didn't write code yet to evaluate maximum throughput on some local
+  network. Support of either recvmmsg() and sendmmsg() or kernel bypass
+  would be required for such an experiment (independently of quiceh that
+  does not touch the network).
 
 Building
 --------
 
-quiche requires Rust 1.66 or later to build. The latest stable Rust release can
+quiceh requires Rust 1.66 or later to build. The latest stable Rust release can
 be installed using [rustup](https://rustup.rs/).
 
-Once the Rust build environment is setup, the quiche source code can be fetched
+Once the Rust build environment is setup, the quiceh source code can be fetched
 using git:
 
 ```bash
- $ git clone --recursive https://github.com/cloudflare/quiche
+ $ git clone --recursive https://github.com/frochet/quiceh
 ```
 
 and then built using cargo:
@@ -326,133 +357,50 @@ and then built using cargo:
 
 cargo can also be used to run the testsuite:
 
-```bash
+```bas
  $ cargo test
 ```
 
 Note that [BoringSSL], which is used to implement QUIC's cryptographic handshake
-based on TLS, needs to be built and linked to quiche. This is done automatically
-when building quiche using cargo, but requires the `cmake` command to be
+based on TLS, needs to be built and linked to quiceh. This is done automatically
+when building quiceh using cargo, but requires the `cmake` command to be
 available during the build process. On Windows you also need
 [NASM](https://www.nasm.us/). The [official BoringSSL
 documentation](https://github.com/google/boringssl/blob/master/BUILDING.md) has
 more details.
 
-In alternative you can use your own custom build of BoringSSL by configuring
-the BoringSSL directory with the ``QUICHE_BSSL_PATH`` environment variable:
-
 ```bash
- $ QUICHE_BSSL_PATH="/path/to/boringssl" cargo build --examples
+ $ QUICEH_BSSL_PATH="/path/to/boringssl" cargo build --examples
 ```
-
-Alternatively you can use [OpenSSL/quictls]. To enable quiche to use this vendor
-the ``openssl`` feature can be added to the ``--feature`` list. Be aware that
-``0-RTT`` is not supported if this vendor is used.
-
 [BoringSSL]: https://boringssl.googlesource.com/boringssl/
 
-[OpenSSL/quictls]: https://github.com/quictls/openssl
+Research
+--------
 
-### Building for Android
+- Commit "Towards Protocol Reverso" contains an example of
+required work to support QUIC VReverso. It adds support for backwards
+processing, for writing and parsing frames in the "reversed" order, and
+unit tests for all QUIC features with these changes. 
 
-Building quiche for Android (NDK version 19 or higher, 21 recommended), can be
-done using [cargo-ndk] (v2.0 or later).
+- Commit "starting the work on Zerocopy receiver" contains an example of
+  implementation taking advantage of the new protocol specification to
+  support contiguous zero-copy.  
 
-First the [Android NDK] needs to be installed, either using Android Studio or
-directly, and the `ANDROID_NDK_HOME` environment variable needs to be set to the
-NDK installation path, e.g.:
+These two commits on the top of
+[quiche](https://github.com/cloudflare/quiche) make up quiceh.  
 
-```bash
- $ export ANDROID_NDK_HOME=/usr/local/share/android-ndk
-```
+If you use this code in your research, please cite the following paper:  
 
-Then the Rust toolchain for the Android architectures needed can be installed as
-follows:
+todo  
 
-```bash
- $ rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
-```
+You may also cite this repository seperately:  
 
-Note that the minimum API level is 21 for all target architectures.
+@misc{frochet-quiceh,  
+&nbsp;&nbsp;title={quiceh: an implementation of QUIC VReverso},  
+&nbsp;&nbsp;author={Florentin Rochet},  
+&nbsp;&nbsp;howpublished={\url{https://github.com/frochet/quiceh}}  
+}
 
-[cargo-ndk] (v2.0 or later) also needs to be installed:
-
-```bash
- $ cargo install cargo-ndk
-```
-
-Finally the quiche library can be built using the following procedure. Note that
-the `-t <architecture>` and `-p <NDK version>` options are mandatory.
-
-```bash
- $ cargo ndk -t arm64-v8a -p 21 -- build --features ffi
-```
-
-See [build_android_ndk19.sh] for more information.
-
-[Android NDK]: https://developer.android.com/ndk
-[cargo-ndk]: https://docs.rs/crate/cargo-ndk
-[build_android_ndk19.sh]: https://github.com/cloudflare/quiche/blob/master/tools/android/build_android_ndk19.sh
-
-### Building for iOS
-
-To build quiche for iOS, you need the following:
-
-- Install Xcode command-line tools. You can install them with Xcode or with the
-  following command:
-
-```bash
- $ xcode-select --install
-```
-
-- Install the Rust toolchain for iOS architectures:
-
-```bash
- $ rustup target add aarch64-apple-ios x86_64-apple-ios
-```
-
-- Install `cargo-lipo`:
-
-```bash
- $ cargo install cargo-lipo
-```
-
-To build libquiche, run the following command:
-
-```bash
- $ cargo lipo --features ffi
-```
-
-or
-
-```bash
- $ cargo lipo --features ffi --release
-```
-
-iOS build is tested in Xcode 10.1 and Xcode 11.2.
-
-### Building Docker images
-
-In order to build the Docker images, simply run the following command:
-
-```bash
- $ make docker-build
-```
-
-You can find the quiche Docker images on the following Docker Hub repositories:
-
-- [cloudflare/quiche](https://hub.docker.com/repository/docker/cloudflare/quiche)
-- [cloudflare/quiche-qns](https://hub.docker.com/repository/docker/cloudflare/quiche-qns)
-
-The `latest` tag will be updated whenever quiche master branch updates.
-
-**cloudflare/quiche**
-
-Provides a server and client installed in /usr/local/bin.
-
-**cloudflare/quiche-qns**
-
-Provides the script to test quiche within the [quic-interop-runner](https://github.com/marten-seemann/quic-interop-runner).
 
 Copyright
 ---------
@@ -461,4 +409,4 @@ Copyright (C) 2018-2019, Cloudflare, Inc.
 
 See [COPYING] for the license.
 
-[COPYING]: https://github.com/cloudflare/quiche/tree/master/COPYING
+[COPYING]: https://github.com/frochet/quiceh/tree/protocol_reverso/COPYING

@@ -14,9 +14,9 @@ fi
 
 VERSION=$1
 
-cargo package --package quiche
+cargo package --package quiceh
 
-sed -i "0,/^version/ s/version = \"\(.*\)\"/version = \"$VERSION\"/" quiche/Cargo.toml
-git add quiche/Cargo.toml
+sed -i "0,/^version/ s/version = \"\(.*\)\"/version = \"$VERSION\"/" quiceh/Cargo.toml
+git add quiceh/Cargo.toml
 git commit -m $VERSION
-git tag -a $VERSION -m "quiche $VERSION" --sign
+git tag -a $VERSION -m "quiceh $VERSION" --sign

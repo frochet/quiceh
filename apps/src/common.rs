@@ -26,7 +26,7 @@
 
 //! Quiche application utilities.
 //!
-//! This module provides some utility functions that are common to quiche
+//! This module provides some utility functions that are common to quiceh
 //! applications.
 
 use std::io::prelude::*;
@@ -46,10 +46,10 @@ use std::path;
 
 use ring::rand::SecureRandom;
 
-use quiche::ConnectionId;
+use quiceh::ConnectionId;
 
-use quiche::h3::NameValue;
-use quiche::h3::Priority;
+use quiceh::h3::NameValue;
+use quiceh::h3::Priority;
 
 pub fn stdout_sink(out: String) {
     print!("{out}");
@@ -70,8 +70,8 @@ pub struct PartialRequest {
 }
 
 pub struct PartialResponse {
-    pub headers: Option<Vec<quiche::h3::Header>>,
-    pub priority: Option<quiche::h3::Priority>,
+    pub headers: Option<Vec<quiceh::h3::Header>>,
+    pub priority: Option<quiceh::h3::Priority>,
 
     pub body: Vec<u8>,
 
@@ -81,7 +81,7 @@ pub struct PartialResponse {
 pub type ClientId = u64;
 
 pub struct Client {
-    pub conn: quiche::Connection,
+    pub conn: quiceh::Connection,
 
     pub http_conn: Option<Box<dyn HttpConn>>,
 
@@ -99,7 +99,7 @@ pub struct Client {
 
     pub max_send_burst: usize,
 
-    pub app_buffers: quiche::AppRecvBufMap,
+    pub app_buffers: quiceh::AppRecvBufMap,
 }
 
 pub type ClientIdMap = HashMap<ConnectionId<'static>, ClientId>;
@@ -243,7 +243,7 @@ fn dump_json(reqs: &[Http3Request], output_sink: &mut dyn FnMut(String)) {
     output_sink(out);
 }
 
-pub fn hdrs_to_strings(hdrs: &[quiche::h3::Header]) -> Vec<(String, String)> {
+pub fn hdrs_to_strings(hdrs: &[quiceh::h3::Header]) -> Vec<(String, String)> {
     hdrs.iter()
         .map(|h| {
             let name = String::from_utf8_lossy(h.name()).to_string();
@@ -257,8 +257,8 @@ pub fn hdrs_to_strings(hdrs: &[quiche::h3::Header]) -> Vec<(String, String)> {
 /// Generate a new pair of Source Connection ID and reset token.
 pub fn generate_cid_and_reset_token<T: SecureRandom>(
     rng: &T,
-) -> (quiche::ConnectionId<'static>, u128) {
-    let mut scid = [0; quiche::MAX_CONN_ID_LEN];
+) -> (quiceh::ConnectionId<'static>, u128) {
+    let mut scid = [0; quiceh::MAX_CONN_ID_LEN];
     rng.fill(&mut scid).unwrap();
     let scid = scid.to_vec().into();
     let mut reset_token = [0; 16];
@@ -267,7 +267,7 @@ pub fn generate_cid_and_reset_token<T: SecureRandom>(
     (scid, reset_token)
 }
 
-/// Construct a priority field value from quiche apps custom query string.
+/// Construct a priority field value from quiceh apps custom query string.
 pub fn priority_field_value_from_query_string(url: &url::Url) -> Option<String> {
     let mut priority = "".to_string();
     for param in url.query_pairs() {
@@ -290,7 +290,7 @@ pub fn priority_field_value_from_query_string(url: &url::Url) -> Option<String> 
     }
 }
 
-/// Construct a Priority from quiche apps custom query string.
+/// Construct a Priority from quiceh apps custom query string.
 pub fn priority_from_query_string(url: &url::Url) -> Option<Priority> {
     let mut urgency = None;
     let mut incremental = None;
@@ -316,58 +316,58 @@ pub fn priority_from_query_string(url: &url::Url) -> Option<Priority> {
 }
 
 fn send_h3_dgram(
-    conn: &mut quiche::Connection, flow_id: u64, dgram_content: &[u8],
-) -> quiche::Result<()> {
+    conn: &mut quiceh::Connection, flow_id: u64, dgram_content: &[u8],
+) -> quiceh::Result<()> {
     info!(
         "sending HTTP/3 DATAGRAM on flow_id={} with data {:?}",
         flow_id, dgram_content
     );
 
-    let len = octets::varint_len(flow_id) + dgram_content.len();
+    let len = octets_rev::varint_len(flow_id) + dgram_content.len();
     let mut d = vec![0; len];
-    let mut b = octets::OctetsMut::with_slice(&mut d);
+    let mut b = octets_rev::OctetsMut::with_slice(&mut d);
 
     b.put_varint(flow_id)
-        .map_err(|_| quiche::Error::BufferTooShort)?;
+        .map_err(|_| quiceh::Error::BufferTooShort)?;
     b.put_bytes(dgram_content)
-        .map_err(|_| quiche::Error::BufferTooShort)?;
+        .map_err(|_| quiceh::Error::BufferTooShort)?;
 
     conn.dgram_send(&d)
 }
 
 pub trait HttpConn {
     fn send_requests(
-        &mut self, conn: &mut quiche::Connection, target_path: &Option<String>,
+        &mut self, conn: &mut quiceh::Connection, target_path: &Option<String>,
     );
 
     fn handle_responses(
-        &mut self, conn: &mut quiche::Connection, buf: &mut [u8],
+        &mut self, conn: &mut quiceh::Connection, buf: &mut [u8],
         req_start: &std::time::Instant,
     );
 
     fn handle_responses_on_quic_v3(
-        &mut self, conn: &mut quiche::Connection,
-        app_buffers: &mut quiche::AppRecvBufMap, req_start: &std::time::Instant,
+        &mut self, conn: &mut quiceh::Connection,
+        app_buffers: &mut quiceh::AppRecvBufMap, req_start: &std::time::Instant,
     );
 
     fn report_incomplete(&self, start: &std::time::Instant) -> bool;
 
     fn handle_requests(
-        &mut self, conn: &mut quiche::Connection,
+        &mut self, conn: &mut quiceh::Connection,
         partial_requests: &mut HashMap<u64, PartialRequest>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
         index: &str, buf: &mut [u8],
-        app_buffers: Option<&mut quiche::AppRecvBufMap>,
-    ) -> quiche::h3::Result<()>;
+        app_buffers: Option<&mut quiceh::AppRecvBufMap>,
+    ) -> quiceh::h3::Result<()>;
 
     fn handle_requests_on_quic_v3(
-        &mut self, conn: &mut quiche::Connection,
+        &mut self, conn: &mut quiceh::Connection,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
-        index: &str, app_buffers: &mut quiche::AppRecvBufMap,
-    ) -> quiche::h3::Result<()>;
+        index: &str, app_buffers: &mut quiceh::AppRecvBufMap,
+    ) -> quiceh::h3::Result<()>;
 
     fn handle_writable(
-        &mut self, conn: &mut quiche::Connection,
+        &mut self, conn: &mut quiceh::Connection,
         partial_responses: &mut HashMap<u64, PartialResponse>, stream_id: u64,
     );
 }
@@ -386,16 +386,16 @@ struct Http3Request {
     url: url::Url,
     cardinal: u64,
     stream_id: Option<u64>,
-    hdrs: Vec<quiche::h3::Header>,
+    hdrs: Vec<quiceh::h3::Header>,
     priority: Option<Priority>,
-    response_hdrs: Vec<quiche::h3::Header>,
+    response_hdrs: Vec<quiceh::h3::Header>,
     response_body: Vec<u8>,
     response_body_max: usize,
     response_writer: Option<std::io::BufWriter<std::fs::File>>,
 }
 
 type Http3ResponseBuilderResult = std::result::Result<
-    (Vec<quiche::h3::Header>, Vec<u8>, Vec<u8>),
+    (Vec<quiceh::h3::Header>, Vec<u8>, Vec<u8>),
     (u64, String),
 >;
 
@@ -452,7 +452,7 @@ impl Http09Conn {
 
 impl HttpConn for Http09Conn {
     fn send_requests(
-        &mut self, conn: &mut quiche::Connection, target_path: &Option<String>,
+        &mut self, conn: &mut quiceh::Connection, target_path: &Option<String>,
     ) {
         let mut reqs_done = 0;
 
@@ -464,7 +464,7 @@ impl HttpConn for Http09Conn {
             ) {
                 Ok(v) => v,
 
-                Err(quiche::Error::StreamLimit) => {
+                Err(quiceh::Error::StreamLimit) => {
                     debug!("not enough stream credits, retry later...");
                     break;
                 },
@@ -490,15 +490,15 @@ impl HttpConn for Http09Conn {
     }
 
     fn handle_responses_on_quic_v3(
-        &mut self, _conn: &mut quiche::Connection,
-        _app_buffers: &mut quiche::AppRecvBufMap,
+        &mut self, _conn: &mut quiceh::Connection,
+        _app_buffers: &mut quiceh::AppRecvBufMap,
         _req_start: &std::time::Instant,
     ) {
         unimplemented!()
     }
 
     fn handle_responses(
-        &mut self, conn: &mut quiche::Connection, buf: &mut [u8],
+        &mut self, conn: &mut quiceh::Connection, buf: &mut [u8],
         req_start: &std::time::Instant,
     ) {
         // Process all readable streams.
@@ -557,7 +557,7 @@ impl HttpConn for Http09Conn {
 
                         match conn.close(true, 0x00, b"kthxbye") {
                             // Already closed.
-                            Ok(_) | Err(quiche::Error::Done) => (),
+                            Ok(_) | Err(quiceh::Error::Done) => (),
 
                             Err(e) => panic!("error closing conn: {:?}", e),
                         }
@@ -585,20 +585,20 @@ impl HttpConn for Http09Conn {
     }
 
     fn handle_requests_on_quic_v3(
-        &mut self, _conn: &mut quiche::Connection,
+        &mut self, _conn: &mut quiceh::Connection,
         _partial_responses: &mut HashMap<u64, PartialResponse>, _root: &str,
-        _index: &str, _app_buffers: &mut quiche::AppRecvBufMap,
-    ) -> quiche::h3::Result<()> {
+        _index: &str, _app_buffers: &mut quiceh::AppRecvBufMap,
+    ) -> quiceh::h3::Result<()> {
         unimplemented!()
     }
 
     fn handle_requests(
-        &mut self, conn: &mut quiche::Connection,
+        &mut self, conn: &mut quiceh::Connection,
         partial_requests: &mut HashMap<u64, PartialRequest>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
         index: &str, buf: &mut [u8],
-        _app_buffers: Option<&mut quiche::AppRecvBufMap>,
-    ) -> quiche::h3::Result<()> {
+        _app_buffers: Option<&mut quiceh::AppRecvBufMap>,
+    ) -> quiceh::h3::Result<()> {
         // Process all readable streams.
         for s in conn.readable() {
             while let Ok((read, fin)) = conn.stream_recv(s, buf) {
@@ -673,7 +673,7 @@ impl HttpConn for Http09Conn {
                     let written = match conn.stream_send(s, &body, true) {
                         Ok(v) => v,
 
-                        Err(quiche::Error::Done) => 0,
+                        Err(quiceh::Error::Done) => 0,
 
                         Err(e) => {
                             error!(
@@ -703,7 +703,7 @@ impl HttpConn for Http09Conn {
     }
 
     fn handle_writable(
-        &mut self, conn: &mut quiche::Connection,
+        &mut self, conn: &mut quiceh::Connection,
         partial_responses: &mut HashMap<u64, PartialResponse>, stream_id: u64,
     ) {
         trace!("{} stream {} is writable", conn.trace_id(), stream_id);
@@ -718,7 +718,7 @@ impl HttpConn for Http09Conn {
         let written = match conn.stream_send(stream_id, body, true) {
             Ok(v) => v,
 
-            Err(quiche::Error::Done) => 0,
+            Err(quiceh::Error::Done) => 0,
 
             Err(e) => {
                 partial_responses.remove(&stream_id);
@@ -757,20 +757,20 @@ impl Http3DgramSender {
 fn make_h3_config(
     max_field_section_size: Option<u64>, qpack_max_table_capacity: Option<u64>,
     qpack_blocked_streams: Option<u64>,
-) -> quiche::h3::Config {
-    let mut config = quiche::h3::Config::new().unwrap();
+) -> quiceh::h3::Config {
+    let mut config = quiceh::h3::Config::new().unwrap();
 
     if let Some(v) = max_field_section_size {
         config.set_max_field_section_size(v);
     }
 
     if let Some(v) = qpack_max_table_capacity {
-        // quiche doesn't support dynamic QPACK, so clamp to 0 for now.
+        // quiceh doesn't support dynamic QPACK, so clamp to 0 for now.
         config.set_qpack_max_table_capacity(v.clamp(0, 0));
     }
 
     if let Some(v) = qpack_blocked_streams {
-        // quiche doesn't support dynamic QPACK, so clamp to 0 for now.
+        // quiceh doesn't support dynamic QPACK, so clamp to 0 for now.
         config.set_qpack_blocked_streams(v.clamp(0, 0));
     }
 
@@ -778,7 +778,7 @@ fn make_h3_config(
 }
 
 pub struct Http3Conn {
-    h3_conn: quiche::h3::Connection,
+    h3_conn: quiceh::h3::Connection,
     reqs_hdrs_sent: usize,
     reqs_complete: usize,
     largest_processed_request: u64,
@@ -793,7 +793,7 @@ pub struct Http3Conn {
 impl Http3Conn {
     #[allow(clippy::too_many_arguments)]
     pub fn with_urls(
-        conn: &mut quiche::Connection, urls: &[url::Url], reqs_cardinal: u64,
+        conn: &mut quiceh::Connection, urls: &[url::Url], reqs_cardinal: u64,
         req_headers: &[String], body: &Option<Vec<u8>>, method: &str,
         send_priority_update: bool, max_field_section_size: Option<u64>,
         qpack_max_table_capacity: Option<u64>,
@@ -811,14 +811,14 @@ impl Http3Conn {
                 };
 
                 let mut hdrs = vec![
-                    quiche::h3::Header::new(b":method", method.as_bytes()),
-                    quiche::h3::Header::new(b":scheme", url.scheme().as_bytes()),
-                    quiche::h3::Header::new(b":authority", authority.as_bytes()),
-                    quiche::h3::Header::new(
+                    quiceh::h3::Header::new(b":method", method.as_bytes()),
+                    quiceh::h3::Header::new(b":scheme", url.scheme().as_bytes()),
+                    quiceh::h3::Header::new(b":authority", authority.as_bytes()),
+                    quiceh::h3::Header::new(
                         b":path",
                         url[url::Position::BeforePath..].as_bytes(),
                     ),
-                    quiche::h3::Header::new(b"user-agent", b"quiche"),
+                    quiceh::h3::Header::new(b"user-agent", b"quiceh"),
                 ];
 
                 let priority = if send_priority_update {
@@ -836,14 +836,14 @@ impl Http3Conn {
                         panic!("malformed header provided - \"{}\"", header);
                     }
 
-                    hdrs.push(quiche::h3::Header::new(
+                    hdrs.push(quiceh::h3::Header::new(
                         header_split[0].as_bytes(),
                         header_split[1].as_bytes(),
                     ));
                 }
 
                 if body.is_some() {
-                    hdrs.push(quiche::h3::Header::new(
+                    hdrs.push(quiceh::h3::Header::new(
                         b"content-length",
                         body.as_ref().unwrap().len().to_string().as_bytes(),
                     ));
@@ -864,7 +864,7 @@ impl Http3Conn {
         }
 
         let h_conn = Http3Conn {
-            h3_conn: quiche::h3::Connection::with_transport(
+            h3_conn: quiceh::h3::Connection::with_transport(
                 conn,
                 &make_h3_config(
                     max_field_section_size,
@@ -887,13 +887,13 @@ impl Http3Conn {
     }
 
     pub fn with_conn(
-        conn: &mut quiche::Connection, max_field_section_size: Option<u64>,
+        conn: &mut quiceh::Connection, max_field_section_size: Option<u64>,
         qpack_max_table_capacity: Option<u64>,
         qpack_blocked_streams: Option<u64>,
         dgram_sender: Option<Http3DgramSender>,
         output_sink: Rc<RefCell<dyn FnMut(String)>>,
     ) -> std::result::Result<Box<dyn HttpConn>, String> {
-        let h3_conn = quiche::h3::Connection::with_transport(
+        let h3_conn = quiceh::h3::Connection::with_transport(
             conn,
             &make_h3_config(
                 max_field_section_size,
@@ -921,9 +921,9 @@ impl Http3Conn {
     /// poll the h3_conn with either poll() or poll_v3() depending on the
     /// connection context.
     fn poll_internal(
-        &mut self, conn: &mut quiche::Connection,
-        app_buffers: &mut Option<&mut quiche::AppRecvBufMap>,
-    ) -> quiche::h3::Result<(u64, quiche::h3::Event)> {
+        &mut self, conn: &mut quiceh::Connection,
+        app_buffers: &mut Option<&mut quiceh::AppRecvBufMap>,
+    ) -> quiceh::h3::Result<(u64, quiceh::h3::Event)> {
         if let Some(ref mut app_buffers) = app_buffers {
             self.h3_conn.poll_v3(conn, app_buffers)
         } else {
@@ -933,7 +933,7 @@ impl Http3Conn {
 
     /// Builds an HTTP/3 response given a request.
     fn build_h3_response(
-        root: &str, index: &str, request: &[quiche::h3::Header],
+        root: &str, index: &str, request: &[quiceh::h3::Header],
     ) -> Http3ResponseBuilderResult {
         let mut file_path = path::PathBuf::from(root);
         let mut scheme = None;
@@ -1017,11 +1017,11 @@ impl Http3Conn {
                     "CONNECT" => {
                         // not allowed
                         let headers = vec![
-                            quiche::h3::Header::new(
+                            quiceh::h3::Header::new(
                                 b":status",
                                 "405".to_string().as_bytes(),
                             ),
-                            quiche::h3::Header::new(b"server", b"quiche"),
+                            quiceh::h3::Header::new(b"server", b"quiceh"),
                         ];
 
                         return Ok((headers, b"".to_vec(), Default::default()));
@@ -1042,11 +1042,11 @@ impl Http3Conn {
             Some(scheme) => {
                 if scheme != "http" && scheme != "https" {
                     let headers = vec![
-                        quiche::h3::Header::new(
+                        quiceh::h3::Header::new(
                             b":status",
                             "400".to_string().as_bytes(),
                         ),
-                        quiche::h3::Header::new(b"server", b"quiche"),
+                        quiceh::h3::Header::new(b"server", b"quiceh"),
                     ];
 
                     return Ok((
@@ -1144,9 +1144,9 @@ impl Http3Conn {
         };
 
         let headers = vec![
-            quiche::h3::Header::new(b":status", status.to_string().as_bytes()),
-            quiche::h3::Header::new(b"server", b"quiche"),
-            quiche::h3::Header::new(
+            quiceh::h3::Header::new(b":status", status.to_string().as_bytes()),
+            quiceh::h3::Header::new(b"server", b"quiceh"),
+            quiceh::h3::Header::new(
                 b"content-length",
                 body.len().to_string().as_bytes(),
             ),
@@ -1158,7 +1158,7 @@ impl Http3Conn {
 
 impl HttpConn for Http3Conn {
     fn send_requests(
-        &mut self, conn: &mut quiche::Connection, target_path: &Option<String>,
+        &mut self, conn: &mut quiceh::Connection, target_path: &Option<String>,
     ) {
         let mut reqs_done = 0;
 
@@ -1171,14 +1171,14 @@ impl HttpConn for Http3Conn {
             ) {
                 Ok(v) => v,
 
-                Err(quiche::h3::Error::TransportError(
-                    quiche::Error::StreamLimit,
+                Err(quiceh::h3::Error::TransportError(
+                    quiceh::Error::StreamLimit,
                 )) => {
                     debug!("not enough stream credits, retry later...");
                     break;
                 },
 
-                Err(quiche::h3::Error::StreamBlocked) => {
+                Err(quiceh::h3::Error::StreamBlocked) => {
                     debug!("stream is blocked, retry later...");
                     break;
                 },
@@ -1224,7 +1224,7 @@ impl HttpConn for Http3Conn {
                 ) {
                     Ok(v) => v,
 
-                    Err(quiche::h3::Error::Done) => 0,
+                    Err(quiceh::h3::Error::Done) => 0,
 
                     Err(e) => {
                         error!("failed to send request body {:?}", e);
@@ -1259,12 +1259,12 @@ impl HttpConn for Http3Conn {
     }
 
     fn handle_responses_on_quic_v3(
-        &mut self, conn: &mut quiche::Connection,
-        app_buffers: &mut quiche::AppRecvBufMap, req_start: &std::time::Instant,
+        &mut self, conn: &mut quiceh::Connection,
+        app_buffers: &mut quiceh::AppRecvBufMap, req_start: &std::time::Instant,
     ) {
         loop {
             match self.h3_conn.poll_v3(conn, app_buffers) {
-                Ok((stream_id, quiche::h3::Event::Headers { list, .. })) => {
+                Ok((stream_id, quiceh::h3::Event::Headers { list, .. })) => {
                     debug!(
                         "got response headers {:?} on stream id {}",
                         hdrs_to_strings(&list),
@@ -1280,7 +1280,7 @@ impl HttpConn for Http3Conn {
                     req.response_hdrs = list;
                 },
 
-                Ok((stream_id, quiche::h3::Event::Data)) => {
+                Ok((stream_id, quiceh::h3::Event::Data)) => {
                     let (b, tot_exp_len) = match self.h3_conn.recv_body_v3(
                         conn,
                         stream_id,
@@ -1295,7 +1295,7 @@ impl HttpConn for Http3Conn {
                             (b, tot_exp_len)
                         },
 
-                        Err(quiche::h3::Error::Done) => panic!("Error::Done"),
+                        Err(quiceh::h3::Error::Done) => panic!("Error::Done"),
 
                         Err(e) => panic!("Error reading conn: {:?}", e),
                     };
@@ -1325,6 +1325,12 @@ impl HttpConn for Http3Conn {
                                     .unwrap();
                             },
                             None => {
+                                if !self.dump_json {
+                                    self.output_sink.borrow_mut()(unsafe {
+                                        std::str::from_utf8_unchecked(b)
+                                            .to_string()
+                                    });
+                                }
                                 self.h3_conn
                                     .body_consumed(
                                         conn,
@@ -1338,7 +1344,7 @@ impl HttpConn for Http3Conn {
                     }
                 },
 
-                Ok((_stream_id, quiche::h3::Event::Finished)) => {
+                Ok((_stream_id, quiceh::h3::Event::Finished)) => {
                     self.reqs_complete += 1;
                     let reqs_count = self.reqs.len();
                     debug!(
@@ -1363,7 +1369,7 @@ impl HttpConn for Http3Conn {
 
                         match conn.close(true, 0x100, b"kthxbye") {
                             // Already closed.
-                            Ok(_) | Err(quiche::Error::Done) => (),
+                            Ok(_) | Err(quiceh::Error::Done) => (),
 
                             Err(e) => panic!("error closing conn: {:?}", e),
                         }
@@ -1372,12 +1378,12 @@ impl HttpConn for Http3Conn {
                     }
                 },
 
-                Ok((_stream_id, quiche::h3::Event::Reset(e))) => {
+                Ok((_stream_id, quiceh::h3::Event::Reset(e))) => {
                     error!("request was reset by peer with {}, closing...", e);
 
                     match conn.close(true, 0x100, b"kthxbye") {
                         // Already closed.
-                        Ok(_) | Err(quiche::Error::Done) => (),
+                        Ok(_) | Err(quiceh::Error::Done) => (),
 
                         Err(e) => panic!("error closing conn: {:?}", e),
                     }
@@ -1387,7 +1393,7 @@ impl HttpConn for Http3Conn {
 
                 Ok((
                     prioritized_element_id,
-                    quiche::h3::Event::PriorityUpdate,
+                    quiceh::h3::Event::PriorityUpdate,
                 )) => {
                     info!(
                         "{} PRIORITY_UPDATE triggered for element ID={}",
@@ -1396,7 +1402,7 @@ impl HttpConn for Http3Conn {
                     );
                 },
 
-                Ok((goaway_id, quiche::h3::Event::GoAway)) => {
+                Ok((goaway_id, quiceh::h3::Event::GoAway)) => {
                     info!(
                         "{} got GOAWAY with ID {} ",
                         conn.trace_id(),
@@ -1404,7 +1410,7 @@ impl HttpConn for Http3Conn {
                     );
                 },
 
-                Err(quiche::h3::Error::Done) => {
+                Err(quiceh::h3::Error::Done) => {
                     break;
                 },
 
@@ -1418,12 +1424,12 @@ impl HttpConn for Http3Conn {
     }
 
     fn handle_responses(
-        &mut self, conn: &mut quiche::Connection, buf: &mut [u8],
+        &mut self, conn: &mut quiceh::Connection, buf: &mut [u8],
         req_start: &std::time::Instant,
     ) {
         loop {
             match self.h3_conn.poll(conn) {
-                Ok((stream_id, quiche::h3::Event::Headers { list, .. })) => {
+                Ok((stream_id, quiceh::h3::Event::Headers { list, .. })) => {
                     debug!(
                         "got response headers {:?} on stream id {}",
                         hdrs_to_strings(&list),
@@ -1439,7 +1445,7 @@ impl HttpConn for Http3Conn {
                     req.response_hdrs = list;
                 },
 
-                Ok((stream_id, quiche::h3::Event::Data)) => {
+                Ok((stream_id, quiceh::h3::Event::Data)) => {
                     while let Ok(read) =
                         self.h3_conn.recv_body(conn, stream_id, buf)
                     {
@@ -1461,24 +1467,23 @@ impl HttpConn for Http3Conn {
                         req.response_body.extend_from_slice(&buf[..len]);
 
                         match &mut req.response_writer {
-                            Some(_rw) => {
-                                // for fair comparison
-                                // rw.write_all(&buf[..read]).ok();
+                            Some(rw) => {
+                                rw.write_all(&buf[..read]).ok();
                             },
 
                             None =>
                                 if !self.dump_json {
-                                    // self.output_sink.borrow_mut()(unsafe {
-                                    // String::from_utf8_unchecked(
-                                    // buf[..read].to_vec(),
-                                    //)
-                                    //});
+                                    self.output_sink.borrow_mut()(unsafe {
+                                        String::from_utf8_unchecked(
+                                            buf[..read].to_vec(),
+                                        )
+                                    });
                                 },
                         }
                     }
                 },
 
-                Ok((_stream_id, quiche::h3::Event::Finished)) => {
+                Ok((_stream_id, quiceh::h3::Event::Finished)) => {
                     self.reqs_complete += 1;
                     let reqs_count = self.reqs.len();
 
@@ -1504,7 +1509,7 @@ impl HttpConn for Http3Conn {
 
                         match conn.close(true, 0x100, b"kthxbye") {
                             // Already closed.
-                            Ok(_) | Err(quiche::Error::Done) => (),
+                            Ok(_) | Err(quiceh::Error::Done) => (),
 
                             Err(e) => panic!("error closing conn: {:?}", e),
                         }
@@ -1513,12 +1518,12 @@ impl HttpConn for Http3Conn {
                     }
                 },
 
-                Ok((_stream_id, quiche::h3::Event::Reset(e))) => {
+                Ok((_stream_id, quiceh::h3::Event::Reset(e))) => {
                     error!("request was reset by peer with {}, closing...", e);
 
                     match conn.close(true, 0x100, b"kthxbye") {
                         // Already closed.
-                        Ok(_) | Err(quiche::Error::Done) => (),
+                        Ok(_) | Err(quiceh::Error::Done) => (),
 
                         Err(e) => panic!("error closing conn: {:?}", e),
                     }
@@ -1528,7 +1533,7 @@ impl HttpConn for Http3Conn {
 
                 Ok((
                     prioritized_element_id,
-                    quiche::h3::Event::PriorityUpdate,
+                    quiceh::h3::Event::PriorityUpdate,
                 )) => {
                     info!(
                         "{} PRIORITY_UPDATE triggered for element ID={}",
@@ -1537,7 +1542,7 @@ impl HttpConn for Http3Conn {
                     );
                 },
 
-                Ok((goaway_id, quiche::h3::Event::GoAway)) => {
+                Ok((goaway_id, quiceh::h3::Event::GoAway)) => {
                     info!(
                         "{} got GOAWAY with ID {} ",
                         conn.trace_id(),
@@ -1545,7 +1550,7 @@ impl HttpConn for Http3Conn {
                     );
                 },
 
-                Err(quiche::h3::Error::Done) => {
+                Err(quiceh::h3::Error::Done) => {
                     break;
                 },
 
@@ -1559,7 +1564,7 @@ impl HttpConn for Http3Conn {
 
         // Process datagram-related events.
         while let Ok(len) = conn.dgram_recv(buf) {
-            let mut b = octets::Octets::with_slice(buf);
+            let mut b = octets_rev::Octets::with_slice(buf);
             if let Ok(flow_id) = b.get_varint() {
                 info!(
                     "Received DATAGRAM flow_id={} len={} data={:?}",
@@ -1591,10 +1596,10 @@ impl HttpConn for Http3Conn {
     }
 
     fn handle_requests_on_quic_v3(
-        &mut self, conn: &mut quiche::Connection,
+        &mut self, conn: &mut quiceh::Connection,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
-        index: &str, app_buffers: &mut quiche::AppRecvBufMap,
-    ) -> quiche::h3::Result<()> {
+        index: &str, app_buffers: &mut quiceh::AppRecvBufMap,
+    ) -> quiceh::h3::Result<()> {
         self.handle_requests(
             conn,
             &mut HashMap::new(),
@@ -1607,16 +1612,16 @@ impl HttpConn for Http3Conn {
     }
 
     fn handle_requests(
-        &mut self, conn: &mut quiche::Connection,
+        &mut self, conn: &mut quiceh::Connection,
         _partial_requests: &mut HashMap<u64, PartialRequest>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
         index: &str, buf: &mut [u8],
-        mut app_buffers: Option<&mut quiche::AppRecvBufMap>,
-    ) -> quiche::h3::Result<()> {
+        mut app_buffers: Option<&mut quiceh::AppRecvBufMap>,
+    ) -> quiceh::h3::Result<()> {
         // Process HTTP stream-related events.
         loop {
             match self.poll_internal(conn, &mut app_buffers) {
-                Ok((stream_id, quiche::h3::Event::Headers { list, .. })) => {
+                Ok((stream_id, quiceh::h3::Event::Headers { list, .. })) => {
                     info!(
                         "{} got request {:?} on stream id {}",
                         conn.trace_id(),
@@ -1631,7 +1636,7 @@ impl HttpConn for Http3Conn {
                     // stop reading the request stream so that any body
                     // is ignored and pointless Data events are not
                     // generated.
-                    conn.stream_shutdown(stream_id, quiche::Shutdown::Read, 0)
+                    conn.stream_shutdown(stream_id, quiceh::Shutdown::Read, 0)
                         .unwrap();
 
                     let (mut headers, body, mut priority) =
@@ -1641,7 +1646,7 @@ impl HttpConn for Http3Conn {
                             Err((error_code, _)) => {
                                 conn.stream_shutdown(
                                     stream_id,
-                                    quiche::Shutdown::Write,
+                                    quiceh::Shutdown::Write,
                                     error_code,
                                 )
                                 .unwrap();
@@ -1654,7 +1659,7 @@ impl HttpConn for Http3Conn {
                             priority = v;
                         },
 
-                        Err(quiche::h3::Error::Done) => (),
+                        Err(quiceh::h3::Error::Done) => (),
 
                         Err(e) => error!(
                             "{} error taking PRIORITY_UPDATE {}",
@@ -1664,7 +1669,7 @@ impl HttpConn for Http3Conn {
                     }
 
                     if !priority.is_empty() {
-                        headers.push(quiche::h3::Header::new(
+                        headers.push(quiceh::h3::Header::new(
                             b"priority",
                             priority.as_slice(),
                         ));
@@ -1672,14 +1677,14 @@ impl HttpConn for Http3Conn {
 
                     #[cfg(feature = "sfv")]
                     let priority =
-                        match quiche::h3::Priority::try_from(priority.as_slice())
+                        match quiceh::h3::Priority::try_from(priority.as_slice())
                         {
                             Ok(v) => v,
-                            Err(_) => quiche::h3::Priority::default(),
+                            Err(_) => quiceh::h3::Priority::default(),
                         };
 
                     #[cfg(not(feature = "sfv"))]
-                    let priority = quiche::h3::Priority::default();
+                    let priority = quiceh::h3::Priority::default();
 
                     info!(
                         "{} prioritizing response on stream {} as {:?}",
@@ -1693,7 +1698,7 @@ impl HttpConn for Http3Conn {
                     ) {
                         Ok(v) => v,
 
-                        Err(quiche::h3::Error::StreamBlocked) => {
+                        Err(quiceh::h3::Error::StreamBlocked) => {
                             let response = PartialResponse {
                                 headers: Some(headers),
                                 priority: Some(priority),
@@ -1726,7 +1731,7 @@ impl HttpConn for Http3Conn {
                     partial_responses.insert(stream_id, response);
                 },
 
-                Ok((stream_id, quiche::h3::Event::Data)) => {
+                Ok((stream_id, quiceh::h3::Event::Data)) => {
                     info!(
                         "{} got data on stream id {}",
                         conn.trace_id(),
@@ -1734,13 +1739,13 @@ impl HttpConn for Http3Conn {
                     );
                 },
 
-                Ok((_stream_id, quiche::h3::Event::Finished)) => (),
+                Ok((_stream_id, quiceh::h3::Event::Finished)) => (),
 
-                Ok((_stream_id, quiche::h3::Event::Reset { .. })) => (),
+                Ok((_stream_id, quiceh::h3::Event::Reset { .. })) => (),
 
                 Ok((
                     prioritized_element_id,
-                    quiche::h3::Event::PriorityUpdate,
+                    quiceh::h3::Event::PriorityUpdate,
                 )) => {
                     info!(
                         "{} PRIORITY_UPDATE triggered for element ID={}",
@@ -1749,7 +1754,7 @@ impl HttpConn for Http3Conn {
                     );
                 },
 
-                Ok((goaway_id, quiche::h3::Event::GoAway)) => {
+                Ok((goaway_id, quiceh::h3::Event::GoAway)) => {
                     trace!(
                         "{} got GOAWAY with ID {} ",
                         conn.trace_id(),
@@ -1759,7 +1764,7 @@ impl HttpConn for Http3Conn {
                         .send_goaway(conn, self.largest_processed_request)?;
                 },
 
-                Err(quiche::h3::Error::Done) => {
+                Err(quiceh::h3::Error::Done) => {
                     break;
                 },
 
@@ -1773,7 +1778,7 @@ impl HttpConn for Http3Conn {
 
         // Process datagram-related events.
         while let Ok(len) = conn.dgram_recv(buf) {
-            let mut b = octets::Octets::with_slice(buf);
+            let mut b = octets_rev::Octets::with_slice(buf);
             if let Ok(flow_id) = b.get_varint() {
                 info!(
                     "Received DATAGRAM flow_id={} len={} data={:?}",
@@ -1808,7 +1813,7 @@ impl HttpConn for Http3Conn {
     }
 
     fn handle_writable(
-        &mut self, conn: &mut quiche::Connection,
+        &mut self, conn: &mut quiceh::Connection,
         partial_responses: &mut HashMap<u64, PartialResponse>, stream_id: u64,
     ) {
         debug!("{} stream {} is writable", conn.trace_id(), stream_id);
@@ -1825,7 +1830,7 @@ impl HttpConn for Http3Conn {
             ) {
                 Ok(_) => (),
 
-                Err(quiche::h3::Error::StreamBlocked) => {
+                Err(quiceh::h3::Error::StreamBlocked) => {
                     return;
                 },
 
@@ -1844,7 +1849,7 @@ impl HttpConn for Http3Conn {
         let written = match self.h3_conn.send_body(conn, stream_id, body, true) {
             Ok(v) => v,
 
-            Err(quiche::h3::Error::Done) => 0,
+            Err(quiceh::h3::Error::Done) => 0,
 
             Err(e) => {
                 partial_responses.remove(&stream_id);

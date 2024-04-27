@@ -1,8 +1,8 @@
-project: protocols/quiche
+project: protocols/quiceh
 
 target: packet-recv-server-libfuzzer
 
-image: ${MAYHEM_DOCKER_REGISTRY}/protocols/quiche-libfuzzer:latest
+image: ${MAYHEM_DOCKER_REGISTRY}/protocols/quiceh-libfuzzer:latest
 
 advanced_triage: false
 
