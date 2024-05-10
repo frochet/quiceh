@@ -594,9 +594,9 @@ pub fn truncated_offset_len(offset: u64, largest_offset_acked: u64) -> usize {
 
 #[inline]
 pub fn pkt_num_len(pn: u64, largest_acked: u64) -> usize {
-    let num_unacked: u64 = pn.saturating_sub(largest_acked);
+    let num_unacked: u64 = pn.saturating_sub(largest_acked) + 1;
     // computes ceil of num_unacked.log2()
-    let min_bits = u64::BITS - num_unacked.leading_zeros() + 1;
+    let min_bits = u64::BITS - num_unacked.leading_zeros();
     // get the num len in bytes
     ((min_bits + 7) / 8) as usize
 }
