@@ -605,11 +605,11 @@ pub fn pkt_num_len(pn: u64, largest_acked: u64) -> usize {
 /// id.
 #[inline]
 pub fn pkt_num_len_v3(pn: u64, largest_acked: u64) -> usize {
-    let num_unacked: u64 = pn.saturating_sub(largest_acked) + 1;
+    let num_unacked: u64 = pn.saturating_sub(largest_acked);
     // computes ceil of num_unacked.log2()
     let min_bits = u64::BITS - num_unacked.leading_zeros() + 2;
     // get the num len in bytes
-    (min_bits as f32 / 8.).ceil() as usize
+    ((min_bits + 7) / 8) as usize
 }
 
 #[inline]
