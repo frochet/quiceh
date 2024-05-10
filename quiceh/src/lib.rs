@@ -324,7 +324,7 @@
 //!                 // ... do something with the buffer b.
 //!
 //!                 // Tell quiceh what is consumed (assume we consumed all the available data)
-//!                 match conn.stream_consumed(stream_id, len &mut app_buffers) {
+//!                 match conn.stream_consumed(stream_id, len, &mut app_buffers) {
 //!                     Ok(()) => (),
 //!                     Err(e) => {
 //!                         // An error occured, handle it
@@ -5273,6 +5273,7 @@ impl Connection {
     /// if let Ok((b, len, fin)) = conn.stream_recv_v3(stream_id, &mut app_buffers) {
     ///     println!("Has {} bytes available on stream {}", len, stream_id);
     /// }
+    /// # Ok::<(), quiceh::Error>(())
     /// ```
     ///
     /// [`send()`]: struct.Connection.html#method.send
@@ -5390,6 +5391,7 @@ impl Connection {
     ///
     ///     conn.stream_consumed(stream_id, len, &mut app_buffers).unwrap();
     /// }
+    /// # Ok::<(), quiceh::Error>(())
     /// ```
     ///
     /// [`send()`]: struct.Connection.html#method.send
