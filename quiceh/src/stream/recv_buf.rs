@@ -489,8 +489,8 @@ impl RecvBuf {
     pub fn ready(&self) -> bool {
         let ready = if_likely! {self.version == crate::PROTOCOL_VERSION_VREVERSO => {
             match self.heap.first_key_value() {
-                Some((_, recvinfo)) => self.contiguous_off > self.off || recvinfo.start_off <= self.off,
-                None => self.contiguous_off > self.off || self.deliver_fin,
+                Some((_, recvinfo)) => recvinfo.start_off <= self.contiguous_off,
+                None => return false,
             }
         } else {
             let (_, buf) = match self.data.first_key_value() {
@@ -691,6 +691,7 @@ mod tests {
             assert!(recv.write_v3(firstinfo).is_ok());
             assert_eq!(recv.len, 19);
             assert_eq!(recv.off, 0);
+            assert!(app_buf.advance_if_possible(&mut recv).is_ok());
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 19);
         }
         assert_eq!(recv.len, 19);
@@ -784,6 +785,7 @@ mod tests {
             assert!(recv.write_v3(firstinfo).is_ok());
             assert_eq!(recv.len, 19);
             assert_eq!(recv.off, 0);
+            assert!(app_buf.advance_if_possible(&mut recv).is_ok());
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 19);
             assert_eq!(recv.is_fin(), true);
         }
@@ -1013,6 +1015,7 @@ mod tests {
             assert!(recv.write_v3(firstinfo).is_ok());
             assert_eq!(recv.len, 9);
             assert_eq!(recv.off, 0);
+            assert!(app_buf.advance_if_possible(&mut recv).is_ok());
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 9);
             assert!(app_buf.has_consumed(None, 9).is_ok());
             assert!(!recv.is_fin());
@@ -1071,6 +1074,7 @@ mod tests {
             assert_eq!(recv.len, 9);
             assert_eq!(recv.off, 0);
             assert_eq!(recv.heap.len(), 1);
+            assert!(app_buf.advance_if_possible(&mut recv).is_ok());
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 9);
             assert!(app_buf.has_consumed(None, 9).is_ok());
             assert_eq!(recv.heap.len(), 0);
@@ -1141,6 +1145,7 @@ mod tests {
             assert_eq!(recv.off, 0);
             // firstinfo is contiguous; it does not go through the heap.
             assert_eq!(recv.heap.len(), 2);
+            assert!(app_buf.advance_if_possible(&mut recv).is_ok());
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 18);
             assert!(app_buf.has_consumed(None, 18).is_ok());
             assert_eq!(recv.heap.len(), 0);
@@ -1254,6 +1259,7 @@ mod tests {
             assert_eq!(recv.len, 12);
             assert_eq!(recv.off, 0);
             assert_eq!(recv.heap.len(), 1);
+            assert!(app_buf.advance_if_possible(&mut recv).is_ok());
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 12);
             assert!(app_buf.has_consumed(None, 12).is_ok());
             assert!(recv.is_fin());
@@ -1482,6 +1488,7 @@ mod tests {
             assert_eq!(recv.len, 15);
             assert_eq!(recv.off, 0);
             assert_eq!(recv.heap.len(), 2);
+            assert!(app_buf.advance_if_possible(&mut recv).is_ok());
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 15);
             assert!(app_buf.has_consumed(None, 15).is_ok());
             assert!(recv.is_fin());
@@ -1586,6 +1593,7 @@ mod tests {
             assert_eq!(recv.len, 14);
             assert_eq!(recv.off, 0);
             assert_eq!(recv.heap.len(), 5);
+            assert!(app_buf.advance_if_possible(&mut recv).is_ok());
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 14);
             assert!(app_buf.has_consumed(None, 14).is_ok());
             assert!(!recv.is_fin());

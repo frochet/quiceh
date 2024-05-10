@@ -3175,9 +3175,8 @@ impl Connection {
             // Check wether we can advance contiguous data to avoid the next packet to
             // be believed not in order.
             if stream_id > 0 {
-
                 if let Ok(stream) = self.get_or_create_stream(stream_id, false) {
-                    //app_buffers.read_mut(stream_id, stream)?;
+                    app_buffers.advance_if_possible(stream_id, stream)?;
                 }
             }
         } else {

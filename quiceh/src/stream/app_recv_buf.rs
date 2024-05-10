@@ -306,22 +306,6 @@ impl AppRecvBuf {
     }
 
     pub fn advance_if_possible(&mut self, recv: &mut RecvBuf) -> Result<()> {
-        Ok(())
-    }
-    /// gives ontiguous bytes as a mutable slice from the stream buffer.
-    #[inline]
-    pub fn read_mut(&mut self, recv: &mut RecvBuf) -> Result<&mut [u8]> {
-        let mut len = 0;
-        // We have received data in order, we can read it right away.
-        if recv.contiguous_off > recv.off {
-            len += recv.contiguous_off - recv.off;
-            recv.off += len;
-            self.output_off += len;
-        }
-
-        if recv.is_fin() && recv.deliver_fin {
-            recv.deliver_fin = false;
-        }
 
         let mut max_off = recv.off;
         while recv.ready() {
@@ -351,15 +335,30 @@ impl AppRecvBuf {
                     this_offset as usize + recvbufinfo.len]
                     .copy_from_slice(&buf[..recvbufinfo.len]);
             }
-            if this_offset < self.output_off {
+            if this_offset < recv.contiguous_off {
                 // We have a partial overlap. This could be caused by a
-                // retransmission?
-                this_len = this_len.saturating_sub(self.output_off - this_offset);
+                // retransmission? Normally this event does not happen;
+                trace!("Partial overlap happened -- Could happen if this packet is\
+                received first");
+                this_len = this_len.saturating_sub(recv.contiguous_off - this_offset);
             }
-            len += this_len;
-            recv.off += this_len;
-            self.output_off += this_len;
-            recv.contiguous_off = max_off;
+            recv.contiguous_off += this_len;
+        }
+        Ok(())
+    }
+    /// gives ontiguous bytes as a mutable slice from the stream buffer.
+    #[inline]
+    pub fn read_mut(&mut self, recv: &mut RecvBuf) -> Result<&mut [u8]> {
+        let mut len = 0;
+        // We have received data in order, we can read it right away.
+        if recv.contiguous_off > recv.off {
+            len += recv.contiguous_off - recv.off;
+            recv.off += len;
+            self.output_off += len;
+        }
+
+        if recv.is_fin() && recv.deliver_fin {
+            recv.deliver_fin = false;
         }
 
         if len > 0 {

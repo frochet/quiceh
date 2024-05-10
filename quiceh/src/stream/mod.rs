@@ -726,7 +726,11 @@ impl Stream {
 
     /// Returns true if the stream has data to read.
     pub fn is_readable(&self) -> bool {
-        self.recv.ready()
+        if self.recv.version == crate::PROTOCOL_VERSION_VREVERSO {
+            self.recv.contiguous_off > self.recv.off || self.recv.deliver_fin
+        } else {
+            self.recv.ready()
+        }
     }
 
     /// Returns true if the stream has enough flow control capacity to be
@@ -1175,6 +1179,7 @@ mod tests {
             assert_eq!(fin, false);
         } else {
             assert_eq!(stream.recv.write_v3(thirdinfo), Err(Error::FlowControl));
+            assert!(app_buf.advance_if_possible(&mut stream.recv).is_ok());
             assert_eq!(app_buf.read_mut(&mut stream.recv).unwrap().len(), 10);
             assert!(app_buf.has_consumed(None, 10).is_ok());
             assert!(!stream.recv.is_fin());
