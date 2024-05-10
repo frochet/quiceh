@@ -164,6 +164,18 @@ impl AppRecvBufMap {
         Ok(buf)
     }
 
+    pub(crate) fn advance_if_possible(
+        &mut self, stream_id: u64,  stream: &mut Stream,
+    ) -> Result<()> {
+        match self.buffers.entry(stream_id) {
+            hash_map::Entry::Vacant(_v) => {
+                Err(Error::AppRecvBufNotFound)
+            },
+            hash_map::Entry::Occupied(v) =>
+                v.into_mut().advance_if_possible(&mut stream.recv),
+        }
+    }
+
     pub(crate) fn has_consumed(
         &mut self, stream_id: u64, stream: Option<&Stream>, consumed: usize,
     ) -> Result<usize> {
@@ -293,6 +305,9 @@ impl AppRecvBuf {
         &mut self.outbuf[self.consumed..]
     }
 
+    pub fn advance_if_possible(&mut self, recv: &mut RecvBuf) -> Result<()> {
+        Ok(())
+    }
     /// gives ontiguous bytes as a mutable slice from the stream buffer.
     #[inline]
     pub fn read_mut(&mut self, recv: &mut RecvBuf) -> Result<&mut [u8]> {
@@ -344,9 +359,12 @@ impl AppRecvBuf {
             len += this_len;
             recv.off += this_len;
             self.output_off += this_len;
+            recv.contiguous_off = max_off;
         }
 
-        recv.flow_control.add_consumed(len);
+        if len > 0 {
+            recv.flow_control.add_consumed(len);
+        }
 
         Ok(&mut self.outbuf[self.consumed..self.output_off as usize])
     }

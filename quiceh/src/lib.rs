@@ -3144,6 +3144,7 @@ impl Connection {
             let payload_start_offset = payload.off();
             payload.skip(payload_len)?;
             // start reverse buffer processing
+            let mut stream_id = 0;
             while payload.off() > payload_start_offset {
                 let frame = frame::Frame::from_bytes(&mut payload, hdr.ty, self.version)?;
                 qlog_with_type!(QLOG_PACKET_RX, self.qlog, _q, {
@@ -3158,14 +3159,27 @@ impl Connection {
                     probing = false;
                 }
 
+                if let frame::Frame::StreamV3 {
+                    stream_id: s,
+                    ..
+                } = frame {
+                    stream_id = s;
+                }
+
                 if let Err(e) = self.process_frame(frame, &hdr, &mut payload, recv_pid, epoch, now)
                 {
                     frame_processing_err = Some(e);
                     break;
                 }
             }
-            // XXX We need to advance the offset to the end
-            // of the stream data if any.
+            // Check wether we can advance contiguous data to avoid the next packet to
+            // be believed not in order.
+            if stream_id > 0 {
+
+                if let Ok(stream) = self.get_or_create_stream(stream_id, false) {
+                    //app_buffers.read_mut(stream_id, stream)?;
+                }
+            }
         } else {
             while payload.cap() > 0 {
                 let frame = frame::Frame::from_bytes(&mut payload, hdr.ty, self.version)?;
