@@ -108,9 +108,10 @@
 //! ## Configuring Application Buffers
 //!
 //! To support contiguous zero-copy, quiceh exposes internal Stream buffers with
-//! the [`AppRecvBufMap`] object. This object needs to be initialized by the Application, and a
-//! mutable reference is latter passed to certain quiceh API, such as [`recv()`],
-//! [`stream_recv_v3()`], [`stream_consumed()`] and HTTP/3 specific APIs.
+//! the [`AppRecvBufMap`] object. This object needs to be initialized by the
+//! Application, and a mutable reference is latter passed to certain quiceh API,
+//! such as [`recv()`], [`stream_recv_v3()`], [`stream_consumed()`] and HTTP/3
+//! specific APIs.
 //!
 //! One of such object must be created per Connection.
 //!
@@ -303,8 +304,8 @@
 //! the streams that have outstanding data to read.
 //!
 //! The [`stream_recv_v3()`] method can then be used to retrieve the application
-//! data from the readable stream. The [`stream_consumed()`] is used alongside to
-//! tell [quiceh] how many bytes have been consumed from the stream:
+//! data from the readable stream. The [`stream_consumed()`] is used alongside
+//! to tell [quiceh] how many bytes have been consumed from the stream:
 //!
 //! ```no_run
 //! # let mut buf = [0; 512];
@@ -5371,7 +5372,8 @@ impl Connection {
     /// Consumes contiguous data received from a stream.
     ///
     /// Consuming data from a stream may trigger queueing of control
-    /// messages (e.g., MAX_STREAM_DATA). [`send()`] should be called after consuming.
+    /// messages (e.g., MAX_STREAM_DATA). [`send()`] should be called after
+    /// consuming.
     ///
     /// ## Examples:
     /// ```no_run

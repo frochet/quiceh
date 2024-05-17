@@ -28,15 +28,19 @@ use crate::args::*;
 use crate::common::*;
 use quiceh::AppRecvBufMap;
 
-use std::net::ToSocketAddrs;
-
+use std::cell::RefCell;
 use std::io::prelude::*;
-
+use std::io::IoSliceMut;
+use std::net::ToSocketAddrs;
 use std::rc::Rc;
 
-use std::cell::RefCell;
-
 use ring::rand::*;
+
+use quinn_udp::RecvMeta;
+use quinn_udp::UdpSocketState;
+use quinn_udp::BATCH_SIZE;
+
+use bytes::BytesMut;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
 pub const MAX_FLUSH_SIZE: usize = 256_000;
@@ -52,7 +56,7 @@ pub fn connect(
     args: ClientArgs, conn_args: CommonArgs,
     output_sink: impl FnMut(String) + 'static,
 ) -> Result<(), ClientError> {
-    let mut buf = [0; 65535];
+    let mut buf = [0; 65536 * BATCH_SIZE];
     let mut out = [0; MAX_DATAGRAM_SIZE];
 
     let output_sink =
@@ -80,10 +84,15 @@ pub fn connect(
         std::net::SocketAddr::V6(_) => format!("[::]:{}", args.source_port),
     };
 
+    // poll based on mio socket; but process information based on quinn-udp socket
+    // wrapper & recvmmsg() / sendmmsg() implementations
+    let socket_std = std::net::UdpSocket::bind(&bind_addr).unwrap();
+    let recv_state = UdpSocketState::new((&socket_std).into()).unwrap();
+    let mut metainfos = [RecvMeta::default(); BATCH_SIZE];
     // Create the UDP socket backing the QUIC connection, and register it with
     // the event loop.
     let mut socket =
-        mio::net::UdpSocket::bind(bind_addr.parse().unwrap()).unwrap();
+        mio::net::UdpSocket::from_std(socket_std.try_clone().unwrap());
     poll.registry()
         .register(&mut socket, mio::Token(0), mio::Interest::READABLE)
         .unwrap();
@@ -292,9 +301,20 @@ pub fn connect(
                 _ => unreachable!(),
             };
 
+            let mut iovs: [IoSliceMut; BATCH_SIZE] = {
+                let mut bufs =
+                    buf.chunks_mut(u16::MAX.into()).map(IoSliceMut::new);
+
+                std::array::from_fn(|_| bufs.next().expect("BATCH_SIZE elements"))
+            };
+
             let local_addr = socket.local_addr().unwrap();
             'read: loop {
-                let (len, from) = match socket.recv_from(&mut buf) {
+                let len = match recv_state.recv(
+                    (&socket_std).into(),
+                    &mut iovs,
+                    &mut metainfos,
+                ) {
                     Ok(v) => v,
 
                     Err(e) => {
@@ -311,36 +331,43 @@ pub fn connect(
                     },
                 };
 
-                trace!("{}: got {} bytes", local_addr, len);
-
-                if let Some(target_path) = conn_args.dump_packet_path.as_ref() {
-                    let path = format!("{target_path}/{pkt_count}.pkt");
-
-                    if let Ok(f) = std::fs::File::create(path) {
-                        let mut f = std::io::BufWriter::new(f);
-                        f.write_all(&buf[..len]).ok();
-                    }
-                }
-
-                pkt_count += 1;
+                trace!("{}: got {} datagrams", local_addr, len);
 
                 let recv_info = quiceh::RecvInfo {
                     to: local_addr,
-                    from,
+                    from: peer_addr,
                 };
 
-                // Process potentially coalesced packets.
-                let read =
-                    match conn.recv(&mut buf[..len], &mut app_buffers, recv_info)
+                let mut read = 0;
+                for (meta, buf) in metainfos.iter().zip(iovs.iter_mut()).take(len)
+                {
+                    if let Some(target_path) = conn_args.dump_packet_path.as_ref()
                     {
-                        Ok(v) => v,
+                        let path = format!("{target_path}/{pkt_count}.pkt");
 
-                        Err(e) => {
-                            error!("{}: recv failed: {:?}", local_addr, e);
-                            continue 'read;
-                        },
-                    };
+                        if let Ok(f) = std::fs::File::create(path) {
+                            let mut f = std::io::BufWriter::new(f);
+                            f.write_all(&buf[..meta.len]).ok();
+                        }
+                    }
+                    let mut data: BytesMut = buf[0..meta.len].into();
+                    while !data.is_empty() {
+                        pkt_count += 1;
+                        let mut buf = data.split_to(meta.stride.min(data.len()));
+                        read += match conn.recv(
+                            &mut buf,
+                            &mut app_buffers,
+                            recv_info,
+                        ) {
+                            Ok(v) => v,
 
+                            Err(e) => {
+                                error!("{}: recv failed: {:?}", local_addr, e);
+                                continue 'read;
+                            },
+                        };
+                    }
+                }
                 trace!("{}: processed {} bytes", local_addr, read);
             }
         }

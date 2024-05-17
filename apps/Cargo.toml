@@ -24,6 +24,8 @@ default = ["qlog", "sfv"]
 docopt = "1"
 env_logger = "0.10"
 mio = { version = "0.8", features = ["net", "os-poll"] }
+quinn-udp = "0.5.0"
+bytes = "1"
 url = "1"
 log = "0.4"
 octets_rev = { version = "0.1.0", path = "../octets_rev" }
