@@ -439,7 +439,7 @@ impl Http09Conn {
         }
 
         let h_conn = Http09Conn {
-            stream_id: 0,
+            stream_id: 4,
             reqs_sent: 0,
             reqs_complete: 0,
             reqs,
@@ -475,7 +475,7 @@ impl HttpConn for Http09Conn {
                 },
             };
 
-            debug!("sending HTTP request {:?}", req.request_line);
+            trace!("sending HTTP request {:?} on stream_id {}", req.request_line, self.stream_id);
 
             req.stream_id = Some(self.stream_id);
             req.response_writer =
@@ -490,11 +490,71 @@ impl HttpConn for Http09Conn {
     }
 
     fn handle_responses_on_quic_v3(
-        &mut self, _conn: &mut quiceh::Connection,
-        _app_buffers: &mut quiceh::AppRecvBufMap,
-        _req_start: &std::time::Instant,
+        &mut self, conn: &mut quiceh::Connection,
+        app_buffers: &mut quiceh::AppRecvBufMap, req_start: &std::time::Instant,
     ) {
-        unimplemented!()
+        for s in conn.readable() {
+            if let Ok((b, len, fin)) = conn.stream_recv_v3(s, app_buffers) {
+                trace!(
+                    "received {}  bytes available to consume, fin is {}",
+                    len,
+                    fin
+                );
+
+                let req = self
+                    .reqs
+                    .iter_mut()
+                    .find(|r| r.stream_id == Some(s))
+                    .unwrap();
+
+                match &mut req.response_writer {
+                    Some(rw) => {
+                        rw.write_all(b).ok();
+                    },
+
+                    None => {
+                        self.output_sink.borrow_mut()(unsafe {
+                            String::from_utf8_unchecked(b.to_vec())
+                        });
+                    },
+                }
+
+                conn.stream_consumed(s, b.len(), app_buffers).unwrap();
+
+                // The server reported that it has no more data to send on
+                // a client-initiated
+                // bidirectional stream, which means
+                // we got the full response. If all responses are received
+                // then close the connection.
+                if &s % 4 == 0 && fin {
+                    self.reqs_complete += 1;
+                    let reqs_count = self.reqs.len();
+
+                    debug!(
+                        "{}/{} responses received",
+                        self.reqs_complete, reqs_count
+                    );
+
+                    if self.reqs_complete == reqs_count {
+                        info!(
+                            "{}/{} response(s) received in {:?}, closing...",
+                            self.reqs_complete,
+                            reqs_count,
+                            req_start.elapsed()
+                        );
+
+                        match conn.close(true, 0x00, b"kthxbye") {
+                            // Already closed.
+                            Ok(_) | Err(quiceh::Error::Done) => (),
+
+                            Err(e) => panic!("error closing conn: {:?}", e),
+                        }
+
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     fn handle_responses(
@@ -585,11 +645,87 @@ impl HttpConn for Http09Conn {
     }
 
     fn handle_requests_on_quic_v3(
-        &mut self, _conn: &mut quiceh::Connection,
-        _partial_responses: &mut HashMap<u64, PartialResponse>, _root: &str,
-        _index: &str, _app_buffers: &mut quiceh::AppRecvBufMap,
+        &mut self, conn: &mut quiceh::Connection,
+        partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
+        index: &str, app_buffers: &mut quiceh::AppRecvBufMap,
     ) -> quiceh::h3::Result<()> {
-        unimplemented!()
+        for s in conn.readable() {
+            if let Ok((b, len, fin)) = conn.stream_recv_v3(s, app_buffers) {
+                trace!(
+                    "{} has {} bytes available to consume  with fin bit {}",
+                    conn.trace_id(),
+                    len,
+                    fin
+                );
+                if !b.ends_with(b"\r\n") {
+                    return Ok(());
+                }
+
+                if b.starts_with(b"GET ") {
+                    let uri = &b[4..b.len() - 2];
+                    let uri = String::from_utf8(uri.to_vec()).unwrap();
+                    let uri = String::from(uri.lines().next().unwrap());
+                    let uri = path::Path::new(&uri);
+                    let mut path = path::PathBuf::from(root);
+
+                    for c in uri.components() {
+                        if let path::Component::Normal(v) = c {
+                            path.push(v)
+                        }
+                    }
+
+                    path = autoindex(path, index);
+
+                    info!(
+                        "{} got GET request for {:?} on stream {}",
+                        conn.trace_id(),
+                        path,
+                        s
+                    );
+
+                    let body = std::fs::read(path.as_path())
+                        .unwrap_or_else(|_| b"Not Found!\r\n".to_vec());
+
+                    info!(
+                        "{} sending response of size {} on stream {}",
+                        conn.trace_id(),
+                        body.len(),
+                        s
+                    );
+
+                    let written = match conn.stream_send(s, &body, true) {
+                        Ok(v) => v,
+
+                        Err(quiceh::Error::Done) => 0,
+
+                        Err(e) => {
+                            error!(
+                                "{} stream send failed {:?}",
+                                conn.trace_id(),
+                                e
+                            );
+                            conn.stream_consumed(s, b.len(), app_buffers)?;
+                            return Err(From::from(e));
+                        },
+                    };
+                    if written < body.len() {
+                        let response = PartialResponse {
+                            headers: None,
+                            priority: None,
+                            body,
+                            written,
+                        };
+
+                        partial_responses.insert(s, response);
+                    }
+                }
+                conn.stream_consumed(s, b.len(), app_buffers)?;
+            } else {
+                trace!("Some error");
+            }
+        }
+
+        Ok(())
     }
 
     fn handle_requests(

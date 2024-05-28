@@ -7972,6 +7972,8 @@ impl Connection {
                         metadata.off()
                     );
                     metadata.attach_data(Vec::from(data.as_ref()));
+                } else {
+                    trace!("Recv in order. No copy needed");
                 }
                 // Maybe this packet allows previously unordered reception
                 // to be appended to the buffer, which would prevent a copy

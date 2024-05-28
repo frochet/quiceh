@@ -514,14 +514,12 @@ fn main() {
 
                 if conn.version() == quiceh::PROTOCOL_VERSION_VREVERSO {
                     if http_conn
-                        .handle_requests(
+                        .handle_requests_on_quic_v3(
                             conn,
-                            &mut client.partial_requests,
                             partial_responses,
                             &args.root,
                             &args.index,
-                            &mut buf,
-                            Some(&mut client.app_buffers),
+                            &mut client.app_buffers,
                         )
                         .is_err()
                     {

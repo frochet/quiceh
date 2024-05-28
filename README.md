@@ -346,7 +346,7 @@ Once the Rust build environment is setup, the quiceh source code can be fetched
 using git:
 
 ```bash
- $ git clone --recursive https://github.com/frochet/quiceh
+ $ git clone --recursive git@github.com:frochet/quiceh
 ```
 
 and then built using cargo:
