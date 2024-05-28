@@ -47,8 +47,6 @@ use quiceh_apps::args::*;
 
 use quiceh_apps::common::*;
 
-use quiceh_apps::sendto::*;
-
 use quinn_udp::Transmit;
 use quinn_udp::UdpSocketState;
 
@@ -98,13 +96,6 @@ fn main() {
         .unwrap();
 
     let max_datagram_size = MAX_DATAGRAM_SIZE;
-    let enable_gso = if args.disable_gso {
-        false
-    } else {
-        detect_gso(&socket, max_datagram_size)
-    };
-
-    trace!("GSO detected: {}", enable_gso);
 
     // Create the configuration for the QUIC connections.
     let mut config = quiceh::Config::new(quiceh::PROTOCOL_VERSION).unwrap();
