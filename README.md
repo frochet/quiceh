@@ -131,7 +131,12 @@ if conn.is_established() {
 ### Command-line apps
 
 Here are a few examples on how to use the quiceh tools provided as part
-of the [quiceh-apps](apps/) crate.
+of the [quiceh-apps](apps/) crate. This crate is an extension of the
+[quiche-apps](https://github.com/cloudflare/quiche/tree/master/apps)
+crate, supporting both QUIC VReverso and QUIC V1, as well as adding
+recvmmsg() on the client and sendmmsg() on the server using the
+[quinn-udp](https://github.com/quinn-rs/quinn/tree/main/quinn-udp)
+crate.
 
 After cloning the project according to the command mentioned in the
 [building](#building) section, the client can be run as follows:
@@ -330,11 +335,6 @@ the same.
 
 - FFIs for the VReverso are not (yet) implemented (please open an issue
   if this is desired).
-
-- We didn't write code yet to evaluate maximum throughput on some local
-  network. Support of either recvmmsg() and sendmmsg() or kernel bypass
-  would be required for such an experiment (independently of quiceh that
-  does not touch the network).
 
 Building
 --------
