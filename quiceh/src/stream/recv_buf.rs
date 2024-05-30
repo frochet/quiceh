@@ -38,8 +38,12 @@ use crate::flowcontrol;
 use super::RangeBuf;
 use super::RecvBufInfo;
 use super::DEFAULT_STREAM_WINDOW;
+use std::collections::btree_map;
 
 use likely_stable::if_likely;
+
+
+const MAX_STREAM_FRAME_LENGTH: usize = 1310;
 
 /// Receive-side stream buffer.
 ///
@@ -54,6 +58,14 @@ pub struct RecvBuf {
     /// Chunks of data received from the peer that have not yet been read by
     /// the application, ordered by offset.
     data: BTreeMap<u64, RangeBuf>,
+
+    /// Set of max offsets of stream frames for which the stream is not fin
+    /// and we're expecting bytes. Ideally if every frames are received in order, then
+    /// this would not contain any element. Otherwise, this set contains
+    /// as many offsets as we have 'holes' due receiving data not in order. We store
+    /// the max offset of a given Stream frame, and the length since the last hole in the buffer.
+    /// They eventually get cleaned when the app receive the data.
+    pub maxoffs_order: BTreeMap<u64, usize>,
 
     /// The lowest data offset that has yet to be read by the application.
     pub off: u64,
@@ -394,7 +406,33 @@ impl RecvBuf {
 
     /// Check whether the incoming data is in order.
     pub fn not_in_order(&mut self, metadata: &RecvBufInfo) -> bool {
-        metadata.start_off > self.contiguous_off
+        if metadata.start_off > self.contiguous_off {
+            // several cases
+            // 1) start_off matches a key within the map, and the length
+            // of the data down to the 'hole' is large enough that we don't risk
+            // overwriting control information over multiple stream frames in case of unordered packets
+            // In that case, the packet is considered in order, and zerocopy is safe to apply.
+            // 2) start_off maches a key within the hashmap, but the length of
+            // the data down to the 'hole' isn't large enough. Mark the packet not in order
+            // but update the stored offset and increase the length of the data by the value
+            // this metadata provides. Zerocopy isn't safe to apply; so we retain a copy of the
+            // packet.
+            // 3) start_off doesnt match a key within the hashmap. Oups, we have a hole right
+            //    before this packet! insert a new element within the map, and eventually make
+            //    a copy of this stream frame.
+            match self.maxoffs_order.entry(metadata.start_off) {
+                btree_map::Entry::Occupied(o) => {
+                    let (_, len) = o.remove_entry();
+                    self.maxoffs_order.insert(metadata.max_off(), len+metadata.len);
+                    return len <= MAX_STREAM_FRAME_LENGTH;
+                },
+                btree_map::Entry::Vacant(_o) => {
+                    self.maxoffs_order.insert(metadata.max_off(), metadata.len);
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     pub fn has_error(&self) -> Option<u64> {

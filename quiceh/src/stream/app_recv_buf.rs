@@ -358,6 +358,15 @@ impl AppRecvBuf {
             self.output_off += len;
         }
 
+        //cleanup any hole.
+        while let Some(entry) = recv.maxoffs_order.first_entry(){
+            if *entry.key() < recv.contiguous_off {
+                entry.remove_entry();
+            } else {
+                break;
+            }
+        }
+
         if recv.is_fin() && recv.deliver_fin {
             recv.deliver_fin = false;
         }
