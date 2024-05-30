@@ -475,7 +475,11 @@ impl HttpConn for Http09Conn {
                 },
             };
 
-            trace!("sending HTTP request {:?} on stream_id {}", req.request_line, self.stream_id);
+            trace!(
+                "sending HTTP request {:?} on stream_id {}",
+                req.request_line,
+                self.stream_id
+            );
 
             req.stream_id = Some(self.stream_id);
             req.response_writer =
