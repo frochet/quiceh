@@ -537,7 +537,9 @@ impl Recovery {
         self.epochs[epoch].lost_frames.drain(..)
     }
 
-    pub fn get_largest_acked_on_epoch(&self, epoch: packet::Epoch) -> Option<u64> {
+    pub fn get_largest_acked_on_epoch(
+        &self, epoch: packet::Epoch,
+    ) -> Option<u64> {
         self.epochs[epoch].largest_acked_packet
     }
 

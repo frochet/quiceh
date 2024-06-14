@@ -1939,14 +1939,15 @@ impl Connection {
                 // indicate that there is a pending error, such as reset.
                 if let Some(ref mut app_buf) = app_buf {
                     if let Err(crate::Error::StreamReset(e)) =
-                        conn.stream_recv_v3(finished, app_buf) {
-                            return Ok((finished, Event::Reset(e)));
-                        }
+                        conn.stream_recv_v3(finished, app_buf)
+                    {
+                        return Ok((finished, Event::Reset(e)));
+                    }
                 } else {
                     if let Err(crate::Error::StreamReset(e)) =
                         conn.stream_recv(finished, &mut [])
-                        {
-                            return Ok((finished, Event::Reset(e)));
+                    {
+                        return Ok((finished, Event::Reset(e)));
                     }
                 }
             }
@@ -2690,7 +2691,6 @@ impl Connection {
                         {
                             Ok(b) => b,
                             Err(e) => {
-
                                 if let Error::TransportError(_) = e {
                                     return Err(e);
                                 }
@@ -2794,13 +2794,17 @@ impl Connection {
                         break;
                     }
 
-                    if conn.version == crate::PROTOCOL_VERSION_VREVERSO  {
-                        // In case the application did not consume DATA on a DATA event but
-                        // we then received a STREAM_RESET. Capture it here tell the app currently
+                    if conn.version == crate::PROTOCOL_VERSION_VREVERSO {
+                        // In case the application did not consume DATA on a DATA
+                        // event but we then received a
+                        // STREAM_RESET. Capture it here tell the app currently
                         // polling.
                         let app_buf = app_buf.as_mut().unwrap();
                         if let Err(e) = stream.try_acquire_data(conn, app_buf) {
-                            if let Error::TransportError(crate::Error::StreamReset(..)) = e {
+                            if let Error::TransportError(
+                                crate::Error::StreamReset(..),
+                            ) = e
+                            {
                                 return Err(e);
                             }
                         }

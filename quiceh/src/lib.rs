@@ -3937,7 +3937,8 @@ impl Connection {
         };
 
         let pn = pkt_space.next_pkt_num;
-        let largest_acked_pkt = path.recovery.get_largest_acked_on_epoch(epoch).unwrap_or(0);
+        let largest_acked_pkt =
+            path.recovery.get_largest_acked_on_epoch(epoch).unwrap_or(0);
         let pn_len = if_likely! { self.version == crate::PROTOCOL_VERSION_VREVERSO => {
             packet::pkt_num_len_v3(pn, largest_acked_pkt)
         } else {
@@ -10893,7 +10894,7 @@ mod tests {
         testing::process_flight(
             &mut pipe.server,
             &mut pipe.server_app_buffers,
-            flight
+            flight,
         )
         .unwrap();
 
@@ -14350,47 +14351,55 @@ mod tests {
         let mut pipe = testing::Pipe::new().unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
 
-        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            4
-        } else {
-            0
-        };
+        let off_by =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                4
+            } else {
+                0
+            };
 
         // Client sends some data, and closes stream.
-        assert_eq!(pipe.client.stream_send(0+off_by, b"hello", true), Ok(5));
+        assert_eq!(pipe.client.stream_send(0 + off_by, b"hello", true), Ok(5));
         assert_eq!(pipe.advance(), Ok(()));
 
         // Server gets data.
         let mut r = pipe.server.readable();
-        assert_eq!(r.next(), Some(0+off_by));
+        assert_eq!(r.next(), Some(0 + off_by));
         assert_eq!(r.next(), None);
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            let (_, len, fin) = pipe.server.stream_recv_v3(4, &mut pipe.server_app_buffers).unwrap();
+            let (_, len, fin) = pipe
+                .server
+                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .unwrap();
             assert_eq!((len, fin), (5, true));
-            assert!(pipe.server.stream_consumed(4, len, &mut pipe.server_app_buffers).is_ok());
-
+            assert!(pipe
+                .server
+                .stream_consumed(4, len, &mut pipe.server_app_buffers)
+                .is_ok());
         } else {
             assert_eq!(pipe.server.stream_recv(0, &mut b), Ok((5, true)));
         }
-        assert!(pipe.server.stream_finished(0+off_by));
+        assert!(pipe.server.stream_finished(0 + off_by));
 
         let mut r = pipe.server.readable();
         assert_eq!(r.next(), None);
 
         // Server sends data, until blocked.
         let mut r = pipe.server.writable();
-        assert_eq!(r.next(), Some(0+off_by));
+        assert_eq!(r.next(), Some(0 + off_by));
         assert_eq!(r.next(), None);
 
-        while pipe.server.stream_send(0+off_by, b"world", false) != Err(Error::Done) {}
+        while pipe.server.stream_send(0 + off_by, b"world", false) !=
+            Err(Error::Done)
+        {}
 
         let mut r = pipe.server.writable();
         assert_eq!(r.next(), None);
 
         // Client sends STOP_SENDING.
         let frames = [frame::Frame::StopSending {
-            stream_id: 0+off_by,
+            stream_id: 0 + off_by,
             error_code: 42,
         }];
 
@@ -14400,8 +14409,12 @@ mod tests {
             .unwrap();
 
         // Server sent a RESET_STREAM frame in response.
-        let frames =
-            testing::decode_pkt(&mut pipe.client, &mut buf[..len], &mut pipe.client_app_buffers).unwrap();
+        let frames = testing::decode_pkt(
+            &mut pipe.client,
+            &mut buf[..len],
+            &mut pipe.client_app_buffers,
+        )
+        .unwrap();
 
         let mut iter = frames.iter();
 
@@ -14411,7 +14424,7 @@ mod tests {
         assert_eq!(
             iter.next(),
             Some(&frame::Frame::ResetStream {
-                stream_id: 0+off_by,
+                stream_id: 0 + off_by,
                 error_code: 42,
                 final_size: 0,
             })
@@ -14419,11 +14432,11 @@ mod tests {
 
         // Stream is writable, but writing returns an error.
         let mut r = pipe.server.writable();
-        assert_eq!(r.next(), Some(0+off_by));
+        assert_eq!(r.next(), Some(0 + off_by));
         assert_eq!(r.next(), None);
 
         assert_eq!(
-            pipe.server.stream_send(0+off_by, b"world", true),
+            pipe.server.stream_send(0 + off_by, b"world", true),
             Err(Error::StreamStopped(42)),
         );
 
@@ -14439,7 +14452,10 @@ mod tests {
             ecn_counts: None,
         }];
 
-        assert_eq!(pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None), Ok(0));
+        assert_eq!(
+            pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
+            Ok(0)
+        );
 
         // Client has ACK'd the RESET_STREAM so the stream is collected.
         assert_eq!(pipe.server.streams.len(), 0);
@@ -14478,9 +14494,15 @@ mod tests {
         assert_eq!(r.next(), None);
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            let (_, len, fin) = pipe.server.stream_recv_v3(4, &mut pipe.server_app_buffers).unwrap();
+            let (_, len, fin) = pipe
+                .server
+                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .unwrap();
             assert_eq!((len, fin), (5, true));
-            assert!(pipe.server.stream_consumed(4, len, &mut pipe.server_app_buffers).is_ok());
+            assert!(pipe
+                .server
+                .stream_consumed(4, len, &mut pipe.server_app_buffers)
+                .is_ok());
         } else {
             assert_eq!(pipe.server.stream_recv(4, &mut b), Ok((5, true)));
         }
@@ -14499,9 +14521,15 @@ mod tests {
 
         // Client reads to give flow control back.
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            let (_, len, fin) = pipe.client.stream_recv_v3(4, &mut pipe.client_app_buffers).unwrap();
+            let (_, len, fin) = pipe
+                .client
+                .stream_recv_v3(4, &mut pipe.client_app_buffers)
+                .unwrap();
             assert_eq!((len, fin), (5, false));
-            assert!(pipe.client.stream_consumed(4, len, &mut pipe.client_app_buffers).is_ok());
+            assert!(pipe
+                .client
+                .stream_consumed(4, len, &mut pipe.client_app_buffers)
+                .is_ok());
         } else {
             assert_eq!(pipe.client.stream_recv(4, &mut b), Ok((5, false)));
         }
