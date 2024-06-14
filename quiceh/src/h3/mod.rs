@@ -2795,6 +2795,9 @@ impl Connection {
                     }
 
                     if conn.version == crate::PROTOCOL_VERSION_VREVERSO  {
+                        // In case the application did not consume DATA on a DATA event but
+                        // we then received a STREAM_RESET. Capture it here tell the app currently
+                        // polling.
                         let app_buf = app_buf.as_mut().unwrap();
                         if let Err(e) = stream.try_acquire_data(conn, app_buf) {
                             if let Error::TransportError(crate::Error::StreamReset(..)) = e {

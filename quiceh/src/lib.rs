@@ -14350,13 +14350,19 @@ mod tests {
         let mut pipe = testing::Pipe::new().unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
 
+        let off_by = if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+            4
+        } else {
+            0
+        };
+
         // Client sends some data, and closes stream.
-        assert_eq!(pipe.client.stream_send(4, b"hello", true), Ok(5));
+        assert_eq!(pipe.client.stream_send(0+off_by, b"hello", true), Ok(5));
         assert_eq!(pipe.advance(), Ok(()));
 
         // Server gets data.
         let mut r = pipe.server.readable();
-        assert_eq!(r.next(), Some(4));
+        assert_eq!(r.next(), Some(0+off_by));
         assert_eq!(r.next(), None);
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -14365,26 +14371,26 @@ mod tests {
             assert!(pipe.server.stream_consumed(4, len, &mut pipe.server_app_buffers).is_ok());
 
         } else {
-            assert_eq!(pipe.server.stream_recv(4, &mut b), Ok((5, true)));
+            assert_eq!(pipe.server.stream_recv(0, &mut b), Ok((5, true)));
         }
-        assert!(pipe.server.stream_finished(4));
+        assert!(pipe.server.stream_finished(0+off_by));
 
         let mut r = pipe.server.readable();
         assert_eq!(r.next(), None);
 
         // Server sends data, until blocked.
         let mut r = pipe.server.writable();
-        assert_eq!(r.next(), Some(4));
+        assert_eq!(r.next(), Some(0+off_by));
         assert_eq!(r.next(), None);
 
-        while pipe.server.stream_send(4, b"world", false) != Err(Error::Done) {}
+        while pipe.server.stream_send(0+off_by, b"world", false) != Err(Error::Done) {}
 
         let mut r = pipe.server.writable();
         assert_eq!(r.next(), None);
 
         // Client sends STOP_SENDING.
         let frames = [frame::Frame::StopSending {
-            stream_id: 4,
+            stream_id: 0+off_by,
             error_code: 42,
         }];
 
@@ -14405,7 +14411,7 @@ mod tests {
         assert_eq!(
             iter.next(),
             Some(&frame::Frame::ResetStream {
-                stream_id: 4,
+                stream_id: 0+off_by,
                 error_code: 42,
                 final_size: 0,
             })
@@ -14413,11 +14419,11 @@ mod tests {
 
         // Stream is writable, but writing returns an error.
         let mut r = pipe.server.writable();
-        assert_eq!(r.next(), Some(4));
+        assert_eq!(r.next(), Some(0+off_by));
         assert_eq!(r.next(), None);
 
         assert_eq!(
-            pipe.server.stream_send(4, b"world", true),
+            pipe.server.stream_send(0+off_by, b"world", true),
             Err(Error::StreamStopped(42)),
         );
 
@@ -14476,7 +14482,7 @@ mod tests {
             assert_eq!((len, fin), (5, true));
             assert!(pipe.server.stream_consumed(4, len, &mut pipe.server_app_buffers).is_ok());
         } else {
-            assert_eq!(pipe.server.stream_recv(0, &mut b), Ok((5, true)));
+            assert_eq!(pipe.server.stream_recv(4, &mut b), Ok((5, true)));
         }
         assert!(pipe.server.stream_finished(4));
 
