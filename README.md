@@ -2,15 +2,16 @@
 
 quiceh is a research implementation of QUIC VReverso, an extension of
 the QUIC transport protocol which allows implementers to achieve higher
-efficiency through the new opportunity to implement contiguous
-zero-copy in the receive code path, which is otherwise impossible with
-QUIC version 1 (RFC9000). This research implementation is forked from
-Cloudflare's [quiche](https://github.com/cloudflare/quiche)
-implementation of the QUIC transport protocol. This repository is not
-aimed to compete with the original implementation, which is qualitative
-and should be used rather than this project. This repository serves as
-reference implementation for an academic paper. However, interested
-Application developers are welcome to try it and offer feebacks. 
+efficiency through the new opportunity to implement contiguous zero-copy
+in the receive code path without touching the Crypto backend, which is
+otherwise impossible with QUIC version 1 (RFC9000). This research
+implementation is forked from Cloudflare's
+[quiche](https://github.com/cloudflare/quiche) implementation of the
+QUIC transport protocol. This repository is not aimed to compete with
+the original implementation, which is qualitative and should be used
+rather than this project. This repository serves as reference
+implementation for an academic paper. However, interested Application
+developers are welcome to try it and offer feebacks. 
 
 Details on why/how QUIC VReverso implementations are expected to be more
 efficient than QUIC V1 implementations can be read on the blogpost which
