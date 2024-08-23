@@ -468,7 +468,8 @@ pub const PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_VREVERSO;
 /// Supported QUIC versions.
 pub const PROTOCOL_VERSION_V1: u32 = 0x0000_0001;
 /// QUIC version supporting Contiguous Zero-copy receiver.
-pub const PROTOCOL_VERSION_VREVERSO: u32 = 0x0000_0003;
+/// Temporary placeholder number
+pub const PROTOCOL_VERSION_VREVERSO: u32 = 0x0079_1097;
 
 /// The maximum length of a connection ID.
 pub const MAX_CONN_ID_LEN: usize = crate::packet::MAX_CID_LEN as usize;

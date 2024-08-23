@@ -50,7 +50,7 @@ VReverso with the peer.
 let mut config = quiceh::Config::new(quiceh::PROTOCOL_VERSION_VREVERSO)?;
 ```
 
-Using `PROTOCOL_VERSION_VREVERSO` would make your endpoint tries to
+Using `PROTOCOL_VERSION_VREVERSO` which currently holds the temporary value 0x00791097 would make your endpoint tries to
 negotiate VReverso first, and fallback to QUIC V1 if not available.
 Client side or server side, the
 [quiche](https://github.com/cloudflare/quiche) API to initiate a
@@ -143,11 +143,11 @@ After cloning the project according to the command mentioned in the
 [building](#building) section, the client can be run as follows:
 
 ```bash
- $ cargo run --bin quiceh-client --wire-version 3 -- https://reverso.info.unamur.be:4433
+ $ cargo run --bin quiceh-client --wire-version 0x00791097 -- https://reverso.info.unamur.be:4433
 ```
 
-Using `--wire-version 3` configures PROTOCOL_VERSION_VREVERSO. By
-default it would do QUIC V1. The server can be run as follows:
+Using `--wire-version 0x00791097` configures PROTOCOL_VERSION_VREVERSO.
+If you want QUIC V1, you may use 0x00000001.
 
 ```bash
  $ cargo run --bin quiceh-server -- --cert apps/src/bin/cert.crt --key apps/src/bin/cert.key
@@ -170,7 +170,7 @@ enabled on on stdout should print the README.md file on stdout with some
 logging information for the connection:
 
 ```bash
-$ RUST_LOG=info ./target/release/quiceh-client --wire-version 3 --no-verify https://127.0.0.1:4433/README.md
+$ RUST_LOG=info ./target/release/quiceh-client --wire-version 0x00791097 --no-verify https://127.0.0.1:4433/README.md
 ... <skip readme file>
 [2024-05-02T11:44:40.893910677Z INFO  quiceh_apps::client] connecting to 127.0.0.1:4433 from 0.0.0.0:49803 with scid 97dcac3544c9e1f0d7a9d3e562c8e6c3e5bd03f9
 [2024-05-02T11:44:40.907967338Z INFO  quiceh_apps::common] 1/1 response(s) received in 13.94742ms, closing...
