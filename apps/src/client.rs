@@ -363,7 +363,7 @@ pub fn connect(
 
                             Err(e) => {
                                 error!("{}: recv failed: {:?}", local_addr, e);
-                                continue 'read;
+                                continue;
                             },
                         };
                     }
