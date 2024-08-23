@@ -47,8 +47,7 @@ use quiceh_apps::args::*;
 
 use quiceh_apps::common::*;
 
-use quinn_udp::Transmit;
-use quinn_udp::UdpSocketState;
+use quiceh_apps::sendto::*;
 
 const MAX_BUF_SIZE: usize = 65507;
 const MAX_FLUSH_SIZE: usize = 256_000;
@@ -71,11 +70,9 @@ fn main() {
     let mut poll = mio::Poll::new().unwrap();
     let mut events = mio::Events::with_capacity(1024);
 
-    let socket_std = std::net::UdpSocket::bind(&args.listen).unwrap();
-    let send_state = UdpSocketState::new((&socket_std).into()).unwrap();
     // Create the UDP listening socket, and register it with the event loop.
     let mut socket =
-        mio::net::UdpSocket::from_std(socket_std.try_clone().unwrap());
+        mio::net::UdpSocket::bind(args.listen.parse().unwrap()).unwrap();
 
     // Set SO_TXTIME socket option on the listening UDP socket for pacing
     // outgoing packets.
@@ -618,15 +615,14 @@ fn main() {
                 break;
             }
 
-            let transmit = Transmit {
-                destination: dst_info.unwrap().to,
-                ecn: None,
-                contents: &out[..total_write],
-                segment_size: Some(max_datagram_size),
-                src_ip: Some(local_addr.ip()),
-            };
-
-            if let Err(e) = send_state.send((&socket_std).into(), &transmit) {
+            if let Err(e) = send_to(
+                &socket,
+                &out[..total_write],
+                &dst_info.unwrap(),
+                client.max_datagram_size,
+                pacing,
+                enable_gso,
+            ) {
                 if e.kind() == std::io::ErrorKind::WouldBlock {
                     trace!("send() would block");
                     break;

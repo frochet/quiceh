@@ -1421,7 +1421,7 @@ impl HttpConn for Http3Conn {
                 },
 
                 Ok((stream_id, quiceh::h3::Event::Data)) => {
-                    let b = match self.h3_conn.recv_body_v3(
+                    let (b, tot_exp_len) = match self.h3_conn.recv_body_v3(
                         conn,
                         stream_id,
                         app_buffers,
@@ -1432,7 +1432,7 @@ impl HttpConn for Http3Conn {
                                 b.len(), stream_id, tot_exp_len
                             );
 
-                            b
+                            (b, tot_exp_len)
                         },
 
                         Err(quiceh::h3::Error::Done) => panic!("Error::Done"),
@@ -1440,39 +1440,47 @@ impl HttpConn for Http3Conn {
                         Err(e) => panic!("Error reading conn: {:?}", e),
                     };
 
-                    let req = self
-                        .reqs
-                        .iter_mut()
-                        .find(|r| r.stream_id == Some(stream_id))
-                        .unwrap();
+                    // If this condition is not satified, we can conn.recv() more
+                    // before processing what we already have.
+                    // As long as MAX_FLUSH_SIZE < --max-data/2; this is okay.
+                    if b.len() >= crate::client::MAX_FLUSH_SIZE ||
+                        b.len() == tot_exp_len
+                    {
+                        let req = self
+                            .reqs
+                            .iter_mut()
+                            .find(|r| r.stream_id == Some(stream_id))
+                            .unwrap();
 
-                    match &mut req.response_writer {
-                        Some(rw) => {
-                            rw.write_all(b).ok();
-                            self.h3_conn
-                                .body_consumed(
-                                    conn,
-                                    stream_id,
-                                    b.len(),
-                                    app_buffers,
-                                )
-                                .unwrap();
-                        },
-                        None => {
-                            if !self.dump_json {
-                                self.output_sink.borrow_mut()(unsafe {
-                                    std::str::from_utf8_unchecked(b).to_string()
-                                });
-                            }
-                            self.h3_conn
-                                .body_consumed(
-                                    conn,
-                                    stream_id,
-                                    b.len(),
-                                    app_buffers,
-                                )
-                                .unwrap();
-                        },
+                        match &mut req.response_writer {
+                            Some(rw) => {
+                                rw.write_all(b).ok();
+                                self.h3_conn
+                                    .body_consumed(
+                                        conn,
+                                        stream_id,
+                                        b.len(),
+                                        app_buffers,
+                                    )
+                                    .unwrap();
+                            },
+                            None => {
+                                if !self.dump_json {
+                                    self.output_sink.borrow_mut()(unsafe {
+                                        std::str::from_utf8_unchecked(b)
+                                            .to_string()
+                                    });
+                                }
+                                self.h3_conn
+                                    .body_consumed(
+                                        conn,
+                                        stream_id,
+                                        b.len(),
+                                        app_buffers,
+                                    )
+                                    .unwrap();
+                            },
+                        }
                     }
                 },
 

@@ -165,10 +165,12 @@ impl AppRecvBufMap {
     }
 
     pub(crate) fn advance_if_possible(
-        &mut self, stream_id: u64, stream: &mut Stream,
+        &mut self, stream_id: u64,  stream: &mut Stream,
     ) -> Result<()> {
         match self.buffers.entry(stream_id) {
-            hash_map::Entry::Vacant(_v) => Err(Error::AppRecvBufNotFound),
+            hash_map::Entry::Vacant(_v) => {
+                Err(Error::AppRecvBufNotFound)
+            },
             hash_map::Entry::Occupied(v) =>
                 v.into_mut().advance_if_possible(&mut stream.recv),
         }
@@ -304,6 +306,7 @@ impl AppRecvBuf {
     }
 
     pub fn advance_if_possible(&mut self, recv: &mut RecvBuf) -> Result<()> {
+
         let mut max_off = recv.off;
         while recv.ready() {
             // ready() already ensures we have something to pop()
@@ -335,18 +338,14 @@ impl AppRecvBuf {
             if this_offset < recv.contiguous_off {
                 // We have a partial overlap. This could be caused by a
                 // retransmission? Normally this event does not happen;
-                trace!(
-                    "Partial overlap happened -- Could happen if this packet is\
-                received first"
-                );
-                this_len = this_len
-                    .saturating_sub(recv.contiguous_off - recvbufinfo.start_off);
+                trace!("Partial overlap happened -- Could happen if this packet is\
+                received first");
+                this_len = this_len.saturating_sub(recv.contiguous_off - this_offset);
             }
             recv.contiguous_off += this_len;
         }
         Ok(())
     }
-
     /// gives ontiguous bytes as a mutable slice from the stream buffer.
     #[inline]
     pub fn read_mut(&mut self, recv: &mut RecvBuf) -> Result<&mut [u8]> {
