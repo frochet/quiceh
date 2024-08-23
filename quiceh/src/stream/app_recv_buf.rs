@@ -340,7 +340,7 @@ impl AppRecvBuf {
                 // retransmission? Normally this event does not happen;
                 trace!("Partial overlap happened -- Could happen if this packet is\
                 received first");
-                this_len = this_len.saturating_sub(recv.contiguous_off - this_offset);
+                this_len = this_len.saturating_sub(recv.contiguous_off - recvbufinfo.start_off);
             }
             recv.contiguous_off += this_len;
         }
