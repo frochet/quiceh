@@ -1440,40 +1440,15 @@ impl HttpConn for Http3Conn {
                         Err(e) => panic!("Error reading conn: {:?}", e),
                     };
 
-                    let req = self
-                        .reqs
-                        .iter_mut()
-                        .find(|r| r.stream_id == Some(stream_id))
+                    self.h3_conn
+                        .body_consumed(
+                            conn,
+                            stream_id,
+                            b.len(),
+                            app_buffers,
+                            )
                         .unwrap();
 
-                    match &mut req.response_writer {
-                        Some(rw) => {
-                            rw.write_all(b).ok();
-                            self.h3_conn
-                                .body_consumed(
-                                    conn,
-                                    stream_id,
-                                    b.len(),
-                                    app_buffers,
-                                )
-                                .unwrap();
-                        },
-                        None => {
-                            if !self.dump_json {
-                                self.output_sink.borrow_mut()(unsafe {
-                                    std::str::from_utf8_unchecked(b).to_string()
-                                });
-                            }
-                            self.h3_conn
-                                .body_consumed(
-                                    conn,
-                                    stream_id,
-                                    b.len(),
-                                    app_buffers,
-                                )
-                                .unwrap();
-                        },
-                    }
                 },
 
                 Ok((_stream_id, quiceh::h3::Event::Finished)) => {
