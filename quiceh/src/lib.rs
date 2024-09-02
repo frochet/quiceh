@@ -7969,13 +7969,13 @@ impl Connection {
                     // This sucks since it copies; and should be avoided at all
                     // ("let's keep it flexible") cost. (see
                     // comments above).
-                    trace!(
+                    warn!(
                         "Not in order: attaching a copy at offset {}",
                         metadata.off()
                     );
                     metadata.attach_data(Vec::from(data.as_ref()));
                 } else {
-                    trace!("Recv in order. No copy needed");
+                    warn!("Recv in order. No copy needed");
                 }
                 // Maybe this packet allows previously unordered reception
                 // to be appended to the buffer, which would prevent a copy
