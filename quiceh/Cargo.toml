@@ -64,7 +64,7 @@ either = { version = "1.8", default-features = false }
 log = { version = "0.4", features = ["std"] }
 libc = "0.2"
 libm = "0.2"
-ring = { git = "https://github.com/frochet/ring", branch = "b/0.16" }
+ring = { git = "https://github.com/frochet/ring" }
 slab = "0.4"
 once_cell = "1"
 octets_rev = { version = "0.1.0", path = "../octets_rev" }
