@@ -2863,15 +2863,28 @@ impl Connection {
                         let mut offset = s.recv.contiguous_off().saturating_sub(1);
                         offset = packet::decode_pkt_offset(offset, hdr.truncated_offset, hdr.truncated_offset_len);
                         trace!("Decoded offset={}", offset);
-                        offset = outbuf.get_outbuf_offset(offset, payload_len-aead_tag_len, &s.recv).map_err(|e| {
-                            // This could happen if the network flipped some bits in the QUIC
-                            // header.
-                            trace!(
-                            "Dropping packet due to incorrect decoded offset {}, or due to a \
-                             buffer too short with capacity {}", offset, outbuf.outbuf.capacity(),
-                            );
-                            drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
-                        })?;
+                        offset = match outbuf.get_outbuf_offset(offset, payload_len-aead_tag_len, &s.recv) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                // This could happen if the network flipped some bits in the QUIC
+                                // header, or in case of a.
+                                trace!(
+                                "Dropping packet due to incorrect decoded offset {}, or due to a \
+                                 buffer too short with capacity {}", offset, outbuf.outbuf.capacity(),
+                                );
+
+                                // In case of a spurious pkt containing a stream frame, we still have
+                                // to ack it:
+
+                                self.pkt_num_spaces[epoch].recv_pkt_num.insert(pn);
+                                self.pkt_num_spaces[epoch].recv_pkt_need_ack.push_item(pn);
+                                self.pkt_num_spaces[epoch].ack_elicited = true;
+                                self.pkt_num_spaces[epoch].largest_rx_pkt_num =
+                                    cmp::max(self.pkt_num_spaces[epoch].largest_rx_pkt_num, pn);
+
+                                return Err(drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id))
+                            }
+                        };
                         let oct_out = octets_rev::OctetsMut::with_slice(&mut outbuf.get_mut()[offset as usize..]);
                         Some(oct_out)
                     },
@@ -2907,6 +2920,9 @@ impl Connection {
                                 // This could happen if the network flipped some bits in the
                                 // QUIC header. Let's clean the memory for that stream, and drop
                                 // the packet.
+                                //
+                                // This cannot happen if it is a legit spurious retransmission
+                                // so we don't touch acks.
                                 self.streams.collect_on_recv_error(hdr.expected_stream_id);
                                 app_buffers.collect(hdr.expected_stream_id);
                                 return Err(drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id));
@@ -9948,13 +9964,23 @@ pub mod testing {
                         let outbuf = app_buffers.get_or_create_stream_buffer(hdr.expected_stream_id)?;
                         let mut offset = s.recv.contiguous_off().saturating_sub(1);
                         offset = packet::decode_pkt_offset(offset, hdr.truncated_offset, hdr.truncated_offset_len);
-                        offset = outbuf.get_outbuf_offset(offset, payload_len-aead.alg().tag_len(), &s.recv)
-                            .map_err(|e| {
-                            // This could happen if the network flipped some bits in the
-                            // header. Or in case of aggressive retransmission, lost ack, data
-                            // duplication.
-                            drop_pkt_on_err(e, conn.recv_count, conn.is_server, &conn.trace_id)
-                        })?;
+                        offset = match outbuf.get_outbuf_offset(offset, payload_len-aead.alg().tag_len(), &s.recv)
+                            {
+                            Ok(v) => v,
+                            Err(e) => {
+
+                                // This could happen if the network flipped some bits in the
+                                // header. Or in case of aggressive retransmission, lost ack, data
+                                // duplication.
+                                // We need to ack any potential stream frame.
+                                conn.pkt_num_spaces[epoch].recv_pkt_num.insert(pn);
+                                conn.pkt_num_spaces[epoch].recv_pkt_need_ack.push_item(pn);
+                                conn.pkt_num_spaces[epoch].ack_elicited = true;
+                                conn.pkt_num_spaces[epoch].largest_rx_pkt_num =
+                                    cmp::max(conn.pkt_num_spaces[epoch].largest_rx_pkt_num, pn);
+                                return Err(drop_pkt_on_err(e, conn.recv_count, conn.is_server, &conn.trace_id))
+                            }
+                        };
                         let oct_out = octets_rev::OctetsMut::with_slice(&mut outbuf.get_mut()[offset as usize..]);
                         Some(oct_out)
                     }
