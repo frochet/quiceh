@@ -332,7 +332,7 @@ impl AppRecvBuf {
                     this_offset as usize + recvbufinfo.len]
                     .copy_from_slice(&buf[..recvbufinfo.len]);
             }
-            if this_offset < recv.contiguous_off {
+            if recvbufinfo.start_off < recv.contiguous_off {
                 // We have a partial overlap. This could be caused by a
                 // retransmission? Normally this event does not happen;
                 trace!(
