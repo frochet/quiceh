@@ -411,3 +411,21 @@ Copyright (C) 2018-2019, Cloudflare, Inc.
 See [COPYING] for the license.
 
 [COPYING]: https://github.com/frochet/quiceh/tree/protocol_reverso/COPYING
+
+[`Config`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html
+[`AppRecvBufMap`]: https://docs.rs/quiceh/latest/quiceh/struct.AppRecvBufMap.html
+[`recv`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.recv
+[`stream_recv_v3`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.stream_recv_v3
+[`set_initial_max_streams_bidi()`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html#method.set_initial_max_streams_bidi
+[`set_initial_max_streams_uni()`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html#method.set_initial_max_streams_uni
+[`set_initial_max_data()`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html#method.set_initial_max_data
+[`set_initial_max_stream_data_bidi_local()`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html#method.set_initial_max_stream_data_bidi_local
+[`set_initial_max_stream_data_bidi_remote()`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html#method.set_initial_max_stream_data_bidi_remote
+[`set_initial_max_stream_data_uni()`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html#method.set_initial_max_stream_data_uni
+[`with_boring_ssl_ctx_builder()`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html#method.with_boring_ssl_ctx_builder
+[`send()`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.send
+[`timeout()`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.timeout
+[`on_timeout()`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.on_timeout
+[`SendInfo`]: https://docs.rs/quiceh/latest/quiceh/struct.SendInfo.html
+[`at`]: https://docs.rs/quiceh/latest/quiceh/struct.SendInfo.html#structfield.at
+
