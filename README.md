@@ -17,11 +17,11 @@ Details on why/how QUIC VReverso implementations are expected to be more
 efficient than QUIC V1 implementations can be read on the blogpost which
 we made available through QUIC V1 and QUIC VReverso.  
 
-[post]: https://todo
+(todo: under work)
 
 Even more details are availbale in the academic paper, on .pdf:
 
-[paper]: https://todo
+[Reverso paper](https://arxiv.org/abs/2409.07138)
 
 The most desirable outcome is that this proposal eventually makes it to
 the official QUIC design, and QUIC implementations eventually take
@@ -392,7 +392,7 @@ These two commits on the top of
 
 If you use this code in your research, please cite the following paper:  
 
-todo  
+[Reverso](https://arxiv.org/abs/2409.07138) 
 
 You may also cite this repository seperately:  
 
