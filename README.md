@@ -17,7 +17,7 @@ Details on why/how QUIC VReverso implementations are expected to be more
 efficient than QUIC V1 implementations can be read on the blogpost which
 we made available through QUIC V1 and QUIC VReverso.  
 
-(todo: under work)
+[https://reverso.info.unamur.be](https://reverso.info.unamur.be)
 
 Even more details are availbale in the academic paper, on .pdf:
 
