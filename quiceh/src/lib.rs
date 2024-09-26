@@ -2866,21 +2866,40 @@ impl Connection {
                         offset = match outbuf.get_outbuf_offset(offset, payload_len-aead_tag_len, &s.recv) {
                             Ok(v) => v,
                             Err(e) => {
-                                // This could happen if the network flipped some bits in the QUIC
-                                // header, or in case of a.
-                                trace!(
-                                "Dropping packet due to incorrect decoded offset {}, or due to a \
-                                 buffer too short with capacity {}", offset, outbuf.outbuf.capacity(),
-                                );
+                                // This could happen if the network flipped some bits in the
+                                // header. Or in case of a retransmission of data that is already
+                                // into the Application's contiguous buffer.
+                                //
+                                // We need to check for integrity of pn and header data before
+                                // acking it.
+                                //
+                                // XXX we only need to check the tag.
+                                match packet::decrypt_pkt(
+                                    &mut b,
+                                    pn,
+                                    enc_hdr_len,
+                                    payload_len,
+                                    aead
+                                ) {
+                                    Ok(_v) => {
+                                        trace!(
+                                            "Dropping a legit packet due to incorrect decoded offset {}, or due to a \
+                                             buffer too short with capacity {}", offset, outbuf.outbuf.capacity(),
+                                        );
+                                        self.pkt_num_spaces[epoch].recv_pkt_num.insert(pn);
+                                        self.pkt_num_spaces[epoch].recv_pkt_need_ack.push_item(pn);
+                                        self.pkt_num_spaces[epoch].ack_elicited = true;
+                                        self.pkt_num_spaces[epoch].largest_rx_pkt_num =
+                                            cmp::max(self.pkt_num_spaces[epoch].largest_rx_pkt_num, pn);
 
-                                // In case of a spurious pkt containing a stream frame, we still have
-                                // to ack it:
+                                    }
+                                    Err(_e) => {
+                                        trace!(
+                                            "We failed to decrypt a packet for which an incorrect offset has been delivery_rate_check_if_app_limited"
+                                        );
+                                    }
 
-                                self.pkt_num_spaces[epoch].recv_pkt_num.insert(pn);
-                                self.pkt_num_spaces[epoch].recv_pkt_need_ack.push_item(pn);
-                                self.pkt_num_spaces[epoch].ack_elicited = true;
-                                self.pkt_num_spaces[epoch].largest_rx_pkt_num =
-                                    cmp::max(self.pkt_num_spaces[epoch].largest_rx_pkt_num, pn);
+                                }
 
                                 return Err(drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id))
                             }
@@ -9969,10 +9988,6 @@ pub mod testing {
                             Ok(v) => v,
                             Err(e) => {
 
-                                // This could happen if the network flipped some bits in the
-                                // header. Or in case of aggressive retransmission, lost ack, data
-                                // duplication.
-                                // We need to ack any potential stream frame.
                                 conn.pkt_num_spaces[epoch].recv_pkt_num.insert(pn);
                                 conn.pkt_num_spaces[epoch].recv_pkt_need_ack.push_item(pn);
                                 conn.pkt_num_spaces[epoch].ack_elicited = true;
