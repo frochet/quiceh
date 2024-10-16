@@ -3,11 +3,58 @@ use criterion::measurement::Measurement;
 use criterion::measurement::ValueFormatter;
 use criterion::Throughput;
 use std::time::Duration;
+use quiceh::BufFactory;
+use quiceh::BufSplit;
 
 const NANOS_PER_SEC: u64 = 1_000_000_000;
 
-/// Keeps track of QUIC streams and enforces stream limits.
+#[derive(Debug, Clone, Default)]
+pub struct BenchBufFactory;
 
+#[derive(Debug, Clone, Default)]
+pub struct BenchBuf(Box<[u8]>);
+
+impl BufFactory for BenchBufFactory {
+
+    type Buf = BenchBuf;
+
+    fn buf_from_slice(buf: &[u8]) -> Self::Buf {
+        BenchBuf(buf.into())
+    }
+}
+
+impl AsRef<[u8]> for BenchBuf {
+
+    fn as_ref(&self) -> &[u8] {
+        &self.0[..]
+    }
+}
+
+impl BufSplit for BenchBuf {
+    fn split_at(&mut self, at: usize) -> Self {
+        let len = self.0.len();
+        assert!(at <= len, "split index out of bounds");
+
+        let ptr = self.0.as_mut_ptr();
+
+        let remaining = unsafe {
+            let remaining_ptr = ptr.add(at);
+            let remaining_len = len - at;
+
+            // Create a new Box<[u8]> for the remaining bytes.
+            let remaining_slice = std::slice::from_raw_parts_mut(remaining_ptr, remaining_len);
+            Box::from_raw(remaining_slice)
+        };
+
+        unsafe {
+            self.0 = Box::from_raw(std::slice::from_raw_parts_mut(ptr, at));
+        }
+
+        BenchBuf(remaining)
+    }
+}
+
+/// Keeps track of QUIC streams and enforces stream limits.
 pub struct CPUTime;
 impl Measurement for CPUTime {
     type Intermediate = ProcessTime;

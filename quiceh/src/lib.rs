@@ -1677,10 +1677,10 @@ where
 /// # Ok::<(), quiceh::Error>(())
 /// ```
 #[inline]
-pub fn accept(
+pub fn accept<F: BufFactory>(
     scid: &ConnectionId, odcid: Option<&ConnectionId>, local: SocketAddr,
     peer: SocketAddr, config: &mut Config,
-) -> Result<Connection> {
+) -> Result<Connection<F>> {
     let conn = Connection::new(scid, odcid, local, peer, config, true)?;
 
     Ok(conn)
@@ -1720,10 +1720,10 @@ pub fn accept_with_buf_factory<F: BufFactory>(
 /// # Ok::<(), quiceh::Error>(())
 /// ```
 #[inline]
-pub fn connect(
+pub fn connect<F: BufFactory>(
     server_name: Option<&str>, scid: &ConnectionId, local: SocketAddr,
     peer: SocketAddr, config: &mut Config,
-) -> Result<Connection> {
+) -> Result<Connection<F>> {
     let mut conn = Connection::new(scid, None, local, peer, config, false)?;
 
     if let Some(server_name) = server_name {
@@ -9436,15 +9436,18 @@ impl TransportParams {
 pub mod testing {
     use super::*;
 
-    pub struct Pipe {
-        pub client: Connection,
-        pub server: Connection,
+    pub struct Pipe<F = DefaultBufFactory>
+    where
+        F: BufFactory
+    {
+        pub client: Connection<F>,
+        pub server: Connection<F>,
         pub client_app_buffers: AppRecvBufMap,
         pub server_app_buffers: AppRecvBufMap,
     }
 
-    impl Pipe {
-        pub fn new() -> Result<Pipe> {
+    impl<F: BufFactory> Pipe<F> {
+        pub fn new() -> Result<Pipe<F>> {
             let mut config = Config::new(crate::PROTOCOL_VERSION)?;
             config.load_cert_chain_from_pem_file("examples/cert.crt")?;
             config.load_priv_key_from_pem_file("examples/cert.key")?;
@@ -9470,16 +9473,16 @@ pub mod testing {
             "127.0.0.1:4321".parse().unwrap()
         }
 
-        pub fn with_config(config: &mut Config) -> Result<Pipe> {
+        pub fn with_config(config: &mut Config) -> Result<Pipe<F>> {
             let mut client_scid = [0; 16];
             rand::rand_bytes(&mut client_scid[..]);
             let client_scid = ConnectionId::from_ref(&client_scid);
-            let client_addr = Pipe::client_addr();
+            let client_addr = Pipe::<F>::client_addr();
 
             let mut server_scid = [0; 16];
             rand::rand_bytes(&mut server_scid[..]);
             let server_scid = ConnectionId::from_ref(&server_scid);
-            let server_addr = Pipe::server_addr();
+            let server_addr = Pipe::<F>::server_addr();
 
             let mut client_app_buffers =
                 AppRecvBufMap::new(3, stream::MAX_STREAM_WINDOW, 1000, 1000);
@@ -9514,16 +9517,16 @@ pub mod testing {
 
         pub fn with_config_and_scid_lengths(
             config: &mut Config, client_scid_len: usize, server_scid_len: usize,
-        ) -> Result<Pipe> {
+        ) -> Result<Pipe<F>> {
             let mut client_scid = vec![0; client_scid_len];
             rand::rand_bytes(&mut client_scid[..]);
             let client_scid = ConnectionId::from_ref(&client_scid);
-            let client_addr = Pipe::client_addr();
+            let client_addr = Pipe::<F>::client_addr();
 
             let mut server_scid = vec![0; server_scid_len];
             rand::rand_bytes(&mut server_scid[..]);
             let server_scid = ConnectionId::from_ref(&server_scid);
-            let server_addr = Pipe::server_addr();
+            let server_addr = Pipe::<F>::server_addr();
 
             Ok(Pipe {
                 client: connect(
@@ -9555,16 +9558,16 @@ pub mod testing {
             })
         }
 
-        pub fn with_client_config(client_config: &mut Config) -> Result<Pipe> {
+        pub fn with_client_config(client_config: &mut Config) -> Result<Pipe<F>> {
             let mut client_scid = [0; 16];
             rand::rand_bytes(&mut client_scid[..]);
             let client_scid = ConnectionId::from_ref(&client_scid);
-            let client_addr = Pipe::client_addr();
+            let client_addr = Pipe::<F>::client_addr();
 
             let mut server_scid = [0; 16];
             rand::rand_bytes(&mut server_scid[..]);
             let server_scid = ConnectionId::from_ref(&server_scid);
-            let server_addr = Pipe::server_addr();
+            let server_addr = Pipe::<F>::server_addr();
 
             let mut config = Config::new(crate::PROTOCOL_VERSION)?;
             config.load_cert_chain_from_pem_file("examples/cert.crt")?;
@@ -9607,16 +9610,16 @@ pub mod testing {
             })
         }
 
-        pub fn with_server_config(server_config: &mut Config) -> Result<Pipe> {
+        pub fn with_server_config(server_config: &mut Config) -> Result<Pipe<F>> {
             let mut client_scid = [0; 16];
             rand::rand_bytes(&mut client_scid[..]);
             let client_scid = ConnectionId::from_ref(&client_scid);
-            let client_addr = Pipe::client_addr();
+            let client_addr = Pipe::<F>::client_addr();
 
             let mut server_scid = [0; 16];
             rand::rand_bytes(&mut server_scid[..]);
             let server_scid = ConnectionId::from_ref(&server_scid);
-            let server_addr = Pipe::server_addr();
+            let server_addr = Pipe::<F>::server_addr();
 
             let mut config = Config::new(crate::PROTOCOL_VERSION)?;
             config.set_application_protos(&[b"proto1", b"proto2"])?;
@@ -9659,16 +9662,16 @@ pub mod testing {
 
         pub fn with_client_and_server_config(
             client_config: &mut Config, server_config: &mut Config,
-        ) -> Result<Pipe> {
+        ) -> Result<Pipe<F>> {
             let mut client_scid = [0; 16];
             rand::rand_bytes(&mut client_scid[..]);
             let client_scid = ConnectionId::from_ref(&client_scid);
-            let client_addr = Pipe::client_addr();
+            let client_addr = Pipe::<F>::client_addr();
 
             let mut server_scid = [0; 16];
             rand::rand_bytes(&mut server_scid[..]);
             let server_scid = ConnectionId::from_ref(&server_scid);
-            let server_addr = Pipe::server_addr();
+            let server_addr = Pipe::<F>::server_addr();
 
             Ok(Pipe {
                 client: connect(
@@ -9860,8 +9863,8 @@ pub mod testing {
         Ok(off)
     }
 
-    pub fn process_flight(
-        conn: &mut Connection, app_buffers: &mut AppRecvBufMap,
+    pub fn process_flight<F: BufFactory>(
+        conn: &mut Connection<F>, app_buffers: &mut AppRecvBufMap,
         flight: Vec<(Vec<u8>, SendInfo)>,
     ) -> Result<()> {
         for (mut pkt, si) in flight {
@@ -9875,8 +9878,8 @@ pub mod testing {
         Ok(())
     }
 
-    pub fn emit_flight_with_max_buffer(
-        conn: &mut Connection, out_size: usize, from: Option<SocketAddr>,
+    pub fn emit_flight_with_max_buffer<F: BufFactory>(
+        conn: &mut Connection<F>, out_size: usize, from: Option<SocketAddr>,
         to: Option<SocketAddr>,
     ) -> Result<Vec<(Vec<u8>, SendInfo)>> {
         let mut flight = Vec::new();
@@ -9905,20 +9908,20 @@ pub mod testing {
         Ok(flight)
     }
 
-    pub fn emit_flight_on_path(
-        conn: &mut Connection, from: Option<SocketAddr>, to: Option<SocketAddr>,
+    pub fn emit_flight_on_path<F: BufFactory>(
+        conn: &mut Connection<F>, from: Option<SocketAddr>, to: Option<SocketAddr>,
     ) -> Result<Vec<(Vec<u8>, SendInfo)>> {
         emit_flight_with_max_buffer(conn, 65535, from, to)
     }
 
-    pub fn emit_flight(
-        conn: &mut Connection,
+    pub fn emit_flight<F: BufFactory>(
+        conn: &mut Connection<F>,
     ) -> Result<Vec<(Vec<u8>, SendInfo)>> {
         emit_flight_on_path(conn, None, None)
     }
 
-    pub fn encode_pkt(
-        conn: &mut Connection, pkt_type: packet::Type, frames: &[frame::Frame],
+    pub fn encode_pkt<F: BufFactory>(
+        conn: &mut Connection<F>, pkt_type: packet::Type, frames: &[frame::Frame],
         buf: &mut [u8],
     ) -> Result<usize> {
         let mut b = octets_rev::OctetsMut::with_slice(buf);
@@ -10029,8 +10032,8 @@ pub mod testing {
         Ok(written)
     }
 
-    pub fn decode_pkt(
-        conn: &mut Connection, buf: &mut [u8], app_buffers: &mut AppRecvBufMap,
+    pub fn decode_pkt<F: BufFactory>(
+        conn: &mut Connection<F>, buf: &mut [u8], app_buffers: &mut AppRecvBufMap,
     ) -> Result<Vec<frame::Frame>> {
         let mut b = octets_rev::OctetsMut::with_slice(buf);
 
@@ -15234,7 +15237,7 @@ mod tests {
         pipe.server = accept(
             &scid,
             Some(&odcid),
-            testing::Pipe::server_addr(),
+            testing::Pipe::<F>::server_addr(),
             from,
             &mut config,
         )
@@ -15295,7 +15298,7 @@ mod tests {
         // destination connection ID is ignored.
         let from = "127.0.0.1:1234".parse().unwrap();
         pipe.server =
-            accept(&scid, None, testing::Pipe::server_addr(), from, &mut config)
+            accept(&scid, None, testing::Pipe::<F>::server_addr(), from, &mut config)
                 .unwrap();
         assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
 
@@ -15362,7 +15365,7 @@ mod tests {
         pipe.server = accept(
             &scid,
             Some(&odcid),
-            testing::Pipe::server_addr(),
+            testing::Pipe::<F>::server_addr(),
             from,
             &mut config,
         )
@@ -19022,7 +19025,7 @@ mod tests {
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
 
-        let server_addr = testing::Pipe::server_addr();
+        let server_addr = testing::Pipe::<F>::server_addr();
         let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
 
         // We cannot probe a new path if there are not enough identifiers.
@@ -19106,7 +19109,7 @@ mod tests {
 
         let mut pipe = pipe_with_exchanged_cids(&mut config, 16, 16, 1);
 
-        let server_addr = testing::Pipe::server_addr();
+        let server_addr = testing::Pipe::<F>::server_addr();
         let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
         assert_eq!(pipe.client.probe_path(client_addr_2, server_addr), Ok(1));
 
@@ -19171,7 +19174,7 @@ mod tests {
 
         let mut pipe = pipe_with_exchanged_cids(&mut config, 16, 16, 1);
 
-        let server_addr = testing::Pipe::server_addr();
+        let server_addr = testing::Pipe::<F>::server_addr();
         let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
         assert_eq!(pipe.client.probe_path(client_addr_2, server_addr), Ok(1));
 
@@ -19263,7 +19266,7 @@ mod tests {
 
         let mut pipe = pipe_with_exchanged_cids(&mut config, 16, 16, 1);
 
-        let server_addr = testing::Pipe::server_addr();
+        let server_addr = testing::Pipe::<F>::server_addr();
         let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
         assert_eq!(pipe.client.probe_path(client_addr_2, server_addr), Ok(1));
         // Limited MTU of 1199 bytes for some reason.
@@ -19318,7 +19321,7 @@ mod tests {
 
         let mut pipe = pipe_with_exchanged_cids(&mut config, 16, 16, 1);
 
-        let server_addr = testing::Pipe::server_addr();
+        let server_addr = testing::Pipe::<F>::server_addr();
         let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
         assert_eq!(pipe.client.probe_path(client_addr_2, server_addr), Ok(1));
 
@@ -19387,7 +19390,7 @@ mod tests {
         config.set_active_connection_id_limit(2);
 
         let mut pipe = pipe_with_exchanged_cids(&mut config, 16, 16, 1);
-        let server_addr = testing::Pipe::server_addr();
+        let server_addr = testing::Pipe::<F>::server_addr();
         let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
         assert_eq!(pipe.client.probe_path(client_addr_2, server_addr), Ok(1));
 
@@ -19415,8 +19418,8 @@ mod tests {
 
         let mut pipe = pipe_with_exchanged_cids(&mut config, 16, 16, 3);
 
-        let server_addr = testing::Pipe::server_addr();
-        let client_addr = testing::Pipe::client_addr();
+        let server_addr = testing::Pipe::<F>::server_addr();
+        let client_addr = testing::Pipe::<F>::client_addr();
         let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
         assert_eq!(pipe.client.probe_path(client_addr_2, server_addr), Ok(1));
 
@@ -19624,7 +19627,7 @@ mod tests {
 
         let mut pipe = pipe_with_exchanged_cids(&mut config, 16, 16, 2);
 
-        let server_addr = testing::Pipe::server_addr();
+        let server_addr = testing::Pipe::<F>::server_addr();
         let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
         let client_addr_3 = "127.0.0.1:9012".parse().unwrap();
         let client_addr_4 = "127.0.0.1:8908".parse().unwrap();
@@ -19837,7 +19840,7 @@ mod tests {
 
         let mut pipe = pipe_with_exchanged_cids(&mut config, 0, 16, 1);
 
-        let server_addr = testing::Pipe::server_addr();
+        let server_addr = testing::Pipe::<F>::server_addr();
         let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
 
         // The client migrates on a path that was not previously
@@ -19914,8 +19917,8 @@ mod tests {
 
         let mut pipe = pipe_with_exchanged_cids(&mut config, 16, 16, 1);
 
-        let client_addr = testing::Pipe::client_addr();
-        let server_addr = testing::Pipe::server_addr();
+        let client_addr = testing::Pipe::<F>::client_addr();
+        let server_addr = testing::Pipe::<F>::server_addr();
         let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
 
         assert_eq!(pipe.client.probe_path(client_addr_2, server_addr), Ok(1));
@@ -19994,8 +19997,8 @@ mod tests {
 
         let mut pipe = pipe_with_exchanged_cids(&mut config, 16, 16, 1);
 
-        let client_addr = testing::Pipe::client_addr();
-        let server_addr = testing::Pipe::server_addr();
+        let client_addr = testing::Pipe::<F>::client_addr();
+        let server_addr = testing::Pipe::<F>::server_addr();
         let spoofed_client_addr = "127.0.0.1:6666".parse().unwrap();
 
         const DATA_BYTES: usize = 24000;
@@ -20522,7 +20525,7 @@ mod tests {
         }
         assert_eq!(pipe.advance(), Ok(()));
 
-        let server_addr = testing::Pipe::server_addr();
+        let server_addr = testing::Pipe::<F>::server_addr();
         let client_addr_2 = "127.0.0.1:5678".parse().unwrap();
 
         // Client probes path before sending CIDs (simulating race condition)
@@ -20619,8 +20622,8 @@ mod tests {
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
 
-        let server_addr = testing::Pipe::server_addr();
-        let client_addr = testing::Pipe::client_addr();
+        let server_addr = testing::Pipe::<F>::server_addr();
+        let client_addr = testing::Pipe::<F>::client_addr();
         let pid_1 = pipe
             .server
             .paths
@@ -20665,8 +20668,8 @@ mod tests {
         let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
 
-        let server_addr = testing::Pipe::server_addr();
-        let client_addr = testing::Pipe::client_addr();
+        let server_addr = testing::Pipe::<F>::server_addr();
+        let client_addr = testing::Pipe::<F>::client_addr();
         let pid_1 = pipe
             .server
             .paths
