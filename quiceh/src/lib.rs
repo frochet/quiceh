@@ -9438,7 +9438,7 @@ pub mod testing {
 
     pub struct Pipe<F = DefaultBufFactory>
     where
-        F: BufFactory
+        F: BufFactory,
     {
         pub client: Connection<F>,
         pub server: Connection<F>,
@@ -9824,8 +9824,8 @@ pub mod testing {
     }
 
     pub fn recv_send<F: BufFactory>(
-        conn: &mut Connection<F>, app_buffers: &mut AppRecvBufMap, buf: &mut [u8],
-        len: usize, stream_id: Option<u64>,
+        conn: &mut Connection<F>, app_buffers: &mut AppRecvBufMap,
+        buf: &mut [u8], len: usize, stream_id: Option<u64>,
     ) -> Result<usize> {
         let active_path = conn.paths.get_active()?;
         let info = RecvInfo {
@@ -9909,7 +9909,8 @@ pub mod testing {
     }
 
     pub fn emit_flight_on_path<F: BufFactory>(
-        conn: &mut Connection<F>, from: Option<SocketAddr>, to: Option<SocketAddr>,
+        conn: &mut Connection<F>, from: Option<SocketAddr>,
+        to: Option<SocketAddr>,
     ) -> Result<Vec<(Vec<u8>, SendInfo)>> {
         emit_flight_with_max_buffer(conn, 65535, from, to)
     }
@@ -9921,8 +9922,8 @@ pub mod testing {
     }
 
     pub fn encode_pkt<F: BufFactory>(
-        conn: &mut Connection<F>, pkt_type: packet::Type, frames: &[frame::Frame],
-        buf: &mut [u8],
+        conn: &mut Connection<F>, pkt_type: packet::Type,
+        frames: &[frame::Frame], buf: &mut [u8],
     ) -> Result<usize> {
         let mut b = octets_rev::OctetsMut::with_slice(buf);
 
@@ -15297,9 +15298,14 @@ mod tests {
         // Server accepts connection and send first flight. But original
         // destination connection ID is ignored.
         let from = "127.0.0.1:1234".parse().unwrap();
-        pipe.server =
-            accept(&scid, None, testing::Pipe::<F>::server_addr(), from, &mut config)
-                .unwrap();
+        pipe.server = accept(
+            &scid,
+            None,
+            testing::Pipe::<F>::server_addr(),
+            from,
+            &mut config,
+        )
+        .unwrap();
         assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
 
         let flight = testing::emit_flight(&mut pipe.server).unwrap();
@@ -20708,9 +20714,9 @@ pub use crate::recovery::CongestionControlAlgorithm;
 
 pub use crate::stream::StreamIter;
 
-pub use crate::stream::app_recv_buf::AppRecvBufMap;
 pub use crate::range_buf::BufFactory;
 pub use crate::range_buf::BufSplit;
+pub use crate::stream::app_recv_buf::AppRecvBufMap;
 
 mod cid;
 mod crypto;

@@ -2,9 +2,9 @@ use cpu_time::ProcessTime;
 use criterion::measurement::Measurement;
 use criterion::measurement::ValueFormatter;
 use criterion::Throughput;
-use std::time::Duration;
 use quiceh::BufFactory;
 use quiceh::BufSplit;
+use std::time::Duration;
 
 const NANOS_PER_SEC: u64 = 1_000_000_000;
 
@@ -15,7 +15,6 @@ pub struct BenchBufFactory;
 pub struct BenchBuf(Box<[u8]>);
 
 impl BufFactory for BenchBufFactory {
-
     type Buf = BenchBuf;
 
     fn buf_from_slice(buf: &[u8]) -> Self::Buf {
@@ -24,7 +23,6 @@ impl BufFactory for BenchBufFactory {
 }
 
 impl AsRef<[u8]> for BenchBuf {
-
     fn as_ref(&self) -> &[u8] {
         &self.0[..]
     }
@@ -32,25 +30,15 @@ impl AsRef<[u8]> for BenchBuf {
 
 impl BufSplit for BenchBuf {
     fn split_at(&mut self, at: usize) -> Self {
-        let len = self.0.len();
-        assert!(at <= len, "split index out of bounds");
-
-        let ptr = self.0.as_mut_ptr();
-
-        let remaining = unsafe {
-            let remaining_ptr = ptr.add(at);
-            let remaining_len = len - at;
-
-            // Create a new Box<[u8]> for the remaining bytes.
-            let remaining_slice = std::slice::from_raw_parts_mut(remaining_ptr, remaining_len);
-            Box::from_raw(remaining_slice)
-        };
-
-        unsafe {
-            self.0 = Box::from_raw(std::slice::from_raw_parts_mut(ptr, at));
-        }
-
-        BenchBuf(remaining)
+        // There is enough capacity in the stream send buffer for the simple
+        // bench of 10 QUIC packets we run. This function is then never called
+        // internally in quiceh.
+        //
+        // Should we implement a bench test case that 1) send more than what the
+        // stream's capacity can do, 2) process ack packets from the peer,
+        // 3) send more. This would however capture some of the cost of
+        // the receive path as well.
+        unimplemented!();
     }
 }
 

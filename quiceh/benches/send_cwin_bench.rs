@@ -13,30 +13,42 @@ use quiceh::BufSplit;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
-fn bench_stream_send(pipe: &mut Pipe, sendbuf: &[u8], outbuf: &mut[u8]) {
+fn bench_stream_send(pipe: &mut Pipe, sendbuf: &[u8], outbuf: &mut [u8]) {
     pipe.client.stream_send(4, sendbuf, true).unwrap();
-    let (write, send_info) = pipe.client.send_on_path(outbuf, None, None).unwrap();
+    let (write, send_info) =
+        pipe.client.send_on_path(outbuf, None, None).unwrap();
     black_box(outbuf);
     black_box(write);
     black_box(send_info);
 }
 
-fn bench_stream_send_zc<F: BufFactory<Buf = BenchBuf>>(pipe: &mut Pipe<F>, outbuf: &mut[u8])
-where
-    <F as BufFactory>::Buf: BufSplit
+fn bench_stream_send_zc<F: BufFactory<Buf = BenchBuf>>(
+    pipe: &mut Pipe<F>, outbuf: &mut [u8],
+) where
+    <F as BufFactory>::Buf: BufSplit,
 {
     let sendbuf: Vec<u8> = Vec::with_capacity(10000);
-    pipe.client.stream_send_zc(4, BenchBufFactory::buf_from_slice(&sendbuf), Some(10000), true).unwrap();
-    let (write, send_info) = pipe.client.send_on_path(outbuf, None, None).unwrap();
+    pipe.client
+        .stream_send_zc(
+            4,
+            BenchBufFactory::buf_from_slice(&sendbuf),
+            Some(10000),
+            true,
+        )
+        .unwrap();
+    let (write, send_info) =
+        pipe.client.send_on_path(outbuf, None, None).unwrap();
     black_box(outbuf);
     black_box(write);
     black_box(send_info);
 }
 
 fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
-
-    let mut config = quiceh::Config::new(quiceh::PROTOCOL_VERSION_VREVERSO).unwrap();
-    config.set_application_protos(&[b"proto1", b"proto2"]).unwrap();
+    let mut config =
+        quiceh::Config::new(quiceh::PROTOCOL_VERSION_VREVERSO).unwrap();
+    config
+        .set_application_protos(&[b"proto1", b"proto2"])
+        .unwrap();
     config
         .load_cert_chain_from_pem_file("examples/cert.crt")
         .unwrap();
@@ -71,27 +83,27 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
                     pipe.handshake().unwrap();
                     (pipe, sendbuf, outbuf)
                 },
-                |(ref mut pipe, sendbuf, outbuf)| bench_stream_send(pipe, sendbuf, outbuf),
+                |(ref mut pipe, sendbuf, outbuf)| {
+                    bench_stream_send(pipe, sendbuf, outbuf)
+                },
                 BatchSize::SmallInput,
             )
         },
     );
 
-    group.bench_function(
-        BenchmarkId::new("zerocopy_send_path", 10000),
-        |b| {
-            b.iter_batched_ref(
-                || {
-                    let mut pipe = Pipe::<BenchBufFactory>::with_config(&mut config).unwrap();
-                    let outbuf = vec![0; 65535];
-                    pipe.handshake().unwrap();
-                    (pipe, outbuf)
-                },
-                |(ref mut pipe, outbuf)| bench_stream_send_zc(pipe, outbuf),
-                BatchSize::SmallInput,
-            )
-        },
-    );
+    group.bench_function(BenchmarkId::new("zerocopy_send_path", 10000), |b| {
+        b.iter_batched_ref(
+            || {
+                let mut pipe =
+                    Pipe::<BenchBufFactory>::with_config(&mut config).unwrap();
+                let outbuf = vec![0; 65535];
+                pipe.handshake().unwrap();
+                (pipe, outbuf)
+            },
+            |(ref mut pipe, outbuf)| bench_stream_send_zc(pipe, outbuf),
+            BatchSize::SmallInput,
+        )
+    });
 
     group.finish();
 }

@@ -27,6 +27,8 @@
 use crate::args::*;
 use crate::common::*;
 use quiceh::AppRecvBufMap;
+use quiceh::BufFactory;
+use quiceh::BufSplit;
 
 use std::cell::RefCell;
 use std::io::prelude::*;
@@ -52,10 +54,13 @@ pub enum ClientError {
     Other(String),
 }
 
-pub fn connect(
+pub fn connect<F: BufFactory<Buf = BufResponse>>(
     args: ClientArgs, conn_args: CommonArgs,
     output_sink: impl FnMut(String) + 'static,
-) -> Result<(), ClientError> {
+) -> Result<(), ClientError>
+where
+    <F as BufFactory>::Buf: BufSplit,
+{
     let mut buf = [0; 65536 * BATCH_SIZE];
     let mut out = [0; MAX_DATAGRAM_SIZE];
 
@@ -176,7 +181,7 @@ pub fn connect(
         config.enable_dgram(true, 1000, 1000);
     }
 
-    let mut http_conn: Option<Box<dyn HttpConn>> = None;
+    let mut http_conn: Option<Box<dyn HttpConn<F>>> = None;
 
     let mut app_proto_selected = false;
 

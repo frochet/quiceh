@@ -137,7 +137,7 @@ impl Args for CommonArgs {
 
         let early_data = args.get_bool("--early-data");
 
-        let dump_packet_path = if args.get_str("--dump-packets") != "" {
+        let dump_packet_path = if !args.get_str("--dump-packets").is_empty() {
             Some(args.get_str("--dump-packets").to_string())
         } else {
             None
@@ -155,7 +155,7 @@ impl Args for CommonArgs {
         let enable_active_migration = args.get_bool("--enable-active-migration");
 
         let max_field_section_size =
-            if args.get_str("--max-field-section-size") != "" {
+            if !args.get_str("--max-field-section-size").is_empty() {
                 Some(
                     args.get_str("--max-field-section-size")
                         .parse::<u64>()
@@ -166,7 +166,7 @@ impl Args for CommonArgs {
             };
 
         let qpack_max_table_capacity =
-            if args.get_str("--qpack-max-table-capacity") != "" {
+            if !args.get_str("--qpack-max-table-capacity").is_empty() {
                 Some(
                     args.get_str("--qpack-max-table-capacity")
                         .parse::<u64>()
@@ -177,7 +177,7 @@ impl Args for CommonArgs {
             };
 
         let qpack_blocked_streams =
-            if args.get_str("--qpack-blocked-streams") != "" {
+            if !args.get_str("--qpack-blocked-streams").is_empty() {
                 Some(
                     args.get_str("--qpack-blocked-streams")
                         .parse::<u64>()
@@ -319,7 +319,7 @@ impl Args for ClientArgs {
         let version = args.get_str("--wire-version");
         let version = u32::from_str_radix(version, 16).unwrap();
 
-        let dump_response_path = if args.get_str("--dump-responses") != "" {
+        let dump_response_path = if !args.get_str("--dump-responses").is_empty() {
             Some(args.get_str("--dump-responses").to_string())
         } else {
             None

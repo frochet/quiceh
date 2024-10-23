@@ -1111,8 +1111,10 @@ impl Connection {
 
         let stream_id = self.next_request_stream_id;
 
-        self.streams
-            .insert(stream_id, <stream::Stream>::new(stream_id, true, conn.version));
+        self.streams.insert(
+            stream_id,
+            <stream::Stream>::new(stream_id, true, conn.version),
+        );
 
         // The underlying QUIC stream does not exist yet, so calls to e.g.
         // stream_capacity() will fail. By writing a 0-length buffer, we force
@@ -1551,8 +1553,8 @@ impl Connection {
     /// [`body_consumed()`]: struct.Connection.html#method.body_consumed
     /// [`Data`]: enum.Event.html#variant.Data
     /// [`Done`]: enum.Error.html#variant.Done
-    pub fn recv_body_v3<'a>(
-        &mut self, conn: &mut super::Connection, stream_id: u64,
+    pub fn recv_body_v3<'a, F: BufFactory>(
+        &mut self, conn: &mut super::Connection<F>, stream_id: u64,
         app_buf: &'a mut crate::AppRecvBufMap,
     ) -> Result<(&'a [u8], usize)> {
         if conn.version != crate::PROTOCOL_VERSION_VREVERSO {
@@ -1592,9 +1594,9 @@ impl Connection {
     /// processing state.
     ///
     /// [`recv_body_v3()`]: struct.Connection.html#method.recv_body_v3
-    pub fn body_consumed(
-        &mut self, conn: &mut super::Connection, stream_id: u64, consumed: usize,
-        app_buf: &mut crate::AppRecvBufMap,
+    pub fn body_consumed<F: BufFactory>(
+        &mut self, conn: &mut super::Connection<F>, stream_id: u64,
+        consumed: usize, app_buf: &mut crate::AppRecvBufMap,
     ) -> Result<()> {
         if conn.version != crate::PROTOCOL_VERSION_VREVERSO {
             return Err(Error::InvalidAPICall(
@@ -1875,7 +1877,9 @@ impl Connection {
     /// [`recv_dgram()`]: struct.Connection.html#method.recv_dgram
     /// [`take_last_priority_update()`]: struct.Connection.html#method.take_last_priority_update
     /// [`close()`]: ../struct.Connection.html#method.close
-    pub fn poll<F: BufFactory>(&mut self, conn: &mut super::Connection<F>) -> Result<(u64, Event)> {
+    pub fn poll<F: BufFactory>(
+        &mut self, conn: &mut super::Connection<F>,
+    ) -> Result<(u64, Event)> {
         if conn.version != crate::PROTOCOL_VERSION_V1 {
             return Err(Error::InvalidAPICall(
                 "This function should be called on a \
@@ -2294,7 +2298,9 @@ impl Connection {
 
     /// Opens a new unidirectional stream with a GREASE type and sends some
     /// unframed payload.
-    fn open_grease_stream<F: BufFactory>(&mut self, conn: &mut super::Connection<F>) -> Result<()> {
+    fn open_grease_stream<F: BufFactory>(
+        &mut self, conn: &mut super::Connection<F>,
+    ) -> Result<()> {
         let ty = grease_value();
         match self.open_uni_stream(conn, ty) {
             Ok(stream_id) => {
@@ -2415,7 +2421,7 @@ impl Connection {
         Ok(())
     }
 
-    fn process_control_stream<F:BufFactory>(
+    fn process_control_stream<F: BufFactory>(
         &mut self, conn: &mut super::Connection<F>, stream_id: u64,
         app_buf: &mut Option<&mut crate::AppRecvBufMap>,
     ) -> Result<(u64, Event)> {
@@ -2463,9 +2469,9 @@ impl Connection {
         Err(Error::Done)
     }
 
-    fn process_readable_stream<F:BufFactory>(
-        &mut self, conn: &mut super::Connection<F>, stream_id: u64, polling: bool,
-        app_buf: &mut Option<&mut crate::AppRecvBufMap>,
+    fn process_readable_stream<F: BufFactory>(
+        &mut self, conn: &mut super::Connection<F>, stream_id: u64,
+        polling: bool, app_buf: &mut Option<&mut crate::AppRecvBufMap>,
     ) -> Result<(u64, Event)> {
         self.streams.entry(stream_id).or_insert_with(|| {
             <stream::Stream>::new(stream_id, false, conn.version)
