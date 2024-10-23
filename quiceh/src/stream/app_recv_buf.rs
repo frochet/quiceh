@@ -1,7 +1,7 @@
-use crate::BufFactory;
 use super::recv_buf::RecvBuf;
 use super::Stream;
 use super::DEFAULT_STREAM_WINDOW;
+use crate::BufFactory;
 use std::collections::hash_map;
 use std::collections::VecDeque;
 

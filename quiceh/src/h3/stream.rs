@@ -400,7 +400,8 @@ impl Stream {
     /// Read the connection and acquire a reference to the data containing the
     /// state
     pub fn try_acquire_state_buffer<'a, F: BufFactory>(
-        &mut self, conn: &mut crate::Connection<F>, app_buf: &'a mut AppRecvBufMap,
+        &mut self, conn: &mut crate::Connection<F>,
+        app_buf: &'a mut AppRecvBufMap,
     ) -> Result<&'a [u8]> {
         // In v3, the state is kept mixed with data. We eventually
         // give a slice to the upper layer containing the DATA from
@@ -668,7 +669,8 @@ impl Stream {
     /// Tries to get a reference to the DATA payload for the  application to
     /// eventually consume.
     pub fn try_acquire_data<'a, F: BufFactory>(
-        &mut self, conn: &mut crate::Connection<F>, app_buf: &'a mut AppRecvBufMap,
+        &mut self, conn: &mut crate::Connection<F>,
+        app_buf: &'a mut AppRecvBufMap,
     ) -> Result<(&'a [u8], usize, bool)> {
         let (b, len, fin) = match conn.stream_recv_v3(self.id, app_buf) {
             Ok(v) => v,

@@ -35,9 +35,9 @@ use crate::Result;
 
 use crate::flowcontrol;
 
-use crate::range_buf::RangeBuf;
 use super::RecvBufInfo;
 use super::DEFAULT_STREAM_WINDOW;
+use crate::range_buf::RangeBuf;
 use std::collections::btree_map;
 
 use likely_stable::if_likely;
@@ -547,8 +547,8 @@ impl RecvBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stream::app_recv_buf::AppRecvBuf;
     use crate::range_buf::DefaultBufFactory;
+    use crate::stream::app_recv_buf::AppRecvBuf;
 
     #[test]
     fn empty_read() {

@@ -355,7 +355,7 @@ fn main() {
                 debug!("New connection: dcid={:?} scid={:?}", hdr.dcid, scid);
 
                 #[allow(unused_mut)]
-                let mut conn = quiceh::accept(
+                let mut conn = quiceh::accept_with_buf_factory(
                     &scid,
                     odcid.as_ref(),
                     local_addr,

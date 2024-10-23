@@ -50,6 +50,9 @@ use quiceh::ConnectionId;
 
 use quiceh::h3::NameValue;
 use quiceh::h3::Priority;
+use quiceh::BufFactory;
+use quiceh::BufSplit;
+use std::sync::Arc;
 
 pub fn stdout_sink(out: String) {
     print!("{out}");
@@ -69,21 +72,90 @@ pub struct PartialRequest {
     pub req: Vec<u8>,
 }
 
-pub struct PartialResponse {
+#[derive(Debug, Clone, Default)]
+pub struct BufResponseFactory;
+
+#[derive(Debug, Clone, Default)]
+pub struct BufResponse {
+    inner: Arc<Box<[u8]>>,
+    start: usize,
+    end: usize,
+}
+
+impl BufResponse {
+    fn new(inner: Arc<Box<[u8]>>, start: usize, end: usize) -> Self {
+        Self { inner, start, end }
+    }
+
+    fn len(&self) -> usize {
+        self.end - self.start
+    }
+}
+
+impl From<Vec<u8>> for BufResponse {
+    fn from(value: Vec<u8>) -> Self {
+        BufResponse {
+            start: 0,
+            end: value.len(),
+            inner: Arc::new(value.into_boxed_slice()),
+        }
+    }
+}
+
+impl BufFactory for BufResponseFactory {
+    type Buf = BufResponse;
+
+    fn buf_from_slice(buf: &[u8]) -> Self::Buf {
+        BufResponse {
+            start: 0,
+            end: buf.len(),
+            inner: Arc::new(buf.into()),
+        }
+    }
+}
+
+impl BufSplit for BufResponse {
+    // Split the buffer at a given point, after the split the old buffer
+    // must only contain the first `at` bytes, while the newly produced
+    // buffer must containt the remaining bytes.
+    fn split_at(&mut self, at: usize) -> Self {
+        assert!(at <= self.len(), "split_at index out of bounds");
+
+        let newend = self.start + at;
+        let buf = BufResponse::new(self.inner.clone(), newend, self.end);
+
+        self.end = newend;
+
+        buf
+    }
+}
+
+impl AsRef<[u8]> for BufResponse {
+    fn as_ref(&self) -> &[u8] {
+        &self.inner[self.start..self.end]
+    }
+}
+
+pub struct PartialResponse<F = BufResponseFactory>
+where
+    F: quiceh::BufFactory,
+{
     pub headers: Option<Vec<quiceh::h3::Header>>,
     pub priority: Option<quiceh::h3::Priority>,
 
-    pub body: Vec<u8>,
-
-    pub written: usize,
+    pub body: <F as BufFactory>::Buf,
+    pub remaining_len: usize,
 }
 
 pub type ClientId = u64;
 
-pub struct Client {
-    pub conn: quiceh::Connection,
+pub struct Client<F = BufResponseFactory>
+where
+    F: BufFactory,
+{
+    pub conn: quiceh::Connection<F>,
 
-    pub http_conn: Option<Box<dyn HttpConn>>,
+    pub http_conn: Option<Box<dyn HttpConn<F>>>,
 
     pub client_id: ClientId,
 
@@ -315,8 +387,8 @@ pub fn priority_from_query_string(url: &url::Url) -> Option<Priority> {
     }
 }
 
-fn send_h3_dgram(
-    conn: &mut quiceh::Connection, flow_id: u64, dgram_content: &[u8],
+fn send_h3_dgram<F: BufFactory>(
+    conn: &mut quiceh::Connection<F>, flow_id: u64, dgram_content: &[u8],
 ) -> quiceh::Result<()> {
     info!(
         "sending HTTP/3 DATAGRAM on flow_id={} with data {:?}",
@@ -335,25 +407,25 @@ fn send_h3_dgram(
     conn.dgram_send(&d)
 }
 
-pub trait HttpConn {
+pub trait HttpConn<F: BufFactory> {
     fn send_requests(
-        &mut self, conn: &mut quiceh::Connection, target_path: &Option<String>,
+        &mut self, conn: &mut quiceh::Connection<F>, target_path: &Option<String>,
     );
 
     fn handle_responses(
-        &mut self, conn: &mut quiceh::Connection, buf: &mut [u8],
+        &mut self, conn: &mut quiceh::Connection<F>, buf: &mut [u8],
         req_start: &std::time::Instant,
     );
 
     fn handle_responses_on_quic_v3(
-        &mut self, conn: &mut quiceh::Connection,
+        &mut self, conn: &mut quiceh::Connection<F>,
         app_buffers: &mut quiceh::AppRecvBufMap, req_start: &std::time::Instant,
     );
 
     fn report_incomplete(&self, start: &std::time::Instant) -> bool;
 
     fn handle_requests(
-        &mut self, conn: &mut quiceh::Connection,
+        &mut self, conn: &mut quiceh::Connection<F>,
         partial_requests: &mut HashMap<u64, PartialRequest>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
         index: &str, buf: &mut [u8],
@@ -361,13 +433,13 @@ pub trait HttpConn {
     ) -> quiceh::h3::Result<()>;
 
     fn handle_requests_on_quic_v3(
-        &mut self, conn: &mut quiceh::Connection,
+        &mut self, conn: &mut quiceh::Connection<F>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
         index: &str, app_buffers: &mut quiceh::AppRecvBufMap,
     ) -> quiceh::h3::Result<()>;
 
     fn handle_writable(
-        &mut self, conn: &mut quiceh::Connection,
+        &mut self, conn: &mut quiceh::Connection<F>,
         partial_responses: &mut HashMap<u64, PartialResponse>, stream_id: u64,
     );
 }
@@ -420,10 +492,13 @@ impl Default for Http09Conn {
 }
 
 impl Http09Conn {
-    pub fn with_urls(
+    pub fn with_urls<F: BufFactory<Buf = BufResponse>>(
         urls: &[url::Url], reqs_cardinal: u64,
         output_sink: Rc<RefCell<dyn FnMut(String)>>,
-    ) -> Box<dyn HttpConn> {
+    ) -> Box<dyn HttpConn<F>>
+    where
+        <F as BufFactory>::Buf: BufSplit,
+    {
         let mut reqs = Vec::new();
         for url in urls {
             for i in 1..=reqs_cardinal {
@@ -450,9 +525,12 @@ impl Http09Conn {
     }
 }
 
-impl HttpConn for Http09Conn {
+impl<F: BufFactory<Buf = BufResponse>> HttpConn<F> for Http09Conn
+where
+    <F as BufFactory>::Buf: BufSplit,
+{
     fn send_requests(
-        &mut self, conn: &mut quiceh::Connection, target_path: &Option<String>,
+        &mut self, conn: &mut quiceh::Connection<F>, target_path: &Option<String>,
     ) {
         let mut reqs_done = 0;
 
@@ -494,7 +572,7 @@ impl HttpConn for Http09Conn {
     }
 
     fn handle_responses_on_quic_v3(
-        &mut self, conn: &mut quiceh::Connection,
+        &mut self, conn: &mut quiceh::Connection<F>,
         app_buffers: &mut quiceh::AppRecvBufMap, req_start: &std::time::Instant,
     ) {
         for s in conn.readable() {
@@ -562,7 +640,7 @@ impl HttpConn for Http09Conn {
     }
 
     fn handle_responses(
-        &mut self, conn: &mut quiceh::Connection, buf: &mut [u8],
+        &mut self, conn: &mut quiceh::Connection<F>, buf: &mut [u8],
         req_start: &std::time::Instant,
     ) {
         // Process all readable streams.
@@ -649,7 +727,7 @@ impl HttpConn for Http09Conn {
     }
 
     fn handle_requests_on_quic_v3(
-        &mut self, conn: &mut quiceh::Connection,
+        &mut self, conn: &mut quiceh::Connection<F>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
         index: &str, app_buffers: &mut quiceh::AppRecvBufMap,
     ) -> quiceh::h3::Result<()> {
@@ -696,11 +774,17 @@ impl HttpConn for Http09Conn {
                         body.len(),
                         s
                     );
+                    let bodylen = body.len();
 
-                    let written = match conn.stream_send(s, &body, true) {
+                    let (written, remaining) = match conn.stream_send_zc(
+                        s,
+                        body.into(),
+                        Some(bodylen),
+                        true,
+                    ) {
                         Ok(v) => v,
 
-                        Err(quiceh::Error::Done) => 0,
+                        Err(quiceh::Error::Done) => (0, None),
 
                         Err(e) => {
                             error!(
@@ -712,12 +796,12 @@ impl HttpConn for Http09Conn {
                             return Err(From::from(e));
                         },
                     };
-                    if written < body.len() {
+                    if let Some(body) = remaining {
                         let response = PartialResponse {
                             headers: None,
                             priority: None,
                             body,
-                            written,
+                            remaining_len: bodylen.saturating_sub(written),
                         };
 
                         partial_responses.insert(s, response);
@@ -733,7 +817,7 @@ impl HttpConn for Http09Conn {
     }
 
     fn handle_requests(
-        &mut self, conn: &mut quiceh::Connection,
+        &mut self, conn: &mut quiceh::Connection<F>,
         partial_requests: &mut HashMap<u64, PartialRequest>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
         index: &str, buf: &mut [u8],
@@ -810,10 +894,17 @@ impl HttpConn for Http09Conn {
                         s
                     );
 
-                    let written = match conn.stream_send(s, &body, true) {
+                    let bodylen = body.len();
+
+                    let (written, remaining) = match conn.stream_send_zc(
+                        s,
+                        body.into(),
+                        Some(bodylen),
+                        true,
+                    ) {
                         Ok(v) => v,
 
-                        Err(quiceh::Error::Done) => 0,
+                        Err(quiceh::Error::Done) => (0, None),
 
                         Err(e) => {
                             error!(
@@ -825,12 +916,12 @@ impl HttpConn for Http09Conn {
                         },
                     };
 
-                    if written < body.len() {
+                    if let Some(body) = remaining {
                         let response = PartialResponse {
                             headers: None,
                             priority: None,
                             body,
-                            written,
+                            remaining_len: bodylen.saturating_sub(written),
                         };
 
                         partial_responses.insert(s, response);
@@ -843,7 +934,7 @@ impl HttpConn for Http09Conn {
     }
 
     fn handle_writable(
-        &mut self, conn: &mut quiceh::Connection,
+        &mut self, conn: &mut quiceh::Connection<F>,
         partial_responses: &mut HashMap<u64, PartialResponse>, stream_id: u64,
     ) {
         trace!("{} stream {} is writable", conn.trace_id(), stream_id);
@@ -853,12 +944,17 @@ impl HttpConn for Http09Conn {
         }
 
         let resp = partial_responses.get_mut(&stream_id).unwrap();
-        let body = &resp.body[resp.written..];
+        let body = resp.body.clone();
 
-        let written = match conn.stream_send(stream_id, body, true) {
+        let (written, remaining) = match conn.stream_send_zc(
+            stream_id,
+            body,
+            Some(resp.remaining_len),
+            true,
+        ) {
             Ok(v) => v,
 
-            Err(quiceh::Error::Done) => 0,
+            Err(quiceh::Error::Done) => (0, None),
 
             Err(e) => {
                 partial_responses.remove(&stream_id);
@@ -868,9 +964,13 @@ impl HttpConn for Http09Conn {
             },
         };
 
-        resp.written += written;
-
-        if resp.written == resp.body.len() {
+        if let Some(body) = remaining {
+            resp.body = body;
+            resp.remaining_len = resp.remaining_len.saturating_sub(written);
+            if resp.remaining_len == 0 {
+                partial_responses.remove(&stream_id);
+            }
+        } else if written == resp.remaining_len {
             partial_responses.remove(&stream_id);
         }
     }
@@ -932,15 +1032,15 @@ pub struct Http3Conn {
 
 impl Http3Conn {
     #[allow(clippy::too_many_arguments)]
-    pub fn with_urls(
-        conn: &mut quiceh::Connection, urls: &[url::Url], reqs_cardinal: u64,
+    pub fn with_urls<F: BufFactory<Buf = BufResponse>>(
+        conn: &mut quiceh::Connection<F>, urls: &[url::Url], reqs_cardinal: u64,
         req_headers: &[String], body: &Option<Vec<u8>>, method: &str,
         send_priority_update: bool, max_field_section_size: Option<u64>,
         qpack_max_table_capacity: Option<u64>,
         qpack_blocked_streams: Option<u64>, dump_json: Option<usize>,
         dgram_sender: Option<Http3DgramSender>,
         output_sink: Rc<RefCell<dyn FnMut(String)>>,
-    ) -> Box<dyn HttpConn> {
+    ) -> Box<dyn HttpConn<F>> {
         let mut reqs = Vec::new();
         for url in urls {
             for i in 1..=reqs_cardinal {
@@ -1026,13 +1126,13 @@ impl Http3Conn {
         Box::new(h_conn)
     }
 
-    pub fn with_conn(
-        conn: &mut quiceh::Connection, max_field_section_size: Option<u64>,
+    pub fn with_conn<F: BufFactory<Buf = BufResponse>>(
+        conn: &mut quiceh::Connection<F>, max_field_section_size: Option<u64>,
         qpack_max_table_capacity: Option<u64>,
         qpack_blocked_streams: Option<u64>,
         dgram_sender: Option<Http3DgramSender>,
         output_sink: Rc<RefCell<dyn FnMut(String)>>,
-    ) -> std::result::Result<Box<dyn HttpConn>, String> {
+    ) -> std::result::Result<Box<dyn HttpConn<F>>, String> {
         let h3_conn = quiceh::h3::Connection::with_transport(
             conn,
             &make_h3_config(
@@ -1060,8 +1160,8 @@ impl Http3Conn {
 
     /// poll the h3_conn with either poll() or poll_v3() depending on the
     /// connection context.
-    fn poll_internal(
-        &mut self, conn: &mut quiceh::Connection,
+    fn poll_internal<F: BufFactory>(
+        &mut self, conn: &mut quiceh::Connection<F>,
         app_buffers: &mut Option<&mut quiceh::AppRecvBufMap>,
     ) -> quiceh::h3::Result<(u64, quiceh::h3::Event)> {
         if let Some(ref mut app_buffers) = app_buffers {
@@ -1296,9 +1396,12 @@ impl Http3Conn {
     }
 }
 
-impl HttpConn for Http3Conn {
+impl<F: BufFactory<Buf = BufResponse>> HttpConn<F> for Http3Conn
+where
+    F::Buf: BufSplit,
+{
     fn send_requests(
-        &mut self, conn: &mut quiceh::Connection, target_path: &Option<String>,
+        &mut self, conn: &mut quiceh::Connection<F>, target_path: &Option<String>,
     ) {
         let mut reqs_done = 0;
 
@@ -1399,7 +1502,7 @@ impl HttpConn for Http3Conn {
     }
 
     fn handle_responses_on_quic_v3(
-        &mut self, conn: &mut quiceh::Connection,
+        &mut self, conn: &mut quiceh::Connection<F>,
         app_buffers: &mut quiceh::AppRecvBufMap, req_start: &std::time::Instant,
     ) {
         loop {
@@ -1556,7 +1659,7 @@ impl HttpConn for Http3Conn {
     }
 
     fn handle_responses(
-        &mut self, conn: &mut quiceh::Connection, buf: &mut [u8],
+        &mut self, conn: &mut quiceh::Connection<F>, buf: &mut [u8],
         req_start: &std::time::Instant,
     ) {
         loop {
@@ -1728,7 +1831,7 @@ impl HttpConn for Http3Conn {
     }
 
     fn handle_requests_on_quic_v3(
-        &mut self, conn: &mut quiceh::Connection,
+        &mut self, conn: &mut quiceh::Connection<F>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
         index: &str, app_buffers: &mut quiceh::AppRecvBufMap,
     ) -> quiceh::h3::Result<()> {
@@ -1744,7 +1847,7 @@ impl HttpConn for Http3Conn {
     }
 
     fn handle_requests(
-        &mut self, conn: &mut quiceh::Connection,
+        &mut self, conn: &mut quiceh::Connection<F>,
         _partial_requests: &mut HashMap<u64, PartialRequest>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
         index: &str, buf: &mut [u8],
@@ -1809,11 +1912,7 @@ impl HttpConn for Http3Conn {
 
                     #[cfg(feature = "sfv")]
                     let priority =
-                        match quiceh::h3::Priority::try_from(priority.as_slice())
-                        {
-                            Ok(v) => v,
-                            Err(_) => quiceh::h3::Priority::default(),
-                        };
+                        quiceh::h3::Priority::try_from(priority.as_slice()).unwrap_or_default();
 
                     #[cfg(not(feature = "sfv"))]
                     let priority = quiceh::h3::Priority::default();
@@ -1831,11 +1930,12 @@ impl HttpConn for Http3Conn {
                         Ok(v) => v,
 
                         Err(quiceh::h3::Error::StreamBlocked) => {
+                            let len = body.len();
                             let response = PartialResponse {
                                 headers: Some(headers),
                                 priority: Some(priority),
-                                body,
-                                written: 0,
+                                body: body.into(),
+                                remaining_len: len,
                             };
 
                             partial_responses.insert(stream_id, response);
@@ -1852,12 +1952,12 @@ impl HttpConn for Http3Conn {
                             break;
                         },
                     }
-
+                    let len = body.len();
                     let response = PartialResponse {
                         headers: None,
                         priority: None,
-                        body,
-                        written: 0,
+                        body: body.into(),
+                        remaining_len: len,
                     };
 
                     partial_responses.insert(stream_id, response);
@@ -1945,7 +2045,7 @@ impl HttpConn for Http3Conn {
     }
 
     fn handle_writable(
-        &mut self, conn: &mut quiceh::Connection,
+        &mut self, conn: &mut quiceh::Connection<F>,
         partial_responses: &mut HashMap<u64, PartialResponse>, stream_id: u64,
     ) {
         debug!("{} stream {} is writable", conn.trace_id(), stream_id);
@@ -1975,26 +2075,30 @@ impl HttpConn for Http3Conn {
 
         resp.headers = None;
         resp.priority = None;
+        let body = resp.body.clone();
 
-        let body = &resp.body[resp.written..];
+        match self.h3_conn.send_body_zc(conn, stream_id, body, true) {
+            Ok((written, remaining)) =>
+                if let Some(body) = remaining {
+                    resp.remaining_len =
+                        resp.remaining_len.saturating_sub(written);
+                    resp.body = body;
+                    if resp.remaining_len == 0 {
+                        partial_responses.remove(&stream_id);
+                    }
+                } else if written == resp.remaining_len {
+                    partial_responses.remove(&stream_id);
+                },
 
-        let written = match self.h3_conn.send_body(conn, stream_id, body, true) {
-            Ok(v) => v,
-
-            Err(quiceh::h3::Error::Done) => 0,
+            Err(quiceh::h3::Error::Done) => {
+                info!("{} sending on stream_id {} returned Error::Done; likely we're lacking stream
+                      capacity", conn.trace_id(), stream_id);
+            },
 
             Err(e) => {
                 partial_responses.remove(&stream_id);
-
                 error!("{} stream send failed {:?}", conn.trace_id(), e);
-                return;
             },
         };
-
-        resp.written += written;
-
-        if resp.written == resp.body.len() {
-            partial_responses.remove(&stream_id);
-        }
     }
 }
