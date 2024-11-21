@@ -233,6 +233,113 @@ impl<F: BufFactory> SendBuf<F> {
         Ok((ret, remainder))
     }
 
+    pub fn entry_len(&mut self, cap: usize) -> Result<(usize, bool)> {
+
+        let next_off = self.off_front();
+        let mut fin = self.fin_off == Some(next_off);
+        let mut buf_len = 0;
+
+        while let Some(buf) = self.data.get(self.pos) {
+            let off_front = self.off_front();
+            if self.is_empty() ||
+                off_front >= self.off ||
+                off_front != next_off ||
+                off_front >= self.max_data
+            {
+                break;
+            }
+
+            if buf.is_empty() {
+                self.pos += 1;
+                continue;
+            }
+
+            buf_len = cmp::min(buf.len(), cap);
+
+            fin = self.fin_off == Some(buf.off() + buf_len as u64);
+            break;
+        }
+
+        Ok((buf_len, fin))
+    }
+
+    pub fn entry_get(&mut self) -> Option<&mut RangeBuf<F>> {
+        self.data.get_mut(self.pos)
+    }
+
+    pub fn entry_consume(&mut self, consumed: usize) {
+
+        let buf = match self.data.get_mut(self.pos) {
+            Some(v) => v,
+            None => return,
+        };
+
+        if buf.is_empty() {
+            return;
+        }
+
+        let has_consumed = cmp::min(buf.len(), consumed);
+        self.len -= has_consumed as u64;
+
+        let next_off = buf.off() + has_consumed as u64;
+
+        if has_consumed == buf.len() {
+            self.pos += 1;
+        }
+
+        buf.consume(has_consumed);
+
+        self.emit_off = cmp::max(self.emit_off, next_off);
+    }
+
+    pub fn emit_rangebuf_vec(&mut self, max_len: usize) -> (Vec<RangeBuf<F>>, usize) {
+
+        let mut out_len = max_len;
+        let out_off = self.off_front();
+
+        let mut next_off = out_off;
+        let mut cryptovec: Vec<RangeBuf<F>> = Vec::new();
+
+        while out_len > 0 {
+            let off_front = self.off_front();
+
+            if self.is_empty() ||
+                off_front >= self.off ||
+                off_front != next_off ||
+                off_front >= self.max_data
+            {
+                    break;
+            }
+
+            let buf = match self.data.get_mut(self.pos) {
+                Some(v) => v,
+                None => break,
+            };
+
+            let buf_len =  cmp::min(buf.len(), out_len);
+            let partial = buf_len < buf.len();
+
+            self.len -= buf_len as u64;
+
+            out_len -= buf_len;
+
+            next_off = buf.off() + buf_len as u64;
+
+            let mut rbuf = buf.clone();
+
+            buf.consume(buf_len);
+
+            if partial {
+                rbuf.split_off(buf_len);
+            } else {
+                self.pos += 1;
+            }
+            cryptovec.push(rbuf);
+        }
+
+        (cryptovec, max_len - out_len)
+    }
+
     /// Writes data from the send buffer into the given output buffer.
     pub fn emit(&mut self, out: &mut [u8]) -> Result<(usize, bool)> {
         let mut out_len = out.len();

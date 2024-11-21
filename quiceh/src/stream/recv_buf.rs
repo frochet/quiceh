@@ -302,6 +302,7 @@ impl RecvBuf {
         Ok(())
     }
 
+
     /// Writes data from the receive buffer into the given output buffer.
     ///
     /// Only contiguous data is written to the output buffer, starting from

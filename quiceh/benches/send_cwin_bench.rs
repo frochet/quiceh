@@ -13,13 +13,27 @@ use quiceh::BufSplit;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
-fn bench_stream_send(pipe: &mut Pipe, sendbuf: &[u8], outbuf: &mut [u8]) {
-    pipe.client.stream_send(4, sendbuf, true).unwrap();
-    let (write, send_info) =
-        pipe.client.send_on_path(outbuf, None, None).unwrap();
+fn bench_stream_send(pipe: &mut Pipe, outbuf: &mut [u8]) {
+    let sendbuf = vec![0; 10000];
+    pipe.client.stream_send(4, &sendbuf, true).unwrap();
+
+    loop {
+        let (write, send_info) = match pipe.client.send_on_path(outbuf, None, None) {
+            Ok(v) => v,
+
+            Err(quiceh::Error::Done) => {
+                // we sent everything
+                break;
+            },
+
+            Err(e) => {
+                panic!("An error occured {:?}", e);
+            }
+        };
+        black_box(write);
+        black_box(send_info);
+    }
     black_box(outbuf);
-    black_box(write);
-    black_box(send_info);
 }
 
 fn bench_stream_send_zc<F: BufFactory<Buf = BenchBuf>>(
@@ -27,7 +41,7 @@ fn bench_stream_send_zc<F: BufFactory<Buf = BenchBuf>>(
 ) where
     <F as BufFactory>::Buf: BufSplit,
 {
-    let sendbuf: Vec<u8> = Vec::with_capacity(10000);
+    let sendbuf = vec![0; 10000];
     pipe.client
         .stream_send_zc(
             4,
@@ -36,11 +50,22 @@ fn bench_stream_send_zc<F: BufFactory<Buf = BenchBuf>>(
             true,
         )
         .unwrap();
-    let (write, send_info) =
-        pipe.client.send_on_path(outbuf, None, None).unwrap();
+    loop {
+        let (write, send_info) = match pipe.client.send_on_path(outbuf, None, None) {
+            Ok(v) => v,
+
+            Err(quiceh::Error::Done) => {
+                break;
+            },
+
+            Err(e) => {
+                panic!("An error occured {:?}", e);
+            }
+        };
+        black_box(write);
+        black_box(send_info);
+    }
     black_box(outbuf);
-    black_box(write);
-    black_box(send_info);
 }
 
 fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
@@ -67,24 +92,23 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
     config.set_initial_max_stream_data_bidi_local(10_000_000_000);
     config.set_initial_max_stream_data_bidi_remote(10_000_000_000);
     config.verify_peer(false);
+    config.enable_hidden_copy_for_zc_sender(false);
 
     let mut group = c.benchmark_group("send_path");
-    let sendbuf = vec![0; 10000];
     group.throughput(Throughput::Bytes(10000));
 
-    group.bench_with_input(
+    group.bench_function(
         BenchmarkId::new("send_path", 10000),
-        &sendbuf,
-        |b, sendbuf| {
+        |b| {
             b.iter_batched_ref(
                 || {
                     let mut pipe = Pipe::with_config(&mut config).unwrap();
                     let outbuf = vec![0; 65535];
                     pipe.handshake().unwrap();
-                    (pipe, sendbuf, outbuf)
+                    (pipe, outbuf)
                 },
-                |(ref mut pipe, sendbuf, outbuf)| {
-                    bench_stream_send(pipe, sendbuf, outbuf)
+                |(ref mut pipe, outbuf)| {
+                    bench_stream_send(pipe, outbuf)
                 },
                 BatchSize::SmallInput,
             )

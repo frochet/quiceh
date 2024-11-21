@@ -891,6 +891,8 @@ pub struct Config {
     max_amplification_factor: usize,
 
     disable_dcid_reuse: bool,
+
+    use_hidden_crypt_copy_for_zc: bool,
 }
 
 // See https://quicwg.org/base-drafts/rfc9000.html#section-15
@@ -959,6 +961,7 @@ impl Config {
             max_amplification_factor: MAX_AMPLIFICATION_FACTOR,
 
             disable_dcid_reuse: false,
+            use_hidden_crypt_copy_for_zc: false,
         })
     }
 
@@ -1356,6 +1359,14 @@ impl Config {
         self.pacing = v;
     }
 
+    /// Configures whether to enable usage of encryption's
+    /// hidden copy to assemble a QUIC packet
+    ///
+    /// The default value is `false`
+    pub fn enable_hidden_copy_for_zc_sender(&mut self, v: bool) {
+        self.use_hidden_crypt_copy_for_zc = v;
+    }
+
     /// Sets the max value for pacing rate.
     ///
     /// By default pacing rate is not limited.
@@ -1655,6 +1666,12 @@ where
 
     /// The anti-amplification limit factor.
     max_amplification_factor: usize,
+
+    /// Do we use zerocopy while emitting stream frames? This may
+    /// result to many short packets if the application makes many stream_send
+    /// calls on the same stream id with small datasizes. This would be unadvised to
+    /// use if the Application aims to send many short sized data.
+    use_hidden_crypt_copy_for_zc: bool,
 }
 
 /// Creates a new server-side connection.
@@ -1861,21 +1878,68 @@ pub fn version_is_supported(version: u32) -> bool {
 /// Frames such as Stream, Crypto, etc. have already been written into the
 /// buffer at their intended position.
 macro_rules! push_frames_to_pkt {
-    ($out:expr, $frames:expr, $ver:expr) => {{
+    ($out:expr, $frames:expr, $usehiddencopy:expr, $ver:expr) => {{
         for frame in $frames.iter() {
             match frame {
                 /*
                  * Some frames have been already been encoded to avoid a copy from
                  * frame.to_bytes(). We just need to $out.skip them.
                  **/
-                frame::Frame::StreamHeader { stream_id, offset, length, ..} => {
-                    let hdr_len = 1 + // frame type
-                        octets_rev::varint_len(*stream_id) + // stream_id
-                        octets_rev::varint_len(*offset) + // offset
-                        2; // length, always encode as 2-byte varint
-                    // this has already been added to the buffer.
-                    $out.skip(length + hdr_len)?;
+                frame::Frame::StreamHeader { stream_id, offset, length, fin } => {
+                    if $usehiddencopy {
+                        if $ver == crate::PROTOCOL_VERSION_VREVERSO {
+                            // not in place VReverso
+                            frame::encode_stream_footer(
+                                *stream_id,
+                                *offset,
+                                *length as u64,
+                                *fin,
+                                &mut $out,
+                            )?;
+                        } else {
+                            // not in place QUIC v1
+                            frame::encode_stream_header(
+                                *stream_id,
+                                *offset,
+                                *length as u64,
+                                *fin,
+                                &mut $out,
+                            )?;
+                        }
+                    } else {
+                        let hdr_len = 1 + // frame type
+                            octets_rev::varint_len(*stream_id) + // stream_id
+                            octets_rev::varint_len(*offset) + // offset
+                            2; // length, always encode as 2-byte varint
+
+                        //this has already been added to the buffer.
+                        $out.skip(length + hdr_len)?;
+                    }
+
                 },
+                frame::Frame::CryptoVec { offset, length, rbvec } => {
+                    if rbvec.len() > 0 {
+                        if $ver == crate::PROTOCOL_VERSION_VREVERSO {
+                            for rb in rbvec {
+                                $out.put_bytes(&rb[..])?;
+                            }
+                            frame::encode_crypto_footer(
+                                *offset,
+                                *length as u64,
+                                &mut $out
+                            )?;
+                        } else {
+                            frame::encode_crypto_header(
+                                *offset,
+                                *length as u64,
+                                &mut $out
+                            )?;
+                            for rb in rbvec {
+                                $out.put_bytes(&rb[..])?;
+                            }
+                        }
+                    }
+                }
                 frame::Frame::DatagramHeader { length } => {
                     let hdr_len = 1 + // frame type
                         2; // length, always encode as 2-byte varint
@@ -1906,27 +1970,6 @@ macro_rules! push_frame_to_vec {
             $cumul += wire_len;
 
             $frames.push($frame);
-            true
-        } else {
-            false
-        }
-    }};
-}
-
-/// Pushes a frame to the output packet if there is enough space.
-///
-/// Returns `true` on success, `false` otherwise. In case of failure it means
-/// there is no room to add the frame in the packet. You may retry to add the
-/// frame later.
-macro_rules! push_frame_to_pkt {
-    ($out:expr, $frames:expr, $frame:expr, $left:expr, $ver:expr) => {{
-        if $frame.wire_len() <= $left {
-            $left -= $frame.wire_len();
-
-            $frame.to_bytes(&mut $out, $ver)?;
-
-            $frames.push($frame);
-
             true
         } else {
             false
@@ -2194,6 +2237,8 @@ impl<F: BufFactory> Connection<F> {
             stopped_stream_remote_count: 0,
 
             max_amplification_factor: config.max_amplification_factor,
+
+            use_hidden_crypt_copy_for_zc: config.use_hidden_crypt_copy_for_zc,
         };
 
         if let Some(odcid) = odcid {
@@ -3888,13 +3933,6 @@ impl<F: BufFactory> Connection<F> {
 
         let out_len = out.len();
 
-        // With sender copy avoidance, we need a buffer to pack all control
-        // The data will be send without copy; ctrl information are written
-        // inside this buffer with the goal to encrypt them next to the zero-copy
-        // encryted data, in out.
-        //let mut ctrl = [0; MAX_SEND_UDP_PAYLOAD_SIZE];
-        //let mut b_ctrl = octets_rev::OctetsMut::with_slice(&mut ctrl);
-
         let mut b = octets_rev::OctetsMut::with_slice(out);
 
         let pkt_type = self.write_pkt_type(send_pid)?;
@@ -4387,7 +4425,6 @@ impl<F: BufFactory> Connection<F> {
                     max: self.streams.max_streams_uni_next(),
                 };
 
-                // if push_frame_to_pkt!(b, frames, frame, left, self.version) {
                 if push_frame_to_vec!(frames, frame, left, cumul) {
                     self.streams.update_max_streams_uni();
 
@@ -4618,114 +4655,76 @@ impl<F: BufFactory> Connection<F> {
             do_dgram
         {
             if let Some(max_dgram_payload) = max_dgram_len {
+                // Datagrames frames are pop'ed from the queue to be pushed into
+                // the control's buffer. They need to keep the same order. This should
+                // not involve any copy of the underlying data contained in a Vec<u8>.
+                let mut tmp_frames: Vec<frame::Frame> = Vec::new();
+                // We use tmp_left to keep track of left while poping datagrams.
+                // left will be update while pushing into the control buffer.
+                if self.version == PROTOCOL_VERSION_VREVERSO && !has_fixed_overhead &&
+                    self.dgram_send_queue.peek_front_len().is_some() {
+                    left += 6;
+                    has_fixed_overhead = true;
+                }
+
+                let mut tmp_left = left;
                 while let Some(len) = self.dgram_send_queue.peek_front_len() {
-                    // Ok, so we're trying to send a Datagram. V3's header
-                    // overhead for Datagram is 2 bytes. We
-                    // assumed it to be 8, we fix it now.
-                    let hdr_off = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
-                        if !has_fixed_overhead {
-                            left += 6;
-                            has_fixed_overhead = true;
-                        }
-                        b.off()
-                    } else {
-                        b.off() + cumul
-                    }};
+
                     let hdr_len = 1 + // frame type
                         2; // length, always encode as 2-byte varint
 
-                    if (hdr_len + len) <= left {
+                    if (hdr_len + len) <= tmp_left {
                         // Front of the queue fits this packet, send it.
                         match self.dgram_send_queue.pop() {
                             Some(data) => {
-                                // Encode the frame.
-                                //
-                                // Instead of creating a `frame::Frame` object,
-                                // encode the frame directly into the packet
-                                // buffer.
-                                //
-                                // First we reserve some space in the output
-                                // buffer for writing the frame header (we
-                                // assume the length field is always a 2-byte
-                                // varint as we don't know the value yet).
-                                //
-                                // Then we emit the data from the DATAGRAM's
-                                // buffer.
-                                //
-                                // Finally we go back and encode the frame
-                                // header with the now available information.
-                                if_likely! { self.version == PROTOCOL_VERSION_VREVERSO => {
 
-                                    // Write stream data into the packet buffer; normally right
-                                    // after the encrypted header.
-                                    b.as_mut()[..len].copy_from_slice(&data);
+                                    // Will be written as extra_in
+                                let frame = frame::Frame::Datagram {
+                                    data,
+                                };
 
-                                    //Advance the buffer.
-                                    b.skip(len)?;
+                                tmp_left -= frame.wire_len();
+                                tmp_frames.push(frame);
+                                //} else {
+                                    //// Encode the frame.
+                                    ////
+                                    //// Instead of creating a `frame::Frame` object,
+                                    //// encode the frame directly into the packet
+                                    //// buffer.
+                                    ////
+                                    //// First we reserve some space in the output
+                                    //// buffer for writing the frame header (we
+                                    //// assume the length field is always a 2-byte
+                                    //// varint as we don't know the value yedgram_send_max_sizet).
+                                    ////
+                                    //// Then we emit the data from the DATAGRAM's
+                                    //// buffer.
+                                    ////
+                                    //// Finally we go back and encode the frame
+                                    //// header with the now available information.
+                                    //let (mut dgram_hdr, mut dgram_payload) =
+                                        //b.split_at(hdr_off + hdr_len)?;
 
-                                    // Encode the header reversed.
-                                    frame::encode_dgram_footer(
-                                        len as u64,
-                                        &mut b,
-                                    )?;
+                                    //dgram_payload.as_mut()[..len]
+                                        //.copy_from_slice(&data);
 
-                                    // Back to the initial index.
-                                    b.rewind(len+hdr_len)?;
+                                    //// Encode the frame's header.
+                                    ////
+                                    //// Due to how `OctetsMut::split_at()` works,
+                                    //// `dgram_hdr` starts from the initial offset
+                                    //// of `b` (rather than the current offset), so
+                                    //// it needs to be advanced to the initial frame
+                                    //// offset.
+                                    //dgram_hdr.skip(hdr_off)?;
 
-                                } else {
-                                    let (mut dgram_hdr, mut dgram_payload) =
-                                        b.split_at(hdr_off + hdr_len)?;
+                                    //frame::encode_dgram_header(
+                                        //len as u64,
+                                        //&mut dgram_hdr,
+                                    //)?;
 
-                                    dgram_payload.as_mut()[..len]
-                                        .copy_from_slice(&data);
+                                    //frame::Frame::DatagramHeader { length: len }
+                                //}};
 
-                                    // Encode the frame's header.
-                                    //
-                                    // Due to how `OctetsMut::split_at()` works,
-                                    // `dgram_hdr` starts from the initial offset
-                                    // of `b` (rather than the current offset), so
-                                    // it needs to be advanced to the initial frame
-                                    // offset.
-                                    dgram_hdr.skip(hdr_off)?;
-
-                                    frame::encode_dgram_header(
-                                        len as u64,
-                                        &mut dgram_hdr,
-                                        )?;
-                                }};
-
-                                let frame =
-                                    frame::Frame::DatagramHeader { length: len };
-
-                                // We always write data a the beginning the
-                                // packet.
-                                // If we use PROTOCOL_VERSION_VREVERSO, this can
-                                // be leveraged to
-                                // enable a
-                                // zero-copy contiguous application buffer. If we
-                                // don't use V3,
-                                // it shouldn't matter where we put it in the
-                                // packet.
-                                if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
-                                    // we already know that left > frame.wire_len()
-                                    let wire_len = frame.wire_len();
-                                    left -= wire_len;
-                                    // adjust left that was computed based on a 8 bytes overhead
-                                    cumul += wire_len;
-                                    frames.insert(0, frame);
-                                    ack_eliciting = true;
-                                    in_flight = true;
-                                    dgram_emitted = true;
-                                    // just one dgram per Quic packet to enable the zero-copy
-                                    // contiguous receiver
-                                    break;
-                                } else {
-                                    if push_frame_to_vec!(frames, frame, left, cumul) {
-                                        ack_eliciting = true;
-                                        in_flight = true;
-                                        dgram_emitted = true;
-                                    }
-                                }};
                             },
 
                             None => continue,
@@ -4736,23 +4735,42 @@ impl<F: BufFactory> Connection<F> {
                     } else {
                         // Revert back the fixed overhead. We might try to send a
                         // Stream Frame.
-                        if has_fixed_overhead {
+                        if has_fixed_overhead  && tmp_frames.is_empty() {
                             left -= 6;
                             has_fixed_overhead = false;
                         }
                         break;
                     }
                 }
+
+                if self.version == crate::PROTOCOL_VERSION_VREVERSO {
+                    for frame in tmp_frames.into_iter().rev() {
+                        if push_frame_to_vec!(frames, frame, left, cumul) {
+                            ack_eliciting = true;
+                            in_flight = true;
+                            dgram_emitted = true;
+                        }
+                    }
+                } else {
+                    for frame in tmp_frames {
+                        if push_frame_to_vec!(frames, frame, left, cumul) {
+                            ack_eliciting = true;
+                            in_flight = true;
+                            dgram_emitted = true;
+                        }
+                    }
+                }
             }
         }
 
         // Create a single STREAM frame for the first stream that is flushable.
-        if (pkt_type == packet::Type::Short || pkt_type == packet::Type::ZeroRTT) &&
+        let maybe_stream_header = if (pkt_type == packet::Type::Short || pkt_type == packet::Type::ZeroRTT) &&
             left > frame::MAX_STREAM_OVERHEAD &&
             !is_closing &&
             path.active() &&
             !dgram_emitted
         {
+            let mut maybe_frame = frame::Frame::StreamHeader { stream_id: 0, offset: 0, length: 0, fin: false };
             let hdr_off = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => { b.off() } else {
             b.off() + cumul }};
             let max_stream_window = self.streams.max_stream_window;
@@ -4841,54 +4859,62 @@ impl<F: BufFactory> Connection<F> {
                     },
                 };
 
-                let (len, fin) = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
-                    // Write stream data into the packet buffer; normally right after
-                    // the encrypted header.
-                    let (len, fin) =
-                        stream.send.emit(&mut b.as_mut()[..max_len])?;
-                    // Advance the buffer
-                    b.skip(len)?;
-
-                    // Encode the header reversed
-                    frame::encode_stream_footer(
-                        stream_id,
-                        stream_off,
-                        len as u64,
-                        fin,
-                        &mut b,
-                        )?;
-
-                    // back to the initial index.
-                    b.rewind(len+hdr_len)?;
-
-                    (len, fin)
+                let (len, fin) = if self.use_hidden_crypt_copy_for_zc {
+                    // We'll copy the stream data while encrypting. If the stream
+                    // data is fragmented in smaller sizes than the max payload len
+                    // this method would yield more packets.
+                    stream.send.entry_len(max_len)?
                 } else {
+                    // We copy the data directly into the buffer. Encryption will be inplace.
+                    if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
+                        // Write stream data into the packet buffer; normally right after
+                        // the encrypted header.
+                        let (len, fin) =
+                            stream.send.emit(&mut b.as_mut()[..max_len])?;
+                        // Advance the buffer
+                        b.skip(len)?;
 
-                    let (mut stream_hdr, mut stream_payload) =
-                        b.split_at(hdr_off + hdr_len)?;
-
-                    // Write stream data into the packet buffer.
-                    let (len, fin) =
-                        stream.send.emit(&mut stream_payload.as_mut()[..max_len])?;
-
-                    // Encode the frame's header.
-                    //
-                    // Due to how `OctetsMut::split_at()` works, `stream_hdr` starts
-                    // from the initial offset of `b` (rather than the current
-                    // offset), so it needs to be advanced to the initial frame
-                    // offset.
-                    stream_hdr.skip(hdr_off)?;
-
-                    frame::encode_stream_header(
-                        stream_id,
-                        stream_off,
-                        len as u64,
-                        fin,
-                        &mut stream_hdr,
+                        // Encode the header reversed
+                        frame::encode_stream_footer(
+                            stream_id,
+                            stream_off,
+                            len as u64,
+                            fin,
+                            &mut b,
                         )?;
 
-                    (len, fin)
-                }};
+                        // back to the initial index.
+                        b.rewind(len+hdr_len)?;
+
+                        (len, fin)
+                    } else {
+
+                        let (mut stream_hdr, mut stream_payload) =
+                            b.split_at(hdr_off + hdr_len)?;
+
+                        // Write stream data into the packet buffer.
+                        let (len, fin) =
+                            stream.send.emit(&mut stream_payload.as_mut()[..max_len])?;
+
+                        // Encode the frame's header.
+                        //
+                        // Due to how `OctetsMut::split_at()` works, `stream_hdr` starts
+                        // from the initial offset of `b` (rather than the current
+                        // offset), so it needs to be advanced to the initial frame
+                        // offset.
+                        stream_hdr.skip(hdr_off)?;
+
+                        frame::encode_stream_header(
+                            stream_id,
+                            stream_off,
+                            len as u64,
+                            fin,
+                            &mut stream_hdr,
+                        )?;
+
+                        (len, fin)
+                    }}
+                };
 
                 let frame = frame::Frame::StreamHeader {
                     stream_id,
@@ -4901,16 +4927,27 @@ impl<F: BufFactory> Connection<F> {
                     // we already know that left > frame.wire_len()
                     let wire_len = frame.wire_len();
                     left -= wire_len;
+                    // XXX we should refactor to avoid this.
                     frames.insert(0, frame);
                     ack_eliciting = true;
                     in_flight = true;
                     has_data = true;
                     cumul += wire_len;
                 } else {
-                    if push_frame_to_vec!(frames, frame, left, cumul) {
+                    let wire_len = frame.wire_len();
+                    if self.use_hidden_crypt_copy_for_zc {
+                        maybe_frame = frame;
+                        left -= wire_len;
+                        cumul += wire_len;
                         ack_eliciting = true;
                         in_flight = true;
                         has_data = true;
+                    } else {
+                        if push_frame_to_vec!(frames, frame, left, cumul) {
+                            ack_eliciting = true;
+                            in_flight = true;
+                            has_data = true;
+                        }
                     }
                 }};
 
@@ -4926,14 +4963,28 @@ impl<F: BufFactory> Connection<F> {
                 }
 
                 #[cfg(feature = "fuzzing")]
-                // Coalesce STREAM frames when fuzzing.
-                if left > frame::MAX_STREAM_OVERHEAD {
+                // Coalesce STREAM frames when fuzzing
+                if left > frame::MAX_STREAM_OVERHEAD &&
+                    self.version == crate::PROTOCOL_VERSION_V1 {
                     continue;
+                    // XXX support this with VReverso
                 }
 
                 break;
             }
-        }
+
+            let res = match maybe_frame {
+                frame::Frame::StreamHeader { length, .. } => {
+                    if length > 0 {
+                        Some(maybe_frame)
+                    } else {
+                        None
+                    }
+                },
+                _ => None,
+            };
+            res
+        } else {None};
 
         // Alternate trying to send DATAGRAMs next time.
         self.emit_dgram = !dgram_emitted;
@@ -4973,57 +5024,72 @@ impl<F: BufFactory> Connection<F> {
                 }
             }};
             if let Some(max_len) = left.checked_sub(hdr_len) {
-                let len = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
-                    // located potentally after other control frames
-                    b.skip(cumul)?;
-                    let (len, _) = pkt_space
+                let frame = if self.use_hidden_crypt_copy_for_zc {
+
+                    let (rbvec, length) = pkt_space
                         .crypto_stream
                         .send
-                        .emit(&mut b.as_mut()[..max_len])?;
-                    // this advances b to the Crypto Hdr expected location.
-                    b.skip(len)?;
-                    // Encode the header reversed
-                    frame::encode_crypto_footer(
-                        crypto_off,
-                        len as u64,
-                        &mut b,
-                    )?;
-                    // back to the initial index.
-                    b.rewind(len+hdr_len+cumul)?;
-                    len
+                        .emit_rangebuf_vec(max_len);
+
+                    frame::Frame::CryptoVec {
+                        offset: crypto_off,
+                        length,
+                        rbvec,
+                    }
+
                 } else {
 
-                    let (mut crypto_hdr, mut crypto_payload) =
-                        b.split_at(hdr_off + hdr_len)?;
-                    // Write stream data into the packet buffer.
-                    let (len, _) = pkt_space
-                        .crypto_stream
-                        .send
-                        .emit(&mut crypto_payload.as_mut()[..max_len])?;
+                    let len = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
+                        //located potentally after other control frames
+                        b.skip(cumul)?;
+                        let (len, _) = pkt_space
+                            .crypto_stream
+                            .send
+                            .emit(&mut b.as_mut()[..max_len])?;
+                        // this advances b to the Crypto Hdr expected location.
+                        b.skip(len)?;
+                        // Encode the header reversed
+                        frame::encode_crypto_footer(
+                            crypto_off,
+                            len as u64,
+                            &mut b,
+                        )?;
+                        // back to the initial index.
+                        b.rewind(len+hdr_len+cumul)?;
+                        len
+                    } else {
 
-                    // Encode the frame's header.
-                    //
-                    // Due to how `OctetsMut::split_at()` works, `crypto_hdr` starts
-                    // from the initial offset of `b` (rather than the current
-                    // offset), so it needs to be advanced to the
-                    // initial frame offset.
-                    crypto_hdr.skip(hdr_off)?;
+                        let (mut crypto_hdr, mut crypto_payload) =
+                            b.split_at(hdr_off + hdr_len)?;
+                        // Write stream data into the packet buffer.
+                        let (len, _) = pkt_space
+                            .crypto_stream
+                            .send
+                            .emit(&mut crypto_payload.as_mut()[..max_len])?;
 
-                    frame::encode_crypto_header(
-                        crypto_off,
-                        len as u64,
-                        &mut crypto_hdr,
-                    )?;
+                        // Encode the frame's header.
+                        //
+                        // Due to how `OctetsMut::split_at()` works, `crypto_hdr` starts
+                        // from the initial offset of `b` (rather than the current
+                        // offset), so it needs to be advanced to the
+                        // initial frame offset.
+                        crypto_hdr.skip(hdr_off)?;
 
-                    len
-                }};
+                        frame::encode_crypto_header(
+                            crypto_off,
+                            len as u64,
+                            &mut crypto_hdr,
+                        )?;
 
-                let frame = frame::Frame::CryptoHeader {
-                    offset: crypto_off,
-                    length: len,
+                        len
+                    }};
+
+                    frame::Frame::CryptoHeader {
+                        offset: crypto_off,
+                        length: len,
+                    }
                 };
 
-                #[allow(unused_assignments)]
                 if push_frame_to_vec!(frames, frame, left, cumul) {
                     ack_eliciting = true;
                     in_flight = true;
@@ -5041,8 +5107,6 @@ impl<F: BufFactory> Connection<F> {
             }
         }};
 
-        // Add the frames to the buffer.
-        push_frames_to_pkt!(b, frames, self.version);
 
         // If no other ack-eliciting frame is sent, include a PING frame
         // - if PTO probe needed; OR
@@ -5056,7 +5120,7 @@ impl<F: BufFactory> Connection<F> {
         {
             let frame = frame::Frame::Ping { mtu_probe: None };
 
-            if push_frame_to_pkt!(b, frames, frame, left, self.version) {
+            if push_frame_to_vec!(frames, frame, left, cumul) {
                 ack_eliciting = true;
                 in_flight = true;
             }
@@ -5067,7 +5131,7 @@ impl<F: BufFactory> Connection<F> {
             path.recovery.ping_sent(epoch);
         }
 
-        if frames.is_empty() {
+        if frames.is_empty() && maybe_stream_header.is_none() {
             // When we reach this point we are not able to write more, so set
             // app_limited to false.
             path.recovery.update_app_limited(false);
@@ -5088,31 +5152,75 @@ impl<F: BufFactory> Connection<F> {
         {
             let frame = frame::Frame::Padding { len: left };
 
-            if push_frame_to_pkt!(b, frames, frame, left, self.version) {
+            if push_frame_to_vec!(frames, frame, left, cumul) {
                 in_flight = true;
             }
         }
 
         // Pad payload so that it's always at least 4 bytes if QUIC V1, or 12
         // bytes if QUIC V3.
-        if b.off() - payload_offset < payload_min_len {
-            let payload_len = b.off() - payload_offset;
-            let len = payload_min_len - payload_len;
+        if cumul < payload_min_len {
+            //let payload_len = b.off() - payload_offset;
+            let len = payload_min_len - cumul;
 
             let frame = frame::Frame::Padding { len };
-            if payload_len + frame.wire_len() > left {
+            if cumul + frame.wire_len() > left {
                 // We need to bypass the cwnd restriction; or
                 // we can't send this packed normally containing
                 // an ack.
                 left = frame.wire_len();
             }
             #[allow(unused_assignments)]
-            if push_frame_to_pkt!(b, frames, frame, left, self.version) {
+            if push_frame_to_vec!(frames, frame, left, cumul) {
                 in_flight = true;
             }
         }
 
-        let payload_len = b.off() - payload_offset;
+        // Add the frames to the buffer.
+
+        // With sender copy avoidance, we need a buffer to pack all control
+        // The data will be send without copy; ctrl information are written
+        // inside this buffer with the goal to encrypt them next to the zero-copy
+        // encryted data, in out.
+        let (ctrl, b_len, b_ctrl_len) = if self.use_hidden_crypt_copy_for_zc {
+
+            // If we're in VReverso, the frame should be first.
+            let stream_len = if self.version == crate::PROTOCOL_VERSION_VREVERSO {
+                if let Some(frame::Frame::StreamHeader { length, ..}) = frames.get(0) {
+                    *length
+                } else {
+                    0_usize
+                }
+            } else {
+                // The StreamHeader frame should be last.
+                if let Some(frame) = maybe_stream_header {
+                    cumul -= frame.wire_len();
+                    left += frame.wire_len();
+                    let len = if let frame::Frame::StreamHeader { length, ..} = frame {
+                        length
+                    } else {
+                        0_usize
+                    };
+
+                    #[allow(unused_assignments)]
+                    if push_frame_to_vec!(frames, frame, left, cumul) {
+                        len
+                    } else {
+                        0_usize
+                    }
+                } else { 0_usize }
+            };
+            let mut ctrl = vec![0; cumul-stream_len];
+            let mut b_ctrl = octets_rev::OctetsMut::with_slice(&mut ctrl);
+            push_frames_to_pkt!(b_ctrl, frames, self.use_hidden_crypt_copy_for_zc, self.version);
+            let b_ctrl_len = b_ctrl.off();
+            (Some(ctrl), stream_len, b_ctrl_len)
+        } else {
+            push_frames_to_pkt!(b, frames, self.use_hidden_crypt_copy_for_zc, self.version);
+            (None, b.off() - payload_offset, 0_usize)
+        };
+
+        let payload_len = b_len + b_ctrl_len;
 
         // Fill in payload length.
         if pkt_type != packet::Type::Short {
@@ -5190,21 +5298,76 @@ impl<F: BufFactory> Connection<F> {
             None => return Err(Error::InvalidState),
         };
 
-        let enc_hdr_len = if_likely! {self.version == crate::PROTOCOL_VERSION_VREVERSO => {
-            pn_len + self.expected_stream_id_len + self.truncated_offset_len
+
+        let written = if self.use_hidden_crypt_copy_for_zc {
+
+            let (rangebuf, stream_id, enc_hdr_len) = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
+                if let Some(frame::Frame::StreamHeader { stream_id, ..}) = frames.get(0) {
+                    (self.streams.get_mut(*stream_id).map(|s| s.send.entry_get()).flatten(), *stream_id, pn_len + self.expected_stream_id_len + self.truncated_offset_len)
+                } else {
+                    (None, 0, pn_len + self.expected_stream_id_len + self.truncated_offset_len)
+                }
+            } else {
+                if let Some(frame::Frame::StreamHeader { stream_id, ..}) = frames.last() {
+                    (self.streams.get_mut(*stream_id).map(|s| s.send.entry_get()).flatten(), *stream_id, pn_len)
+                } else {
+                    (None, 0, pn_len)
+                }
+            }};
+
+            let written = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
+                // We ecnrypt with the data in inbuf and the ctrl data in extra_in, starting
+                // with the reversed stream frame
+                packet::encrypt_pkt(
+                    &mut b,
+                    rangebuf.as_ref().map(|rb| &rb[..b_len]),
+                    pn,
+                    enc_hdr_len,
+                    b_len,
+                    payload_offset,
+                    ctrl.as_deref(),
+                    aead,
+                    self.version,
+                )?
+            } else {
+                // We encrypt with the data in extra_in and the ctrl in inbuf, with 
+                // the stream header at the end of the ctrl.
+                packet::encrypt_pkt(
+                    &mut b,
+                    ctrl.as_deref(),
+                    pn,
+                    enc_hdr_len,
+                    b_ctrl_len,
+                    payload_offset,
+                    rangebuf.as_ref().map(|rb| &rb[..b_len]),
+                    aead,
+                    self.version,
+                )?
+            }};
+
+            if rangebuf.is_some() {
+                self.streams.get_mut(stream_id).map(|s| s.send.entry_consume(b_len));
+            }
+
+            written
         } else {
-            pn_len
-        }};
-        let written = packet::encrypt_pkt(
-            &mut b,
-            pn,
-            enc_hdr_len,
-            payload_len,
-            payload_offset,
-            None,
-            aead,
-            self.version,
-        )?;
+            let enc_hdr_len = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
+                pn_len + self.expected_stream_id_len + self.truncated_offset_len
+            } else {
+                pn_len
+            }};
+            packet::encrypt_pkt(
+                &mut b,
+                None,
+                pn,
+                enc_hdr_len,
+                payload_len,
+                payload_offset,
+                None,
+                aead,
+                self.version,
+            )?
+        };
 
         self.expected_stream_id_len = 1;
         self.truncated_offset_len = 1;
@@ -8016,7 +8179,7 @@ impl<F: BufFactory> Connection<F> {
             },
 
             frame::Frame::CryptoHeader { .. } => unreachable!(),
-
+            frame::Frame::CryptoVec { .. } => unreachable!(),
             // TODO: implement stateless retry
             frame::Frame::NewToken { .. } =>
                 if self.is_server {
@@ -10026,6 +10189,7 @@ pub mod testing {
 
         let written = packet::encrypt_pkt(
             &mut b,
+            None,
             pn,
             hdr_enc_len,
             payload_len,
@@ -10195,6 +10359,61 @@ mod tests {
 
     use super::*;
     use testing::Pipe;
+
+    #[derive(Debug, Clone, Default)]
+    struct BufTestFactory;
+
+    #[derive(Debug, Clone, Default, PartialEq)]
+    struct BufTest {
+        inner: Arc<Box<[u8]>>,
+        start: usize,
+        end: usize,
+    }
+
+    impl BufTest {
+        fn new(inner: Arc<Box<[u8]>>, start: usize, end: usize) -> Self {
+            Self { inner, start, end }
+        }
+
+        fn len(&self) -> usize {
+            self.end - self.start
+        }
+
+    }
+
+    impl BufFactory for BufTestFactory {
+        type Buf = BufTest;
+
+        fn buf_from_slice(buf: &[u8]) -> Self::Buf {
+            BufTest {
+                start: 0,
+                end: buf.len(),
+                inner: Arc::new(buf.into()),
+            }
+        }
+    }
+
+    impl BufSplit for BufTest {
+        // Split the buffer at a given point, after the split the old buffer
+        // must only contain the first `at` bytes, while the newly produced
+        // buffer must containt the remaining bytes.
+        fn split_at(&mut self, at: usize) -> Self {
+            assert!(at <= self.len(), "split_at index out of bounds");
+
+            let newend = self.start + at;
+            let buf = BufTest::new(self.inner.clone(), newend, self.end);
+
+            self.end = newend;
+
+            buf
+        }
+    }
+
+    impl AsRef<[u8]> for BufTest {
+        fn as_ref(&self) -> &[u8] {
+            &self.inner[self.start..self.end]
+        }
+    }
 
     #[test]
     fn transport_params() {
@@ -12533,6 +12752,120 @@ mod tests {
     }
 
     #[test]
+    fn stream_data_with_hidden_copy_using_stream_send() {
+        let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
+
+        config
+            .load_cert_chain_from_pem_file("examples/cert.crt")
+            .unwrap();
+        config
+            .load_priv_key_from_pem_file("examples/cert.key")
+            .unwrap();
+        config
+            .set_application_protos(&[b"proto1", b"proto2"])
+            .unwrap();
+        config.set_initial_max_data(30);
+        config.set_initial_max_stream_data_bidi_local(30);
+        config.set_initial_max_stream_data_bidi_remote(30);
+        config.set_initial_max_streams_bidi(3);
+        config.enable_early_data();
+        config.enable_hidden_copy_for_zc_sender(true);
+        config.verify_peer(false);
+
+        // Perform initial handshake.
+        let mut pipe = <Pipe>::with_config(&mut config).unwrap();
+        assert_eq!(pipe.handshake(), Ok(()));
+
+        assert_eq!(pipe.client.stream_send(4, b"boup", true), Ok(4));
+        assert_eq!(pipe.advance(), Ok(()));
+
+        assert_eq!(pipe.client.stream_send(8, b"hello, world", false), Ok(12));
+        assert_eq!(pipe.client.stream_send(8, b"ciao, world", true), Ok(11));
+
+        let mut buf = [0; 128];
+
+        // Sender would send chunks of 5 bytes, with no copy accross the two buffers.
+        // So we expect 6 packets.
+        for _ in 0..6 {
+            let (len, _) = pipe.client.send(&mut buf).unwrap();
+            assert_eq!(len, 48);
+            assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
+        }
+
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+            let (_, len, fin) = pipe
+                .server
+                .stream_recv_v3(8, &mut pipe.server_app_buffers)
+                .unwrap();
+            assert_eq!((len, fin), (23, true));
+            assert!(pipe
+                .server
+                .stream_consumed(8, len, &mut pipe.server_app_buffers)
+                .is_ok());
+        } else {
+            assert_eq!(pipe.server.stream_recv(8, &mut buf), Ok((23, true)));
+        }
+
+    }
+
+    #[test]
+    fn stream_data_with_hidden_copy_using_stream_send_zc() {
+
+        let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
+
+        config
+            .load_cert_chain_from_pem_file("examples/cert.crt")
+            .unwrap();
+        config
+            .load_priv_key_from_pem_file("examples/cert.key")
+            .unwrap();
+        config
+            .set_application_protos(&[b"proto1", b"proto2"])
+            .unwrap();
+        config.set_initial_max_data(30);
+        config.set_initial_max_stream_data_bidi_local(30);
+        config.set_initial_max_stream_data_bidi_remote(30);
+        config.set_initial_max_streams_bidi(3);
+        config.enable_early_data();
+        config.enable_hidden_copy_for_zc_sender(true);
+        config.verify_peer(false);
+
+        // Perform initial handshake.
+        let mut pipe = Pipe::<BufTestFactory>::with_config(&mut config).unwrap();
+        assert_eq!(pipe.handshake(), Ok(()));
+
+        assert_eq!(pipe.client.stream_send_zc(4, BufTestFactory::buf_from_slice(b"boup"), Some(4), true), Ok((4, None)));
+        assert_eq!(pipe.advance(), Ok(()));
+
+        assert_eq!(pipe.client.stream_send_zc(8, BufTestFactory::buf_from_slice(b"hello, world"), Some(12), false), Ok((12, None)));
+        assert_eq!(pipe.client.stream_send_zc(8, BufTestFactory::buf_from_slice(b"ciao, world"), Some(11), true), Ok((11, None)));
+
+        let mut buf = [0; 256];
+        // Sender would send 1 packet for each buffer since we enabled usage of the
+        // encryption's hidden copy for packet assembly.
+        let (len1, _) = pipe.client.send(&mut buf).unwrap();
+        let (len2, _) = pipe.client.send(&mut buf[len1..]).unwrap();
+        assert_eq!(pipe.server_recv(&mut buf[..len1]), Ok(len1));
+        assert_eq!(pipe.server_recv(&mut buf[len1..len1+len2]), Ok(len2));
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+            assert_eq!((len1, len2), (53, 52));
+            let (_, len, fin) = pipe
+                .server
+                .stream_recv_v3(8, &mut pipe.server_app_buffers)
+                .unwrap();
+            assert_eq!((len, fin), (23, true));
+            assert!(pipe
+                .server
+                .stream_consumed(8, len, &mut pipe.server_app_buffers)
+                .is_ok());
+        } else {
+            assert_eq!((len1, len2), (51, 50));
+            assert_eq!(pipe.server.stream_recv(8, &mut buf), Ok((23, true)));
+        }
+
+    }
+
+    #[test]
     fn stream_data_overlap() {
         let mut buf = [0; 65535];
 
@@ -14427,6 +14760,7 @@ mod tests {
 
         let written = packet::encrypt_pkt(
             &mut b,
+            None,
             pn,
             pn_len,
             payload_len,
@@ -18433,6 +18767,7 @@ mod tests {
         // Server sends PTO probe (not limited to cwnd),
         // to update last_tx_data.
         let (len, _) = pipe.server.send(&mut buf).unwrap();
+
         assert_eq!(len, 1200);
 
         // Client sends STOP_SENDING to decrease tx_data
@@ -20581,6 +20916,7 @@ mod tests {
 
         let written = packet::encrypt_pkt(
             &mut b,
+            None,
             pn,
             pn_len,
             payload_len,

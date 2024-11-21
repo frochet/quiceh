@@ -928,7 +928,8 @@ pub fn encrypt_hdr(
 }
 
 pub fn encrypt_pkt(
-    b: &mut octets_rev::OctetsMut, pn: u64, hdr_enc_len: usize,
+    b: &mut octets_rev::OctetsMut, inbuf: Option<&[u8]>,
+    pn: u64, hdr_enc_len: usize,
     payload_len: usize, payload_offset: usize, extra_in: Option<&[u8]>,
     aead: &crypto::Seal, version: u32,
 ) -> Result<usize> {
@@ -939,6 +940,7 @@ pub fn encrypt_pkt(
         header.as_ref(),
         payload.as_mut(),
         payload_len,
+        inbuf,
         extra_in,
     )?;
 
@@ -1920,6 +1922,7 @@ mod tests {
 
         let written = encrypt_pkt(
             &mut b,
+            None,
             pn,
             pn_len,
             payload_len,
@@ -2260,6 +2263,7 @@ mod tests {
 
         let written = encrypt_pkt(
             &mut b,
+            None,
             pn,
             enc_len,
             payload_len,
