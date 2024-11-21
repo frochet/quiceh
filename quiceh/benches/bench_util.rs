@@ -5,6 +5,7 @@ use criterion::Throughput;
 use quiceh::BufFactory;
 use quiceh::BufSplit;
 use std::time::Duration;
+use std::sync::Arc;
 
 const NANOS_PER_SEC: u64 = 1_000_000_000;
 
@@ -12,13 +13,13 @@ const NANOS_PER_SEC: u64 = 1_000_000_000;
 pub struct BenchBufFactory;
 
 #[derive(Debug, Clone, Default)]
-pub struct BenchBuf(Box<[u8]>);
+pub struct BenchBuf(Arc<Box<[u8]>>);
 
 impl BufFactory for BenchBufFactory {
     type Buf = BenchBuf;
 
     fn buf_from_slice(buf: &[u8]) -> Self::Buf {
-        BenchBuf(buf.into())
+        BenchBuf(Arc::new(buf.into()))
     }
 }
 
@@ -28,8 +29,14 @@ impl AsRef<[u8]> for BenchBuf {
     }
 }
 
+impl From<Vec<u8>> for BenchBuf {
+    fn from(value: Vec<u8>) -> Self {
+        BenchBuf(Arc::new(value.into_boxed_slice()))
+    }
+}
+
 impl BufSplit for BenchBuf {
-    fn split_at(&mut self, at: usize) -> Self {
+    fn split_at(&mut self, _at: usize) -> Self {
         // There is enough capacity in the stream send buffer for the simple
         // bench of 10 QUIC packets we run. This function is then never called
         // internally in quiceh.

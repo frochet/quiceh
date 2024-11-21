@@ -92,6 +92,12 @@ pub enum Frame {
         data: RangeBuf,
     },
 
+    CryptoVec {
+        offset: u64,
+        length: usize,
+        rbvec: Vec<RangeBuf>,
+    },
+
     CryptoHeader {
         offset: u64,
         length: usize,
@@ -680,6 +686,7 @@ impl Frame {
             },
 
             Frame::CryptoHeader { .. } => (),
+            Frame::CryptoVec { .. } => (),
 
             Frame::NewToken { token } => {
                 if_likely! {version == crate::PROTOCOL_VERSION_VREVERSO => {
@@ -1020,6 +1027,13 @@ impl Frame {
                 data.len() // data
             },
 
+            Frame::CryptoVec { offset, length, .. } => {
+                1 + // frame type
+                octets_rev::varint_len(*offset) +
+                2 +
+                length  // data
+            },
+
             Frame::CryptoHeader { offset, length, .. } => {
                 1 + // frame type
                 octets_rev::varint_len(*offset) + // offset
@@ -1265,7 +1279,8 @@ impl Frame {
                 length: data.len() as u64,
             },
 
-            Frame::CryptoHeader { offset, length } => QuicFrame::Crypto {
+            Frame::CryptoHeader { offset, length } |
+            Frame::CryptoVec { offset, length, .. } => QuicFrame::Crypto {
                 offset: *offset,
                 length: *length as u64,
             },
@@ -1456,6 +1471,10 @@ impl std::fmt::Debug for Frame {
             },
 
             Frame::CryptoHeader { offset, length } => {
+                write!(f, "CRYPTO off={offset} len={length}")?;
+            },
+
+            Frame::CryptoVec { offset, length, .. } => {
                 write!(f, "CRYPTO off={offset} len={length}")?;
             },
 
