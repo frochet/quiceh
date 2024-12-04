@@ -28,6 +28,7 @@ use likely_stable::if_unlikely;
 /// Zero-copy abstraction for parsing and constructing network packets.
 use std::mem;
 use std::ptr;
+use std::ops::Deref;
 
 /// A specialized [`Result`] type for [`OctetsMut`] operations.
 ///
@@ -484,6 +485,14 @@ impl<'a> Octets<'a> {
 
 impl<'a> AsRef<[u8]> for Octets<'a> {
     fn as_ref(&self) -> &[u8] {
+        &self.buf[self.off..]
+    }
+}
+
+impl<'a> Deref for Octets<'a> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
         &self.buf[self.off..]
     }
 }

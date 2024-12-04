@@ -45,7 +45,7 @@ fn bench_stream_send_zc<F: BufFactory<Buf = BenchBuf>>(
     pipe.client
         .stream_send_zc(
             4,
-            BenchBufFactory::buf_from_slice(&sendbuf),
+            sendbuf.into(),
             Some(10000),
             true,
         )
@@ -92,7 +92,7 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
     config.set_initial_max_stream_data_bidi_local(10_000_000_000);
     config.set_initial_max_stream_data_bidi_remote(10_000_000_000);
     config.verify_peer(false);
-    config.enable_hidden_copy_for_zc_sender(false);
+    config.enable_hidden_copy_for_zc_sender(true);
 
     let mut group = c.benchmark_group("send_path");
     group.throughput(Throughput::Bytes(10000));

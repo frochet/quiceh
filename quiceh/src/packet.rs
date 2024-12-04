@@ -928,23 +928,23 @@ pub fn encrypt_hdr(
 }
 
 pub fn encrypt_pkt(
-    b: &mut octets_rev::OctetsMut, inbuf: Option<&[u8]>,
+    b: &mut octets_rev::OctetsMut, inbuf: &Option<&[u8]>,
     pn: u64, hdr_enc_len: usize,
-    payload_len: usize, payload_offset: usize, extra_in: Option<&[u8]>,
+    payload_len: usize, payload_offset: usize, extra_in: &Option<&[u8]>,
     aead: &crypto::Seal, version: u32,
 ) -> Result<usize> {
-    let (mut header, mut payload) = b.split_at(payload_offset)?;
+    let (header, mut payload) = b.split_at(payload_offset)?;
 
     let ciphertext_len = aead.seal_with_u64_counter(
         pn,
         header.as_ref(),
         payload.as_mut(),
         payload_len,
-        inbuf,
-        extra_in,
+        inbuf.map(|b| b.as_ref()),
+        extra_in.map(|b| b.as_ref()),
     )?;
 
-    encrypt_hdr(&mut header, hdr_enc_len, payload.as_ref(), aead, version)?;
+    //encrypt_hdr(&mut header, hdr_enc_len, payload.as_ref(), aead, version)?;
 
     Ok(payload_offset + ciphertext_len)
 }
@@ -1922,12 +1922,12 @@ mod tests {
 
         let written = encrypt_pkt(
             &mut b,
-            None,
+            &None,
             pn,
             pn_len,
             payload_len,
             payload_offset,
-            None,
+            &None,
             &aead,
             crate::PROTOCOL_VERSION_V1,
         )
@@ -2263,12 +2263,12 @@ mod tests {
 
         let written = encrypt_pkt(
             &mut b,
-            None,
+            &None,
             pn,
             enc_len,
             payload_len,
             payload_offset,
-            None,
+            &None,
             &aead,
             crate::PROTOCOL_VERSION_V1,
         )

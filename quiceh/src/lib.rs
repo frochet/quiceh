@@ -1997,7 +1997,7 @@ macro_rules! qlog_with_type {
 const QLOG_PARAMS_SET: EventType =
     EventType::TransportEventType(TransportEventType::ParametersSet);
 
-#[cfg(feature = "qlog")]
+#[cfg(feature= "qlog")]
 const QLOG_PACKET_RX: EventType =
     EventType::TransportEventType(TransportEventType::PacketReceived);
 
@@ -5182,16 +5182,20 @@ impl<F: BufFactory> Connection<F> {
         // The data will be send without copy; ctrl information are written
         // inside this buffer with the goal to encrypt them next to the zero-copy
         // encryted data, in out.
-        let (ctrl, b_len, b_ctrl_len) = if self.use_hidden_crypt_copy_for_zc {
+        let (mut b_start, ctrl, b_len, b_ctrl_len) = if self.use_hidden_crypt_copy_for_zc {
 
             // If we're in VReverso, the frame should be first.
-            let stream_len = if self.version == crate::PROTOCOL_VERSION_VREVERSO {
-                if let Some(frame::Frame::StreamHeader { length, ..}) = frames.get(0) {
+            let (b_start, mut b_ctrl, stream_len) = if self.version == crate::PROTOCOL_VERSION_VREVERSO {
+                let stream_len = if let Some(frame::Frame::StreamHeader { length, ..}) = frames.get(0) {
                     *length
                 } else {
                     0_usize
-                }
+                };
+                let (b, b_ctrl) = b.split_at(payload_offset+stream_len)?;
+                (b, b_ctrl, stream_len)
             } else {
+                // In V1 we would start with the ctrl.
+                let (b, b_ctrl) = b.split_at(payload_offset)?;
                 // The StreamHeader frame should be last.
                 if let Some(frame) = maybe_stream_header {
                     cumul -= frame.wire_len();
@@ -5204,20 +5208,21 @@ impl<F: BufFactory> Connection<F> {
 
                     #[allow(unused_assignments)]
                     if push_frame_to_vec!(frames, frame, left, cumul) {
-                        len
+                        (b, b_ctrl, len)
                     } else {
-                        0_usize
+                       (b, b_ctrl, 0_usize)
                     }
-                } else { 0_usize }
+                } else { (b, b_ctrl, 0_usize) }
             };
-            let mut ctrl = vec![0; cumul-stream_len];
-            let mut b_ctrl = octets_rev::OctetsMut::with_slice(&mut ctrl);
-            push_frames_to_pkt!(b_ctrl, frames, self.use_hidden_crypt_copy_for_zc, self.version);
+            //let mut ctrl = vec![0; cumul-stream_len];
+            //let mut b_ctrl = octets_rev::OctetsMut::with_slice(&mut ctrl);
+            push_frames_to_pkt!(b_ctrl, frames, true, self.version);
             let b_ctrl_len = b_ctrl.off();
-            (Some(ctrl), stream_len, b_ctrl_len)
+            (b_start, Some(b_ctrl), stream_len, b_ctrl_len)
         } else {
-            push_frames_to_pkt!(b, frames, self.use_hidden_crypt_copy_for_zc, self.version);
-            (None, b.off() - payload_offset, 0_usize)
+            push_frames_to_pkt!(b, frames, false, self.version);
+            let b_len = b.off() - payload_offset;
+            (b, None, b_len, 0_usize)
         };
 
         let payload_len = b_len + b_ctrl_len;
@@ -5231,7 +5236,7 @@ impl<F: BufFactory> Connection<F> {
             }};
 
             let (_, mut payload_with_len) =
-                b.split_at(header_offset_for_length)?;
+                b_start.split_at(header_offset_for_length)?;
             payload_with_len
                 .put_varint_with_len(len as u64, PAYLOAD_LENGTH_LEN)?;
         }
@@ -5303,13 +5308,17 @@ impl<F: BufFactory> Connection<F> {
 
             let (rangebuf, stream_id, enc_hdr_len) = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
                 if let Some(frame::Frame::StreamHeader { stream_id, ..}) = frames.get(0) {
-                    (self.streams.get_mut(*stream_id).map(|s| s.send.entry_get()).flatten(), *stream_id, pn_len + self.expected_stream_id_len + self.truncated_offset_len)
+                    (self.streams.get_mut(*stream_id)
+                     .and_then(|s| s.send.entry_get())
+                     .and_then(|rb| Some(&rb[..b_len])), *stream_id, pn_len + self.expected_stream_id_len + self.truncated_offset_len)
                 } else {
                     (None, 0, pn_len + self.expected_stream_id_len + self.truncated_offset_len)
                 }
             } else {
                 if let Some(frame::Frame::StreamHeader { stream_id, ..}) = frames.last() {
-                    (self.streams.get_mut(*stream_id).map(|s| s.send.entry_get()).flatten(), *stream_id, pn_len)
+                    (self.streams.get_mut(*stream_id)
+                     .and_then(|s| s.send.entry_get())
+                     .and_then(|rb| Some(&rb[..b_len])), *stream_id, pn_len)
                 } else {
                     (None, 0, pn_len)
                 }
@@ -5318,31 +5327,59 @@ impl<F: BufFactory> Connection<F> {
             let written = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
                 // We ecnrypt with the data in inbuf and the ctrl data in extra_in, starting
                 // with the reversed stream frame
-                packet::encrypt_pkt(
-                    &mut b,
-                    rangebuf.as_ref().map(|rb| &rb[..b_len]),
-                    pn,
-                    enc_hdr_len,
-                    b_len,
-                    payload_offset,
-                    ctrl.as_deref(),
-                    aead,
-                    self.version,
-                )?
+                if let Some(ctrl) = ctrl {
+                    packet::encrypt_pkt(
+                        &mut b_start,
+                        &rangebuf,
+                        pn,
+                        enc_hdr_len,
+                        b_len,
+                        payload_offset,
+                        &Some(ctrl.as_ref()),
+                        aead,
+                        self.version,
+                    )?
+                } else {
+                    packet::encrypt_pkt(
+                        &mut b_start,
+                        &rangebuf,
+                        pn,
+                        enc_hdr_len,
+                        b_len,
+                        payload_offset,
+                        &None,
+                        aead,
+                        self.version,
+                    )?
+                }
             } else {
                 // We encrypt with the data in extra_in and the ctrl in inbuf, with 
                 // the stream header at the end of the ctrl.
-                packet::encrypt_pkt(
-                    &mut b,
-                    ctrl.as_deref(),
-                    pn,
-                    enc_hdr_len,
-                    b_ctrl_len,
-                    payload_offset,
-                    rangebuf.as_ref().map(|rb| &rb[..b_len]),
-                    aead,
-                    self.version,
-                )?
+                if let Some(ctrl) = ctrl {
+                    packet::encrypt_pkt(
+                        &mut b_start,
+                        &Some(ctrl.as_ref()),
+                        pn,
+                        enc_hdr_len,
+                        b_ctrl_len,
+                        payload_offset,
+                        &rangebuf,
+                        aead,
+                        self.version,
+                    )?
+                } else {
+                    packet::encrypt_pkt(
+                        &mut b_start,
+                        &None,
+                        pn,
+                        enc_hdr_len,
+                        b_ctrl_len,
+                        payload_offset,
+                        &rangebuf,
+                        aead,
+                        self.version,
+                    )?
+                }
             }};
 
             if rangebuf.is_some() {
@@ -5357,17 +5394,27 @@ impl<F: BufFactory> Connection<F> {
                 pn_len
             }};
             packet::encrypt_pkt(
-                &mut b,
-                None,
+                &mut b_start,
+                &None,
                 pn,
                 enc_hdr_len,
                 payload_len,
                 payload_offset,
-                None,
+                &None,
                 aead,
                 self.version,
             )?
         };
+
+
+        let enc_hdr_len = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
+            pn_len + self.expected_stream_id_len + self.truncated_offset_len
+        } else {
+            pn_len
+        }};
+        let mut b = octets_rev::OctetsMut::with_slice(out);
+        let (mut header, payload) = b.split_at(payload_offset)?;
+        packet::encrypt_hdr(&mut header, enc_hdr_len, payload.as_ref(), aead, self.version)?;
 
         self.expected_stream_id_len = 1;
         self.truncated_offset_len = 1;
@@ -10189,12 +10236,12 @@ pub mod testing {
 
         let written = packet::encrypt_pkt(
             &mut b,
-            None,
+            &None,
             pn,
             hdr_enc_len,
             payload_len,
             payload_offset,
-            None,
+            &None,
             aead,
             conn.version,
         )?;
@@ -14760,12 +14807,12 @@ mod tests {
 
         let written = packet::encrypt_pkt(
             &mut b,
-            None,
+            &None,
             pn,
             pn_len,
             payload_len,
             payload_offset,
-            None,
+            &None,
             aead,
             pipe.client.version,
         )
@@ -20916,12 +20963,12 @@ mod tests {
 
         let written = packet::encrypt_pkt(
             &mut b,
-            None,
+            &None,
             pn,
             pn_len,
             payload_len,
             payload_offset,
-            None,
+            &None,
             aead,
             pipe.client.version,
         )

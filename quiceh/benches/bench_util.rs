@@ -29,6 +29,12 @@ impl AsRef<[u8]> for BenchBuf {
     }
 }
 
+impl From<Vec<u8>> for BenchBuf {
+    fn from(value: Vec<u8>) -> Self {
+        BenchBuf(Arc::new(value.into_boxed_slice()))
+    }
+}
+
 impl BufSplit for BenchBuf {
     fn split_at(&mut self, _at: usize) -> Self {
         // There is enough capacity in the stream send buffer for the simple

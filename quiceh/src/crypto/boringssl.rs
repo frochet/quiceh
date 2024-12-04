@@ -122,18 +122,34 @@ impl Seal {
 
         let tag_len = self.alg().tag_len();
 
-
+        // So: if we use hidden_copy
+        //
+        // buf is the desitination buffer whose length
+        // ends at the payload offset.
+        //
+        // If REVERSO:
+        //  in_buf is the stream_frame of in_buf.len() bytes
+        //  extra_in is pointing to buf at payload_offset+stream_len.
+        //  remaining length should hold extra_in_len + tag_len
+        //
+        // if V1:
+        //  in_buf is the ctrl data which is contained inside buf at position payload_offset
+        //  this is expected to be written in buf at the same position.
+        //  the length of in_buf should be able to hold ctrl_len, stream_len and tag_len
+        //  extra_in contains the stream_frame of stream_len bytes.
+        //
         let (extra_in_ptr, extra_in_len) = match extra_in {
             Some(v) => (v.as_ptr(), v.len()),
-
-            None => (std::ptr::null(), 0),
+            None =>  {
+                // Make sure all the outputs combined fit in the buffer.
+                if in_len + tag_len > buf.len() {
+                    return Err(Error::CryptoFail);
+                }
+                (std::ptr::null(), 0)
+            }
         };
 
         let mut out_tag_len = tag_len + extra_in_len;
-        // Make sure all the outputs combined fit in the buffer.
-        if in_len + tag_len + extra_in_len > buf.len() {
-            return Err(Error::CryptoFail);
-        }
 
         let nonce = make_nonce(&self.packet.nonce, counter);
 
