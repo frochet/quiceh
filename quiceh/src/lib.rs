@@ -3234,7 +3234,6 @@ impl<F: BufFactory> Connection<F> {
 
         if self.is_server && !self.got_peer_conn_id {
             self.set_initial_dcid(hdr.scid.clone(), None, recv_pid)?;
-
             if !self.did_retry {
                 self.local_transport_params
                     .original_destination_connection_id =
@@ -7942,6 +7941,13 @@ impl<F: BufFactory> Connection<F> {
         let send_path = self.paths.get(send_pid)?;
         if (self.is_established() || self.is_in_early_data()) &&
             (self.should_send_handshake_done() ||
+                self.streams.has_flushable() ||
+                self.streams.has_almost_full() ||
+                self.streams.has_blocked() ||
+                self.streams.has_reset() ||
+                self.streams.has_stopped() ||
+                self.ids.has_new_scids() ||
+                self.ids.has_retire_dcids() ||
                 self.almost_full ||
                 self.blocked_limit.is_some() ||
                 self.dgram_send_queue.has_pending() ||
@@ -7950,13 +7956,6 @@ impl<F: BufFactory> Connection<F> {
                     .map_or(false, |conn_err| conn_err.is_app) ||
                 self.streams.should_update_max_streams_bidi() ||
                 self.streams.should_update_max_streams_uni() ||
-                self.streams.has_flushable() ||
-                self.streams.has_almost_full() ||
-                self.streams.has_blocked() ||
-                self.streams.has_reset() ||
-                self.streams.has_stopped() ||
-                self.ids.has_new_scids() ||
-                self.ids.has_retire_dcids() ||
                 send_path.pmtud.get_probe_status() ||
                 send_path.needs_ack_eliciting ||
                 send_path.probing_required())
@@ -12846,6 +12845,7 @@ mod tests {
         // encryption's hidden copy for packet assembly.
         let (len1, _) = pipe.client.send(&mut buf).unwrap();
         let (len2, _) = pipe.client.send(&mut buf[len1..]).unwrap();
+
         assert_eq!(pipe.server_recv(&mut buf[..len1]), Ok(len1));
         assert_eq!(pipe.server_recv(&mut buf[len1..len1+len2]), Ok(len2));
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
