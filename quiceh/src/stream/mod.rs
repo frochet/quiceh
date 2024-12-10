@@ -192,6 +192,11 @@ impl<F: BufFactory> StreamMap<F> {
         self.streams.get_mut(&id)
     }
 
+    /// Returns an Entry to the Stream ID id.
+    pub fn entry(&mut self, id: u64) -> hash_map::Entry<u64, Stream<F>> {
+        self.streams.entry(id)
+    }
+
     /// Returns the mutable stream with the given ID if it exists, or creates
     /// a new one otherwise.
     ///

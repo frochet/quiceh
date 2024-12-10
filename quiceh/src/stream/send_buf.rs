@@ -233,7 +233,7 @@ impl<F: BufFactory> SendBuf<F> {
         Ok((ret, remainder))
     }
 
-    pub fn entry_len(&mut self, cap: usize) -> Result<(usize, bool)> {
+    pub fn rangebuf_len(&mut self, cap: usize) -> Result<(usize, bool)> {
 
         let next_off = self.off_front();
         let mut fin = self.fin_off == Some(next_off);
@@ -263,11 +263,11 @@ impl<F: BufFactory> SendBuf<F> {
         Ok((buf_len, fin))
     }
 
-    pub fn entry_get(&mut self) -> Option<&mut RangeBuf<F>> {
-        self.data.get_mut(self.pos)
+    pub fn rangebuf_get(&self) -> Option<&RangeBuf<F>> {
+        self.data.get(self.pos)
     }
 
-    pub fn entry_consume(&mut self, consumed: usize) {
+    pub fn rangebuf_consume(&mut self, consumed: usize) {
 
         let buf = match self.data.get_mut(self.pos) {
             Some(v) => v,

@@ -137,6 +137,7 @@ fn send_bench_hidden_copy(c: &mut Criterion<CPUTime>) {
     config.set_initial_max_stream_data_bidi_remote(10_000_000_000);
     config.set_initial_congestion_window_packets(20_000_000);
     config.verify_peer(false);
+    config.enable_pacing(false);
     config.enable_hidden_copy_for_zc_sender(true);
 
     bench_sender(c, &mut config, "send_path_with_hidden_copy");
@@ -168,6 +169,7 @@ fn send_bench_no_hidden_copy(c: &mut Criterion<CPUTime>) {
     config.set_initial_max_stream_data_bidi_remote(10_000_000_000);
     config.set_initial_congestion_window_packets(20_000_000);
     config.verify_peer(false);
+    config.enable_pacing(false);
     config.enable_hidden_copy_for_zc_sender(false);
 
     bench_sender(c, &mut config, "send_path_no_hidden_copy");
@@ -177,7 +179,7 @@ fn send_bench_no_hidden_copy(c: &mut Criterion<CPUTime>) {
 criterion_group! {
     name = send_cwin_bench;
     config = Criterion::default()
-        .measurement_time(std::time::Duration::from_millis(1000))
+        .measurement_time(std::time::Duration::from_millis(10000))
         .with_measurement(CPUTime)
         .sample_size(5000);
     targets = send_bench_no_hidden_copy, send_bench_hidden_copy
