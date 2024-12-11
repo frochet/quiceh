@@ -9,6 +9,8 @@ use criterion::Criterion;
 use criterion::Throughput;
 use quiceh::testing::Pipe;
 use quiceh::BufFactory;
+use criterion_cycles_per_byte::CyclesPerByte;
+
 use quiceh::BufSplit;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
@@ -66,30 +68,11 @@ fn bench_stream_send_zc<F: BufFactory<Buf = BenchBuf>>(
     black_box(outbuf);
 }
 
-fn bench_sender(c: &mut Criterion<CPUTime>, config: &mut quiceh::Config, name: &str) {
+fn bench_sender(c: &mut Criterion<CyclesPerByte>, config: &mut quiceh::Config, name: &str) {
     let mut group = c.benchmark_group(name);
     group.throughput(Throughput::Bytes(10000));
 
     let sendbuf = vec![0; 10000];
-    group.bench_with_input(
-        BenchmarkId::new("send_path", 10000),
-        &sendbuf,
-        |b, sendbuf| {
-            b.iter_batched_ref(
-                || {
-                    let mut pipe = Pipe::with_config(config).unwrap();
-                    pipe.handshake().unwrap();
-                    let outbuf = vec![0; 65535];
-                    (pipe, outbuf)
-                },
-                |(ref mut pipe, ref mut outbuf)| {
-                    bench_stream_send(pipe, outbuf, sendbuf)
-                },
-                BatchSize::SmallInput,
-            );
-        },
-    );
-
     let benchbuf = BenchBufFactory::buf_from_slice(&sendbuf);
 
     group.bench_with_input(
@@ -109,10 +92,30 @@ fn bench_sender(c: &mut Criterion<CPUTime>, config: &mut quiceh::Config, name: &
         )
     });
 
+    group.bench_with_input(
+        BenchmarkId::new("send_path", 10000),
+        &sendbuf,
+        |b, sendbuf| {
+            b.iter_batched_ref(
+                || {
+                    let mut pipe = Pipe::with_config(config).unwrap();
+                    pipe.handshake().unwrap();
+                    let outbuf = vec![0; 65535];
+                    (pipe, outbuf)
+                },
+                |(ref mut pipe, ref mut outbuf)| {
+                    bench_stream_send(pipe, outbuf, sendbuf)
+                },
+                BatchSize::SmallInput,
+            );
+        },
+    );
+
+
     group.finish();
 }
 
-fn send_bench_hidden_copy(c: &mut Criterion<CPUTime>) {
+fn send_bench_hidden_copy(c: &mut Criterion<CyclesPerByte>) {
     let mut config =
         quiceh::Config::new(quiceh::PROTOCOL_VERSION_VREVERSO).unwrap();
     config
@@ -144,7 +147,7 @@ fn send_bench_hidden_copy(c: &mut Criterion<CPUTime>) {
 
 }
 
-fn send_bench_no_hidden_copy(c: &mut Criterion<CPUTime>) {
+fn send_bench_no_hidden_copy(c: &mut Criterion<CyclesPerByte>) {
     let mut config =
         quiceh::Config::new(quiceh::PROTOCOL_VERSION_VREVERSO).unwrap();
     config
@@ -180,7 +183,7 @@ criterion_group! {
     name = send_cwin_bench;
     config = Criterion::default()
         .measurement_time(std::time::Duration::from_millis(10000))
-        .with_measurement(CPUTime)
+        .with_measurement(CyclesPerByte)
         .sample_size(5000);
     targets = send_bench_no_hidden_copy, send_bench_hidden_copy
 }

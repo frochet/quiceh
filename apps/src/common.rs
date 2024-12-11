@@ -1537,8 +1537,9 @@ where
 
                             b
                         },
-
-                        Err(quiceh::h3::Error::Done) => panic!("Error::Done"),
+                        // This may happen if we get QUIC packet with the HTTP Frame hdr only
+                        // It trigers an Event::Data, but there is nothing to read (yet).
+                        Err(quiceh::h3::Error::Done) => break,
 
                         Err(e) => panic!("Error reading conn: {:?}", e),
                     };

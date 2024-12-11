@@ -408,9 +408,15 @@ impl Stream {
         // the data frame.
         //
         // This gives everything readable until it is explicitely
-        // marrked as consumed.
+        // marked as consumed.
         let b = match conn.stream_recv_v3(self.id, app_buf) {
             Ok((b, len, _)) => {
+                trace!(
+                    "{} Acquiring {} bytes of the HTTP/3 frame from Stream {} ",
+                    conn.trace_id(),
+                    len,
+                    self.id
+                );
                 // We read nothing form the QUIC stream
                 if len == 0 {
                     self.reset_data_event();
@@ -422,6 +428,12 @@ impl Stream {
             },
 
             Err(e) => {
+                trace!(
+                    "{} failed to recv bytes from Stream {}, error {:?}",
+                    conn.trace_id(),
+                    self.id,
+                    e
+                );
                 // The stream is not readable anymore, so re-arm the Data event.
                 if e == crate::Error::Done {
                     self.reset_data_event();
@@ -842,6 +854,11 @@ impl Stream {
                 self.state_buf.resize(expected_len, 0);
             }
         }
+
+        trace!("H3 connection moves to state {:?} with expected len {}",
+               new_state,
+               expected_len
+        );
 
         self.state = new_state;
         self.state_off = 0;

@@ -77,6 +77,7 @@ smallvec = { version = "1.10", features = ["serde", "union"] }
 likely_stable = "0.1.2"
 cpu-time = "1.0.0"
 itertools = "0.12.1"
+criterion-cycles-per-byte = "0.6.1"
 
 [target."cfg(windows)".dependencies]
 winapi = { version = "0.3", features = ["wincrypt", "ws2def", "ws2ipdef", "ws2tcpip"] }
@@ -108,4 +109,8 @@ harness = false
 
 [[bench]]
 name = "send_cwin_profile_bench"
+harness = false
+
+[[bench]]
+name = "profile_bench_send"
 harness = false

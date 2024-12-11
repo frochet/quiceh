@@ -109,7 +109,7 @@ impl Open {
 impl Seal {
     pub fn seal_with_u64_counter(
         &self, counter: u64, ad: &[u8], buf: &mut [u8], in_len: usize,
-        in_buf: Option<&[u8]>, extra_in: Option<&[u8]>,
+        in_buf: Option<&[u8]>, extra_in: Option<&[u8]>, scatter_crypt: bool,
     ) -> Result<usize> {
         if cfg!(feature = "fuzzing") {
             if let Some(extra) = extra_in {
@@ -140,16 +140,15 @@ impl Seal {
         //
         let (extra_in_ptr, extra_in_len) = match extra_in {
             Some(v) => (v.as_ptr(), v.len()),
-            None =>  {
-                // Make sure all the outputs combined fit in the buffer.
-                if in_len + tag_len > buf.len() {
-                    return Err(Error::CryptoFail);
-                }
-                (std::ptr::null(), 0)
-            }
+            None =>  (std::ptr::null(), 0),
         };
 
         let mut out_tag_len = tag_len + extra_in_len;
+
+        // Make sure it fits in the buffer.
+        if !scatter_crypt && in_len + tag_len > buf.len() {
+            return Err(Error::CryptoFail);
+        }
 
         let nonce = make_nonce(&self.packet.nonce, counter);
 
@@ -159,11 +158,13 @@ impl Seal {
             buf.as_ptr()
         };
 
+
         let rc = unsafe {
+            let out_tag_mut_ptr = buf.as_mut_ptr().add(in_len);
             EVP_AEAD_CTX_seal_scatter(
                 &self.packet.ctx,           // ctx
                 buf.as_mut_ptr(),           // out
-                buf[in_len..].as_mut_ptr(), // out_tag
+                out_tag_mut_ptr,            // out_tag
                 &mut out_tag_len,           // out_tag_len
                 tag_len + extra_in_len,     // max_out_tag_len
                 nonce[..].as_ptr(),         // nonce

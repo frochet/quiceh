@@ -3376,6 +3376,7 @@ pub mod testing {
     use super::*;
 
     use crate::testing;
+    use crate::range_buf::DefaultBufFactory;
 
     /// Session is an HTTP/3 test helper structure. It holds a client, server
     /// and pipe that allows them to communicate.
@@ -3391,14 +3392,17 @@ pub mod testing {
     /// request, responses and individual headers. The full quiceh API remains
     /// available for any test that need to do unconventional things (such as
     /// bad behaviour that triggers errors).
-    pub struct Session {
-        pub pipe: testing::Pipe,
+    pub struct Session<F = DefaultBufFactory>
+    where
+        F: BufFactory,
+    {
+        pub pipe: testing::Pipe<F>,
         pub client: Connection,
         pub server: Connection,
     }
 
-    impl Session {
-        pub fn new() -> Result<Session> {
+    impl<F: BufFactory> Session<F> {
+        pub fn new() -> Result<Session<F>> {
             let mut config = crate::Config::new(crate::PROTOCOL_VERSION)?;
             config.load_cert_chain_from_pem_file("examples/cert.crt")?;
             config.load_priv_key_from_pem_file("examples/cert.key")?;
@@ -3414,12 +3418,12 @@ pub mod testing {
             config.set_ack_delay_exponent(8);
 
             let h3_config = Config::new()?;
-            Session::with_configs(&mut config, &h3_config)
+            Session::<F>::with_configs(&mut config, &h3_config)
         }
 
         pub fn with_configs(
             config: &mut crate::Config, h3_config: &Config,
-        ) -> Result<Session> {
+        ) -> Result<Session<F>> {
             let pipe = testing::Pipe::with_config(config)?;
             let client_dgram = pipe.client.dgram_enabled();
             let server_dgram = pipe.server.dgram_enabled();
@@ -3643,6 +3647,20 @@ pub mod testing {
             Ok(bytes)
         }
 
+        pub fn send_body_server_zc(
+            &mut self, stream: u64, body: F::Buf, fin: bool
+        ) -> Result<(usize, Option<F::Buf>)>
+        where
+            F: BufFactory,
+            F::Buf: BufSplit,
+        {
+            let ret = self.server
+                          .send_body_zc(&mut self.pipe.server, stream, body, fin)?;
+
+            self.advance().ok();
+            Ok(ret)
+        }
+
         /// Fetches DATA payload from the client
         ///
         /// On success, it returns a slice of the DATA payload
@@ -3809,6 +3827,8 @@ mod tests {
 
     use super::testing::*;
     use crate::testing::Pipe;
+    use crate::range_buf::BufFactory;
+    use crate::testing::BufTestFactory;
 
     #[test]
     /// Make sure that random GREASE values is within the specified limit.
@@ -3908,7 +3928,7 @@ mod tests {
     #[test]
     /// Send a request with no body, get a response with no body.
     fn request_no_body_response_no_body() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -3944,7 +3964,7 @@ mod tests {
     #[test]
     /// Send a request with no body, get a response with one DATA frame.
     fn request_no_body_response_one_chunk() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -3993,10 +4013,87 @@ mod tests {
         assert_eq!(s.poll_client(), Err(Error::Done));
     }
 
+
+    #[test]
+    /// Send a request with no body, and get a response with multiple DATA frames
+    /// on server using hidden copy encryption
+    fn request_no_body_response_many_chunks_sent_without_copy() {
+        let mut config = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        config
+            .load_cert_chain_from_pem_file("examples/cert.crt")
+            .unwrap();
+        config
+            .load_priv_key_from_pem_file("examples/cert.key")
+            .unwrap();
+        config.set_application_protos(&[b"h3"]).unwrap();
+        config.set_initial_max_data(10_000_000);
+        config.set_initial_max_stream_data_uni(10 * 32 * 1024);
+        config.set_initial_max_stream_data_bidi_local(10 * 32 * 1024);
+        config.set_initial_max_stream_data_bidi_remote(10 * 32 * 1024);
+        config.set_initial_max_streams_bidi(150);
+        config.set_initial_max_streams_uni(150);
+        config.enable_hidden_copy_for_zc_sender(true);
+
+        let h3_config = Config::new().unwrap();
+        let mut s = Session::<BufTestFactory>::with_configs(&mut config, &h3_config).unwrap();
+
+        s.handshake().unwrap();
+
+        let (stream, req) = s.send_request(true).unwrap();
+
+        let ev_headers = Event::Headers {
+            list: req,
+            has_body: false,
+        };
+
+        assert_eq!(s.poll_server(), Ok((stream, ev_headers)));
+        assert_eq!(s.poll_server(), Ok((stream, Event::Finished)));
+
+        let resp = s.send_response(stream, false).unwrap();
+
+        let bodies = [vec![42; 100], vec![42; 1000], vec![42; 10000]];
+
+        for i in 0..bodies.len() - 1 {
+            s.send_body_server_zc(
+                stream, BufTestFactory::buf_from_slice(&bodies[i]), false,
+            ).unwrap();
+        }
+
+        s.send_body_server_zc(
+            stream, BufTestFactory::buf_from_slice(&bodies[bodies.len() - 1]), true,
+        ).unwrap();
+
+
+        let ev_headers = Event::Headers {
+            list: resp,
+            has_body: true,
+        };
+
+        assert_eq!(s.poll_client(), Ok((stream, ev_headers)));
+        assert_eq!(s.poll_client(), Ok((stream, Event::Data)));
+        assert_eq!(s.poll_client(), Err(Error::Done));
+
+        for i in 0..bodies.len() {
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                let (b, tot_exp_len) = s.recv_body_v3_client(stream).unwrap();
+                assert_eq!(b.len(), bodies[i].len());
+                assert_eq!(b, &bodies[i]);
+                assert_eq!(tot_exp_len, bodies[i].len());
+                assert!(s.body_consumed_client(stream, tot_exp_len).is_ok());
+            } else {
+                let mut recv_buf = vec![0; bodies[i].len()];
+                assert_eq!(
+                    s.recv_body_client(stream, &mut recv_buf),
+                    Ok(bodies[i].len())
+                );
+                assert_eq!(&recv_buf, &bodies[i]);
+            }
+        }
+    }
     #[test]
     /// Send a request with no body, get a response with multiple DATA frames.
     fn request_no_body_response_many_chunks() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         let (stream, req) = s.send_request(true).unwrap();
@@ -4053,7 +4150,7 @@ mod tests {
     /// which we partially consume.
     fn request_no_body_response_many_chunks_partially_consumed_v3_only() {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            let mut s = Session::new().unwrap();
+            let mut s = <Session>::new().unwrap();
             s.handshake().unwrap();
 
             let (stream, req) = s.send_request(true).unwrap();
@@ -4105,7 +4202,7 @@ mod tests {
     #[test]
     /// Send a request with one DATA frame, get a response with no body.
     fn request_one_chunk_response_no_body() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         let (stream, req) = s.send_request(false).unwrap();
@@ -4147,7 +4244,7 @@ mod tests {
     #[test]
     /// Send a request with multiple DATA frames, get a response with no body.
     fn request_many_chunks_response_no_body() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         let (stream, req) = s.send_request(false).unwrap();
@@ -4202,7 +4299,7 @@ mod tests {
     /// Send a request with multiple DATA frames, get a response with one DATA
     /// frame.
     fn many_requests_many_chunks_response_one_chunk() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         let mut reqs = Vec::new();
@@ -4336,7 +4433,7 @@ mod tests {
     /// Send a request with no body, get a response with one DATA frame and an
     /// empty FIN after reception from the client.
     fn request_no_body_response_one_chunk_empty_fin() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         let (stream, req) = s.send_request(true).unwrap();
@@ -4384,7 +4481,7 @@ mod tests {
     /// Send a request with no body, get a response with no body followed by
     /// GREASE that is STREAM frame with a FIN.
     fn request_no_body_response_no_body_with_grease() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         let off_by =
@@ -4444,7 +4541,7 @@ mod tests {
     #[test]
     /// Try to send DATA frames before HEADERS.
     fn body_response_before_headers() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -4477,7 +4574,7 @@ mod tests {
     /// Try to send DATA frames on wrong streams, ensure the API returns an
     /// error before anything hits the transport layer.
     fn send_body_invalid_client_stream() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         let off_by =
@@ -4539,7 +4636,7 @@ mod tests {
     /// Try to send DATA frames on wrong streams, ensure the API returns an
     /// error before anything hits the transport layer.
     fn send_body_invalid_server_stream() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -4599,7 +4696,7 @@ mod tests {
     #[test]
     /// Send a MAX_PUSH_ID frame from the client on a valid stream.
     fn max_push_id_from_client_good() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         s.send_frame_client(
@@ -4615,7 +4712,7 @@ mod tests {
     #[test]
     /// Send a MAX_PUSH_ID frame from the client on an invalid stream.
     fn max_push_id_from_client_bad_stream() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         let (stream, req) = s.send_request(false).unwrap();
@@ -4640,7 +4737,7 @@ mod tests {
     /// Send a sequence of MAX_PUSH_ID frames from the client that attempt to
     /// reduce the limit.
     fn max_push_id_from_client_limit_reduction() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         s.send_frame_client(
@@ -4663,7 +4760,7 @@ mod tests {
     #[test]
     /// Send a MAX_PUSH_ID frame from the server, which is forbidden.
     fn max_push_id_from_server() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         s.send_frame_server(
@@ -4679,7 +4776,7 @@ mod tests {
     #[test]
     /// Send a PUSH_PROMISE frame from the client, which is forbidden.
     fn push_promise_from_client() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         let (stream, req) = s.send_request(false).unwrap();
@@ -4708,7 +4805,7 @@ mod tests {
     #[test]
     /// Send a CANCEL_PUSH frame from the client.
     fn cancel_push_from_client() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         s.send_frame_client(
@@ -4724,7 +4821,7 @@ mod tests {
     #[test]
     /// Send a CANCEL_PUSH frame from the client on an invalid stream.
     fn cancel_push_from_client_bad_stream() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         let (stream, req) = s.send_request(false).unwrap();
@@ -4748,7 +4845,7 @@ mod tests {
     #[test]
     /// Send a CANCEL_PUSH frame from the client.
     fn cancel_push_from_server() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         s.send_frame_server(
@@ -4764,7 +4861,7 @@ mod tests {
     #[test]
     /// Send a GOAWAY frame from the client.
     fn goaway_from_client_good() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -4784,7 +4881,7 @@ mod tests {
     #[test]
     /// Send a GOAWAY frame from the server.
     fn goaway_from_server_good() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         s.server.send_goaway(&mut s.pipe.server, 4000).unwrap();
@@ -4797,7 +4894,7 @@ mod tests {
     #[test]
     /// A client MUST NOT send a request after it receives GOAWAY.
     fn client_request_after_goaway() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         s.server.send_goaway(&mut s.pipe.server, 4000).unwrap();
@@ -4812,7 +4909,7 @@ mod tests {
     #[test]
     /// Send a GOAWAY frame from the server, using an invalid goaway ID.
     fn goaway_from_server_invalid_id() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         s.send_frame_server(
@@ -4829,7 +4926,7 @@ mod tests {
     /// Send multiple GOAWAY frames from the server, that increase the goaway
     /// ID.
     fn goaway_from_server_increase_id() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -4946,7 +5043,7 @@ mod tests {
     #[test]
     /// Send a PRIORITY_UPDATE for request stream from the client.
     fn priority_update_request() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -4974,7 +5071,7 @@ mod tests {
     #[test]
     /// Send a PRIORITY_UPDATE for request stream from the client.
     fn priority_update_single_stream_rearm() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -5052,7 +5149,7 @@ mod tests {
     /// Send multiple PRIORITY_UPDATE frames for different streams from the
     /// client across multiple flights of exchange.
     fn priority_update_request_multiple_stream_arm_multiple_flights() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -5128,7 +5225,7 @@ mod tests {
     /// Send multiple PRIORITY_UPDATE frames for different streams from the
     /// client across a single flight.
     fn priority_update_request_multiple_stream_arm_single_flight() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -5196,7 +5293,7 @@ mod tests {
     /// Send a PRIORITY_UPDATE for a request stream, before and after the stream
     /// has been completed.
     fn priority_update_request_collected_completed() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -5270,7 +5367,7 @@ mod tests {
     /// Send a PRIORITY_UPDATE for a request stream, before and after the stream
     /// has been stopped.
     fn priority_update_request_collected_stopped() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -5345,7 +5442,7 @@ mod tests {
     #[test]
     /// Send a PRIORITY_UPDATE for push stream from the client.
     fn priority_update_push() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         s.send_frame_client(
@@ -5365,7 +5462,7 @@ mod tests {
     /// Send a PRIORITY_UPDATE for request stream from the client but for an
     /// incorrect stream type.
     fn priority_update_request_bad_stream() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         s.send_frame_client(
@@ -5392,7 +5489,7 @@ mod tests {
         // behavior only existing if we have crate::PROTOCOL_VERSION_VREVERSO.
         // XXX Todo if a better idea comes.
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            let mut s = Session::new().unwrap();
+            let mut s = <Session>::new().unwrap();
             s.handshake().unwrap();
 
             s.send_frame_client(
@@ -5413,7 +5510,7 @@ mod tests {
     /// Send a PRIORITY_UPDATE for push stream from the client but for an
     /// incorrect stream type.
     fn priority_update_push_bad_stream() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         s.send_frame_client(
@@ -5432,7 +5529,7 @@ mod tests {
     #[test]
     /// Send a PRIORITY_UPDATE for request stream from the server.
     fn priority_update_request_from_server() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         s.send_frame_server(
@@ -5451,7 +5548,7 @@ mod tests {
     #[test]
     /// Send a PRIORITY_UPDATE for request stream from the server.
     fn priority_update_push_from_server() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -5488,7 +5585,7 @@ mod tests {
     #[test]
     /// Client opens multiple control streams, which is forbidden.
     fn open_multiple_control_streams() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         let stream_id = s.client.next_uni_stream_id;
@@ -5513,7 +5610,7 @@ mod tests {
     #[test]
     /// Client closes the control stream, which is forbidden.
     fn close_control_stream() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         let mut control_stream_closed = false;
@@ -5548,7 +5645,7 @@ mod tests {
     #[test]
     /// Client closes QPACK stream, which is forbidden.
     fn close_qpack_stream() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         let mut qpack_stream_closed = false;
@@ -5586,7 +5683,7 @@ mod tests {
     fn qpack_data() {
         // TODO: QPACK instructions are ignored until dynamic table support is
         // added so we just test that the data is safely ignored.
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         let e_stream_id = s.client.local_qpack_streams.encoder_stream_id.unwrap();
@@ -5617,7 +5714,7 @@ mod tests {
     #[test]
     /// Tests limits for the stream state buffer maximum size.
     fn max_state_buf_size() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -5671,7 +5768,7 @@ mod tests {
         assert_eq!(s.poll_server(), Ok((0 + off_by, Event::Data)));
 
         // GREASE frames consume the state buffer, so need to be limited.
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         let mut d = [42; 128];
@@ -5702,7 +5799,7 @@ mod tests {
     fn stream_backpressure() {
         let bytes = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         let (stream, req) = s.send_request(false).unwrap();
@@ -5792,7 +5889,7 @@ mod tests {
         let mut h3_config = Config::new().unwrap();
         h3_config.set_max_field_section_size(65);
 
-        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
 
         s.handshake().unwrap();
         let off_by =
@@ -5830,7 +5927,7 @@ mod tests {
     #[test]
     /// Tests that Error::TransportError contains a transport error.
     fn transport_error() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -5881,7 +5978,7 @@ mod tests {
     #[test]
     /// Tests that sending DATA before HEADERS causes an error.
     fn data_before_headers() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -5918,7 +6015,7 @@ mod tests {
     #[test]
     /// Tests that calling poll() after an error occurred does nothing.
     fn poll_after_error() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -5973,7 +6070,7 @@ mod tests {
 
         let h3_config = Config::new().unwrap();
 
-        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
 
         s.handshake().unwrap();
         let off_by =
@@ -6038,7 +6135,7 @@ mod tests {
 
         let h3_config = Config::new().unwrap();
 
-        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
 
         s.handshake().unwrap();
         let off_by =
@@ -6108,7 +6205,7 @@ mod tests {
 
         let h3_config = Config::new().unwrap();
 
-        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
 
         s.handshake().unwrap();
         let off_by =
@@ -6265,7 +6362,7 @@ mod tests {
 
         let h3_config = Config::new().unwrap();
 
-        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
 
         s.handshake().unwrap();
         let off_by =
@@ -6348,7 +6445,7 @@ mod tests {
 
         let h3_config = Config::new().unwrap();
 
-        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
 
         s.handshake().unwrap();
         let off_by =
@@ -6419,7 +6516,7 @@ mod tests {
     #[test]
     /// Test handling of 0-length DATA writes with and without fin.
     fn zero_length_data() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -6522,7 +6619,7 @@ mod tests {
 
         let h3_config = Config::new().unwrap();
 
-        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
 
         s.handshake().unwrap();
         let off_by =
@@ -6589,7 +6686,7 @@ mod tests {
         config.grease(false);
 
         let h3_config = Config::new().unwrap();
-        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
 
         s.handshake().unwrap();
 
@@ -6619,7 +6716,7 @@ mod tests {
 
         let h3_config = Config::new().unwrap();
 
-        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
         assert_eq!(s.pipe.handshake(), Ok(()));
 
         s.client.send_settings(&mut s.pipe.client).unwrap();
@@ -6663,7 +6760,7 @@ mod tests {
 
         let h3_config = Config::new().unwrap();
 
-        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
         assert_eq!(s.pipe.handshake(), Ok(()));
 
         s.client.control_stream_id = Some(
@@ -6715,7 +6812,7 @@ mod tests {
 
         let h3_config = Config::new().unwrap();
 
-        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
         assert_eq!(s.pipe.handshake(), Ok(()));
 
         s.client.control_stream_id = Some(
@@ -6829,7 +6926,7 @@ mod tests {
             .set_additional_settings(vec![(42, 43), (44, 45)])
             .unwrap();
 
-        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
         assert_eq!(s.pipe.handshake(), Ok(()));
 
         assert_eq!(s.pipe.advance(), Ok(()));
@@ -6856,7 +6953,7 @@ mod tests {
     /// Send a single DATAGRAM.
     fn single_dgram() {
         let mut buf = [0; 65535];
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -6882,7 +6979,7 @@ mod tests {
     /// Send multiple DATAGRAMs.
     fn multiple_dgram() {
         let mut buf = [0; 65535];
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -6919,7 +7016,7 @@ mod tests {
     /// Send more DATAGRAMs than the send queue allows.
     fn multiple_dgram_overflow() {
         let mut buf = [0; 65535];
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -6967,7 +7064,7 @@ mod tests {
         config.enable_dgram(true, 100, 100);
 
         let h3_config = Config::new().unwrap();
-        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -7017,7 +7114,7 @@ mod tests {
         config.enable_dgram(true, 100, 100);
 
         let h3_config = Config::new().unwrap();
-        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -7124,7 +7221,7 @@ mod tests {
         config.enable_dgram(true, 100, 100);
 
         let h3_config = Config::new().unwrap();
-        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -7272,7 +7369,7 @@ mod tests {
     /// Tests that the Finished event is not issued for streams of unknown type
     /// (e.g. GREASE).
     fn finished_is_for_requests() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         assert_eq!(s.poll_client(), Err(Error::Done));
@@ -7288,7 +7385,7 @@ mod tests {
     #[test]
     /// Tests that streams are marked as finished only once.
     fn finished_once() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         let (stream, req) = s.send_request(false).unwrap();
@@ -7331,7 +7428,7 @@ mod tests {
     fn data_event_rearm() {
         let bytes = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         let (stream, req) = s.send_request(false).unwrap();
@@ -7578,7 +7675,7 @@ mod tests {
         config.enable_dgram(true, 100, 100);
 
         let h3_config = Config::new().unwrap();
-        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -7652,7 +7749,7 @@ mod tests {
     fn reset_stream() {
         let mut buf = [0; 65535];
 
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         // Client sends request.
@@ -7720,7 +7817,7 @@ mod tests {
 
     #[test]
     fn reset_finished_at_server() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -7770,7 +7867,7 @@ mod tests {
 
     #[test]
     fn reset_finished_at_server_with_data_pending() {
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         // Client sends HEADERS and doesn't fin.
@@ -7808,7 +7905,7 @@ mod tests {
     #[test]
     fn reset_finished_at_client() {
         let mut buf = [0; 65535];
-        let mut s = Session::new().unwrap();
+        let mut s = <Session>::new().unwrap();
         s.handshake().unwrap();
 
         // Client sends HEADERS and doesn't fin

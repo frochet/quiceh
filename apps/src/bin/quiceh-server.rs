@@ -125,6 +125,7 @@ fn main() {
     config.set_max_stream_window(conn_args.max_stream_window);
 
     config.enable_pacing(pacing);
+    config.enable_hidden_copy_for_zc_sender(args.enable_hidden_copy);
 
     let mut keylog = None;
 

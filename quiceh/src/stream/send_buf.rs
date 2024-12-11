@@ -41,7 +41,7 @@ use crate::ranges;
 const SEND_BUFFER_SIZE: usize = 5;
 
 #[cfg(not(test))]
-const SEND_BUFFER_SIZE: usize = 4096;
+const SEND_BUFFER_SIZE: usize = 4096*4;
 
 struct SendReserve<'a, F: BufFactory> {
     inner: &'a mut SendBuf<F>,
@@ -278,16 +278,15 @@ impl<F: BufFactory> SendBuf<F> {
             return;
         }
 
-        let has_consumed = cmp::min(buf.len(), consumed);
-        self.len -= has_consumed as u64;
+        self.len -= consumed as u64;
 
-        let next_off = buf.off() + has_consumed as u64;
+        let next_off = buf.off() + consumed as u64;
 
-        if has_consumed == buf.len() {
+        if consumed == buf.len() {
             self.pos += 1;
         }
 
-        buf.consume(has_consumed);
+        buf.consume(consumed);
 
         self.emit_off = cmp::max(self.emit_off, next_off);
     }

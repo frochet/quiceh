@@ -857,6 +857,7 @@ pub enum QlogLevel {
 }
 
 /// Stores configuration shared between multiple connections.
+#[derive(Clone)]
 pub struct Config {
     local_transport_params: TransportParams,
 
@@ -3805,7 +3806,13 @@ impl<F: BufFactory> Connection<F> {
 
         // Limit output packet size to respect the sender and receiver's
         // maximum UDP payload size limit.
-        let mut left = cmp::min(out.len(), self.max_send_udp_payload_size());
+        let mut left = if self.use_hidden_crypt_copy_for_zc {
+            // We reserve a bit more memory for scatter encryption alignment on blocksize -- only
+            // works for AES for this impl.
+            cmp::min(out.len(), self.max_send_udp_payload_size() + 16) - 16
+        } else {
+            cmp::min(out.len(), self.max_send_udp_payload_size())
+        };
 
         let send_pid = match (from, to) {
             (Some(f), Some(t)) => self
@@ -4865,7 +4872,7 @@ impl<F: BufFactory> Connection<F> {
                     stream.send.rangebuf_len(max_len)?
                 } else {
                     // We copy the data directly into the buffer. Encryption will be inplace.
-                    if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
+                    let (len, fin) = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
                         // Write stream data into the packet buffer; normally right after
                         // the encrypted header.
                         let (len, fin) =
@@ -4912,7 +4919,21 @@ impl<F: BufFactory> Connection<F> {
                         )?;
 
                         (len, fin)
-                    }}
+                    }};
+
+                    let priority_key = Arc::clone(&stream.priority_key);
+                    // If the stream is no longer flushable, remove it from the queue
+                    if !stream.is_flushable() {
+                        self.streams.remove_flushable(&priority_key);
+                    } else if stream.incremental {
+                        // Shuffle the incremental stream to the back of the
+                        // queue.
+                        self.streams.remove_flushable(&priority_key);
+                        self.streams.insert_flushable(&priority_key);
+                    }
+
+                    (len, fin)
+
                 };
 
                 let frame = frame::Frame::StreamHeader {
@@ -4949,17 +4970,6 @@ impl<F: BufFactory> Connection<F> {
                         }
                     }
                 }};
-
-                let priority_key = Arc::clone(&stream.priority_key);
-                // If the stream is no longer flushable, remove it from the queue
-                if !stream.is_flushable() {
-                    self.streams.remove_flushable(&priority_key);
-                } else if stream.incremental {
-                    // Shuffle the incremental stream to the back of the
-                    // queue.
-                    self.streams.remove_flushable(&priority_key);
-                    self.streams.insert_flushable(&priority_key);
-                }
 
                 #[cfg(feature = "fuzzing")]
                 // Coalesce STREAM frames when fuzzing
@@ -5190,8 +5200,10 @@ impl<F: BufFactory> Connection<F> {
                 } else {
                     0_usize
                 };
-                // TODO explain the alignment logic.
-                let (b, b_ctrl) = b.split_at(payload_offset + stream_len + stream_len % 16)?;
+                // ctrl cleartext is written inside the destination buffer, aligned
+                // on a multiple of the AES blocksize.
+                let align = stream_len % 16;
+                let (b, b_ctrl) = b.split_at(payload_offset + stream_len + align)?;
                 (b, b_ctrl, stream_len)
             } else {
                 // In V1 we would start with the ctrl.
@@ -5348,6 +5360,7 @@ impl<F: BufFactory> Connection<F> {
                         payload_offset,
                         Some(&ctrl.as_ref()[..b_ctrl_len]),
                         aead,
+                        self.use_hidden_crypt_copy_for_zc,
                     )?
                 } else {
                     packet::encrypt_pkt(
@@ -5358,6 +5371,7 @@ impl<F: BufFactory> Connection<F> {
                         payload_offset,
                         None,
                         aead,
+                        self.use_hidden_crypt_copy_for_zc,
                     )?
                 }
             } else {
@@ -5379,28 +5393,45 @@ impl<F: BufFactory> Connection<F> {
                 if let Some(ctrl) = ctrl {
                     packet::encrypt_pkt(
                         &mut b_start,
-                        Some(ctrl.as_ref()),
+                        Some(&ctrl.as_ref()),
                         pn,
                         b_ctrl_len,
                         payload_offset,
                         rangebuf,
                         aead,
+                        self.use_hidden_crypt_copy_for_zc,
                     )?
                 } else {
                     packet::encrypt_pkt(
                         &mut b_start,
                         None,
                         pn,
-                        b_ctrl_len,
+                        b_len,
                         payload_offset,
                         rangebuf,
                         aead,
+                        self.use_hidden_crypt_copy_for_zc,
                     )?
                 }
             }};
 
             if let Some(sentry) = sentry {
-                sentry.and_modify(|s| s.send.rangebuf_consume(b_len));
+                let mut is_flushable = false;
+                let mut is_incremental = false;
+                let mut priority_key = Default::default();
+                sentry.and_modify(|s| {
+                    s.send.rangebuf_consume(b_len);
+                    is_flushable = s.is_flushable();
+                    is_incremental = s.incremental;
+                    priority_key = Arc::clone(&s.priority_key);
+                });
+
+                if !is_flushable {
+                    self.streams.remove_flushable(&priority_key);
+                } else if is_incremental {
+                    self.streams.remove_flushable(&priority_key);
+                    self.streams.insert_flushable(&priority_key);
+                }
             }
 
             written
@@ -5413,6 +5444,7 @@ impl<F: BufFactory> Connection<F> {
                 payload_offset,
                 None,
                 aead,
+                self.use_hidden_crypt_copy_for_zc,
             )?
         };
 
@@ -9666,6 +9698,60 @@ impl TransportParams {
 pub mod testing {
     use super::*;
 
+    #[derive(Debug, Clone, Default)]
+    pub struct BufTestFactory;
+    #[derive(Debug, Clone, Default, PartialEq)]
+    pub struct BufTest {
+        inner: Arc<Box<[u8]>>,
+        start: usize,
+        end: usize,
+    }
+
+    impl BufTest {
+        fn new(inner: Arc<Box<[u8]>>, start: usize, end: usize) -> Self {
+            Self { inner, start, end }
+        }
+
+        fn len(&self) -> usize {
+            self.end - self.start
+        }
+
+    }
+
+    impl BufFactory for BufTestFactory {
+        type Buf = BufTest;
+
+        fn buf_from_slice(buf: &[u8]) -> Self::Buf {
+            BufTest {
+                start: 0,
+                end: buf.len(),
+                inner: Arc::new(buf.into()),
+            }
+        }
+    }
+
+    impl BufSplit for BufTest {
+        // Split the buffer at a given point, after the split the old buffer
+        // must only contain the first `at` bytes, while the newly produced
+        // buffer must containt the remaining bytes.
+        fn split_at(&mut self, at: usize) -> Self {
+            assert!(at <= self.len(), "split_at index out of bounds");
+
+            let newend = self.start + at;
+            let buf = BufTest::new(self.inner.clone(), newend, self.end);
+
+            self.end = newend;
+
+            buf
+        }
+    }
+
+    impl AsRef<[u8]> for BufTest {
+        fn as_ref(&self) -> &[u8] {
+            &self.inner[self.start..self.end]
+        }
+    }
+
     pub struct Pipe<F = DefaultBufFactory>
     where
         F: BufFactory,
@@ -10255,6 +10341,7 @@ pub mod testing {
             payload_offset,
             None,
             aead,
+            conn.use_hidden_crypt_copy_for_zc,
         )?;
 
         let (mut header, payload) = b.split_at(payload_offset)?;
@@ -10420,61 +10507,7 @@ mod tests {
 
     use super::*;
     use testing::Pipe;
-
-    #[derive(Debug, Clone, Default)]
-    struct BufTestFactory;
-
-    #[derive(Debug, Clone, Default, PartialEq)]
-    struct BufTest {
-        inner: Arc<Box<[u8]>>,
-        start: usize,
-        end: usize,
-    }
-
-    impl BufTest {
-        fn new(inner: Arc<Box<[u8]>>, start: usize, end: usize) -> Self {
-            Self { inner, start, end }
-        }
-
-        fn len(&self) -> usize {
-            self.end - self.start
-        }
-
-    }
-
-    impl BufFactory for BufTestFactory {
-        type Buf = BufTest;
-
-        fn buf_from_slice(buf: &[u8]) -> Self::Buf {
-            BufTest {
-                start: 0,
-                end: buf.len(),
-                inner: Arc::new(buf.into()),
-            }
-        }
-    }
-
-    impl BufSplit for BufTest {
-        // Split the buffer at a given point, after the split the old buffer
-        // must only contain the first `at` bytes, while the newly produced
-        // buffer must containt the remaining bytes.
-        fn split_at(&mut self, at: usize) -> Self {
-            assert!(at <= self.len(), "split_at index out of bounds");
-
-            let newend = self.start + at;
-            let buf = BufTest::new(self.inner.clone(), newend, self.end);
-
-            self.end = newend;
-
-            buf
-        }
-    }
-
-    impl AsRef<[u8]> for BufTest {
-        fn as_ref(&self) -> &[u8] {
-            &self.inner[self.start..self.end]
-        }
-    }
+    use testing::BufTestFactory;
 
     #[test]
     fn transport_params() {
@@ -11546,6 +11579,7 @@ mod tests {
             config.set_initial_max_streams_uni(10 * 32 * 1024);
             config.set_initial_max_stream_data_uni(10 * 32 * 1024);
             config.set_initial_max_data(10 * 32 * 1024);
+            config.enable_hidden_copy_for_zc_sender(true);
 
             let datasize = 12000;
             let sendbuf = [0; 12000];
@@ -12849,15 +12883,15 @@ mod tests {
         // So we expect 6 packets.
         for _ in 0..6 {
             let (len, _) = pipe.client.send(&mut buf).unwrap();
-            assert_eq!(len, 48);
             assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
         }
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            let (_, len, fin) = pipe
+            let (b, len, fin) = pipe
                 .server
                 .stream_recv_v3(8, &mut pipe.server_app_buffers)
                 .unwrap();
+            assert_eq!(b, b"hello, worldciao, world");
             assert_eq!((len, fin), (23, true));
             assert!(pipe
                 .server
@@ -12867,6 +12901,60 @@ mod tests {
             assert_eq!(pipe.server.stream_recv(8, &mut buf), Ok((23, true)));
         }
 
+    }
+
+
+    #[test]
+    fn stream_data_with_hidden_copy_using_mixed_stream_send_and_zc() {
+        let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
+
+        config
+            .load_cert_chain_from_pem_file("examples/cert.crt")
+            .unwrap();
+        config
+            .load_priv_key_from_pem_file("examples/cert.key")
+            .unwrap();
+        config
+            .set_application_protos(&[b"proto1", b"proto2"])
+            .unwrap();
+        config.set_initial_max_data(30);
+        config.set_initial_max_stream_data_bidi_local(30);
+        config.set_initial_max_stream_data_bidi_remote(30);
+        config.set_initial_max_streams_bidi(3);
+        config.enable_early_data();
+        config.enable_hidden_copy_for_zc_sender(true);
+        config.verify_peer(false);
+
+        let mut pipe = Pipe::<BufTestFactory>::with_config(&mut config).unwrap();
+        assert_eq!(pipe.handshake(), Ok(()));
+
+        // In testing, stream_send cuts every 5 chars.
+        assert_eq!(pipe.client.stream_send(8, b"hello, world", false), Ok(12));
+        assert_eq!(pipe.client.stream_send_zc(8, BufTestFactory::buf_from_slice(b"ciao, world"), Some(11), true), Ok((11, None)));
+
+        let mut buf = [0; 256];
+        for _ in 0..3 {
+            let (len, _) = pipe.client.send(&mut buf).unwrap();
+            assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
+        }
+        // Getting the information from stream_send_zc
+        let (len, _) = pipe.client.send(&mut buf).unwrap();
+        assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
+
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+            let (b, len, fin) = pipe
+                .server
+                .stream_recv_v3(8, &mut pipe.server_app_buffers)
+                .unwrap();
+            assert_eq!(b, b"hello, worldciao, world");
+            assert_eq!((len, fin), (23, true));
+            assert!(pipe
+                .server
+                .stream_consumed(8, len, &mut pipe.server_app_buffers)
+                .is_ok());
+        } else {
+            assert_eq!(pipe.server.stream_recv(8, &mut buf), Ok((23, true)));
+        }
     }
 
     #[test]
@@ -12911,10 +12999,11 @@ mod tests {
         assert_eq!(pipe.server_recv(&mut buf[len1..len1+len2]), Ok(len2));
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             assert_eq!((len1, len2), (53, 52));
-            let (_, len, fin) = pipe
+            let (b, len, fin) = pipe
                 .server
                 .stream_recv_v3(8, &mut pipe.server_app_buffers)
                 .unwrap();
+            assert_eq!(b, b"hello, worldciao, world");
             assert_eq!((len, fin), (23, true));
             assert!(pipe
                 .server
@@ -14828,6 +14917,7 @@ mod tests {
             payload_offset,
             None,
             aead,
+            false,
         )
         .unwrap();
 
@@ -20986,6 +21076,7 @@ mod tests {
             payload_offset,
             None,
             aead,
+            false,
         )
         .expect("packet encrypt");
         let (mut header, payload) = b.split_at(payload_offset).unwrap();

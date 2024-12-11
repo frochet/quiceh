@@ -340,7 +340,7 @@ the same.
 Building
 --------
 
-quiceh requires Rust 1.66 or later to build. The latest stable Rust release can
+quiceh requires Rust 1.79 or later to build. The latest stable Rust release can
 be installed using [rustup](https://rustup.rs/).
 
 Once the Rust build environment is setup, the quiceh source code can be fetched
