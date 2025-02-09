@@ -81,6 +81,11 @@ impl Open {
         };
         let max_out_len = out_len;
 
+        if into.len() < max_out_len {
+            trace!("Destination buffer size is {}, but max_out_len is {}", into.len(), max_out_len);
+            return Err(Error::CryptoFail);
+        }
+
         let nonce = make_nonce(&self.packet.nonce, counter);
 
         let rc = unsafe {
@@ -99,6 +104,7 @@ impl Open {
         };
 
         if rc != 1 {
+            trace!("BoringSSL: Decryption Failed");
             return Err(Error::CryptoFail);
         }
 

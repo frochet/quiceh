@@ -463,7 +463,7 @@ use likely_stable::if_likely;
 use smallvec::SmallVec;
 
 /// The current QUIC wire version.
-pub const PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_VREVERSO;
+pub const PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_V1;
 
 /// Supported QUIC versions.
 pub const PROTOCOL_VERSION_V1: u32 = 0x0000_0001;
@@ -2863,7 +2863,7 @@ impl Connection {
                         let mut offset = s.recv.contiguous_off().saturating_sub(1);
                         offset = packet::decode_pkt_offset(offset, hdr.truncated_offset, hdr.truncated_offset_len);
                         trace!("Decoded offset={}", offset);
-                        offset = match outbuf.get_outbuf_offset(offset, payload_len-aead_tag_len, &s.recv) {
+                        offset = match outbuf.get_outbuf_offset(offset, payload_len, &s.recv) {
                             Ok(v) => v,
                             Err(e) => {
                                 // This could happen if the network flipped some bits in the
@@ -2929,7 +2929,7 @@ impl Connection {
                         let outbuf = app_buffers.get_or_create_stream_buffer(hdr.expected_stream_id)?;
                         let mut offset = s.recv.contiguous_off().saturating_sub(1);
                         offset = packet::decode_pkt_offset(offset, hdr.truncated_offset, hdr.truncated_offset_len);
-                        offset = match outbuf.get_outbuf_offset(offset, payload_len-aead_tag_len, &s.recv) {
+                        offset = match outbuf.get_outbuf_offset(offset, payload_len, &s.recv) {
                             Ok(v) => v,
                             Err(e) => {
                                 debug!(
