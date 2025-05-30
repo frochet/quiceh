@@ -206,7 +206,7 @@ done
 sudo cpupower -c 0 frequency-set -d $MIN -u $MAX -g powersave
 ```
 
-On the measurements branch, you may then get the "Cycles" value by
+On the measurements branch, you may then get the data by
 running the script two times, one for QUIC v1, and one for QUIC VReverso
 (the server supports both protocol). First, recompile your client:
 
