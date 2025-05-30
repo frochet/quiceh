@@ -165,3 +165,76 @@ Counting packets in order for the 20 downloads would give you a similar
 result than a cell within Table 2.
 
 # Data for Figure 4.
+
+Reproducing similar data than figure 4 requires a 1 Gbps link between a
+client and a server. The experiment within the paper connects a desktop
+machine to a lab server on copper gbps, gbps middleboxes and small
+distance (below 100m).
+
+For the server, you may run any branch, and similar to the above server
+instructions, run quiceh-server:
+
+$ ./target/release/quiceh-server --listen PUBIP:PORT --key apps/src/bin/cert.key --cert apps/src/bin/cert.crt --root .
+
+Create a 10 Gb file.
+
+For the client, switch on the "measurements" branch. Modify the
+following script named measure_dl_i71165.sh and available in the root of
+the repository accordingly to the frequency values of your processor.
+Replace also the server address
+(https://reverso.info.unamur.be:4433/testfile) with your domain or IP +
+port, and 10Gb file.
+
+```bash
+MIN=400MHz
+MAX=4700MHz
+SET_MIN=2800MHz
+SET_MAX=2800MHz
+VERSION=$1
+DIRECTORY=$2
+OUTNAME=$3
+
+mkdir -p $DIRECTORY
+
+sudo cpupower -c 0 frequency-set -d $SET_MIN -u $SET_MAX -g performance
+for i in {1..20}
+do
+  taskset -c 2 sudo perf stat -e cycles,instructions --interval-print 100 -C 0 taskset -c 0 ./target/performance/quiceh-client --wire-version $VERSION --no-verify https://reverso.info.unamur.be:4433/testfile > /dev/null 2> $DIRECTORY/$OUTNAME_$i
+done
+sudo cpupower -c 0 frequency-set -d $MIN -u $MAX -g powersave
+```
+
+On the measurements branch, you may then get the "Cycles" value by
+running the script two times, one for QUIC v1, and one for QUIC VReverso
+(the server supports both protocol). First, recompile your client:
+
+$ cargo build --profile performance
+
+For QUIC v1, we could have:
+
+$ ./measure_dl_i71166.sh 1 quicv1_recvmmsg 
+
+For QUIC VReverso, we would have:
+
+$ ./measure_dl_i71166.sh 00791097 quicvreverso_recvmmsg
+
+To get the two lines using recvmsg() instead of recvmmsg(), you may
+switch to the branch quiceh_recvmsg.
+
+$ git checkout quiceh_recvmsg
+
+re-compile your client
+
+$ cargo build --profile performance
+
+And re-take the measurements:
+
+$ ./measure_dl_i71166.sh 1 quicv1_recvmsg 
+
+and
+
+$ ./measure_dl_i71166.sh 00791097 quicvreverso_recvmsg
+
+That would make up 4 directories containing each 20 log files from which
+data can be extracted and ploted. An example of such a script is given
+in 
