@@ -212,11 +212,11 @@ $ cargo build --profile performance
 
 For QUIC v1, we could have:
 
-$ ./measure_dl_i71166.sh 1 quicv1_recvmmsg 
+$ ./measure_dl_i71165.sh 1 quicv1_recvmmsg 
 
 For QUIC VReverso, we would have:
 
-$ ./measure_dl_i71166.sh 00791097 quicvreverso_recvmmsg
+$ ./measure_dl_i71165.sh 00791097 quicvreverso_recvmmsg
 
 To get the two lines using recvmsg() instead of recvmmsg(), you may
 switch to the branch quiceh_recvmsg.
@@ -229,12 +229,145 @@ $ cargo build --profile performance
 
 And re-take the measurements:
 
-$ ./measure_dl_i71166.sh 1 quicv1_recvmsg 
+$ ./measure_dl_i71165.sh 1 quicv1_recvmsg 
 
 and
 
-$ ./measure_dl_i71166.sh 00791097 quicvreverso_recvmsg
+$ ./measure_dl_i71165.sh 00791097 quicvreverso_recvmsg
 
 That would make up 4 directories containing each 20 log files from which
-data can be extracted and ploted. An example of such a script is given
-in 
+data can be extracted and ploted. An example of such a script assuming
+the nominal value is 2800MHz:
+
+``` python
+import os
+import matplotlib
+import matplotlib.pyplot as plt
+import pdb
+import numpy as np
+import scipy.stats as stats
+matplotlib.rcParams.update({'font.size': 22})
+
+def parse_file(file_path):
+    times = np.linspace(0, 10, 101)
+    cycles = []
+
+    with open(file_path, 'r') as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) >= 3 and parts[2] == 'cycles':
+                cycles.append(int(parts[1].replace('.', '')))
+
+    return times, cycles
+
+def calculate_cpu_utilization(cycles, interval_duration, cpu_frequency):
+    max_possible_cycles = cpu_frequency * interval_duration
+    utilizations = [(cycle_count / max_possible_cycles) * 100 for cycle_count in cycles]
+    return utilizations
+
+def process_files(file_paths, cpu_frequency):
+    all_data = {}
+
+    for file_path in file_paths:
+        times, cycles = parse_file(file_path)
+        if len(times) > 1:  # Ensure there is at least one interval to compute
+            for i in range(1, len(times)):
+                interval_duration = times[i] - times[i-1]
+                if i < len(cycles):
+                    utilization = calculate_cpu_utilization([cycles[i]], interval_duration, cpu_frequency)[0]
+
+                    if times[i] not in all_data:
+                        all_data[times[i]] = []
+                    all_data[times[i]].append(utilization)
+                else:
+                    break
+
+    return all_data
+
+def calculate_mean_confidence_interval(data, confidence=0.95):
+    avg_data = {}
+    conf_int = {}
+    for time, utilizations in data.items():
+        data = np.array(utilizations)
+
+        mean = np.mean(data)
+
+        #Calculate the standard error of the mean (SEM)
+        sem = stats.sem(data)
+
+        #Determine the t-value for the given confidence level and sample size
+        n = len(data)
+        t_value = stats.t.ppf((1 + confidence) / 2.0, n - 1)
+
+        margin_of_error = t_value * sem
+
+        conf_interval = (mean - margin_of_error, mean + margin_of_error)
+
+        avg_data[time] = mean
+        conf_int[time] = conf_interval
+
+    return avg_data, conf_int
+
+def plot_utilization(avg_data, avg_data2, avg_data3, avg_data4, conf_int,
+                     conf_int2, conf_int3, conf_int4):
+    times = sorted(avg_data.keys())
+    utilizations = [avg_data[time] for time in times]
+    util_int_low = [conf_int[time][0] for time in times]
+    util_int_up = [conf_int[time][1] for time in times]
+    util2 = [avg_data2[time] for time in times]
+    util2_int_low = [conf_int2[time][0] for time in times]
+    util2_int_up = [conf_int2[time][1] for time in times]
+    util3 = [avg_data3[time] for time in times]
+    util3_int_low = [conf_int3[time][0] for time in times]
+    util3_int_up = [conf_int3[time][1] for time in times]
+    util4 = [avg_data4[time] for time in times]
+    util4_int_low = [conf_int4[time][0] for time in times]
+    util4_int_up = [conf_int4[time][1] for time in times]
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(times, utilizations, marker='o', linestyle='-', color='b', label="recvmmsg() + HTTP/3 with QUIC V1")
+    ax = plt.gca()
+    ax.fill_between(times, util_int_low, util_int_up, color="b", alpha=.2)
+    plt.plot(times, util2, marker='*', linestyle='-', color='r', label="recvmmsg() + HTTP/3 with QUIC VReverso")
+    ax.fill_between(times, util2_int_low, util2_int_up, color="r", alpha=.2)
+    plt.plot(times, util3, marker="x", linestyle="-.", color="black", label="recvmsg() + HTTP/3 with QUIC V1")
+    ax.fill_between(times, util3_int_low, util3_int_up, color="black", alpha=.2)
+    plt.plot(times, util4, marker="+", linestyle="--", color="cyan", label="recvmsg() + HTTP/3 with QUIC VReverso")
+    ax.fill_between(times, util4_int_low, util4_int_up, color="cyan", alpha=.2)
+
+    plt.xlabel('Time (s)', fontsize=20)
+    plt.ylabel('Average CPU Utilization (%)', fontsize=20)
+    plt.grid(True)
+    plt.legend(fontsize=20)
+    plt.tight_layout()
+    plt.savefig("cpudl_1gbps.pdf")
+
+def get_file_paths(directory):
+    return [os.path.join(directory, file) for file in os.listdir(directory) if os.path.isfile(os.path.join(directory, file))]
+
+cpu_frequency = 2.8 * 10**9 # Replace with your frequency.
+
+directory = "1_measure_quicv1"  # Replace with the path to your directory
+directory_2 = "3_measure_quicv0079_1097"
+directory_3 = "measure_quicv1_recvmsg"
+directory_4 = "measure_quicv0079_1097_recvmsg"
+
+file_paths = get_file_paths(directory)
+file_paths_2 = get_file_paths(directory_2)
+file_paths_3 = get_file_paths(directory_3)
+file_paths_4 = get_file_paths(directory_4)
+
+data = process_files(file_paths, cpu_frequency)
+data2 = process_files(file_paths_2, cpu_frequency)
+data3 = process_files(file_paths_3, cpu_frequency)
+data4 = process_files(file_paths_4, cpu_frequency)
+avg_data, conf_int = calculate_mean_confidence_interval(data)
+avg_data_2, conf_int_2 = calculate_mean_confidence_interval(data2)
+avg_data_3, conf_int_3 = calculate_mean_confidence_interval(data3)
+avg_data_4, conf_int_4 = calculate_mean_confidence_interval(data4)
+plot_utilization(avg_data, avg_data_2, avg_data_3, avg_data_4, conf_int, conf_int_2, conf_int_3, conf_int_4)
+```
+
+Change the name of the 4 directories in the script according to the chosen ones for
+the 4 runs of `measure_dl_i71165.sh`.
+
