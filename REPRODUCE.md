@@ -176,14 +176,16 @@ instructions, run quiceh-server:
 
 $ ./target/release/quiceh-server --listen PUBIP:PORT --key apps/src/bin/cert.key --cert apps/src/bin/cert.crt --root .
 
-Create a 10 Gb file.
+Create a 10 Gb file on the server.
+
+$ dd if=/dev/zero of=10gb count=1000 bs=1000000
 
 For the client, switch on the "measurements" branch. Modify the
 following script named measure_dl_i71165.sh and available in the root of
 the repository accordingly to the frequency values of your processor.
 Replace also the server address
-(https://reverso.info.unamur.be:4433/testfile) with your domain or IP +
-port, and 10Gb file.
+(https://reverso.info.unamur.be:4433/10gb) with your domain or IP +
+port, and 10gb filename.
 
 ```bash
 MIN=400MHz
@@ -199,7 +201,7 @@ mkdir -p $DIRECTORY
 sudo cpupower -c 0 frequency-set -d $SET_MIN -u $SET_MAX -g performance
 for i in {1..20}
 do
-  taskset -c 2 sudo perf stat -e cycles,instructions --interval-print 100 -C 0 taskset -c 0 ./target/performance/quiceh-client --wire-version $VERSION --no-verify https://reverso.info.unamur.be:4433/testfile > /dev/null 2> $DIRECTORY/$OUTNAME_$i
+  taskset -c 2 sudo perf stat -e cycles,instructions --interval-print 100 -C 0 taskset -c 0 ./target/performance/quiceh-client --wire-version $VERSION --no-verify https://reverso.info.unamur.be:4433/10gb > /dev/null 2> $DIRECTORY/$OUTNAME_$i
 done
 sudo cpupower -c 0 frequency-set -d $MIN -u $MAX -g powersave
 ```
