@@ -742,10 +742,16 @@ impl<'a> From<&RecvInfo<'a>> for crate::RecvInfo {
     }
 }
 
-/*
+// Maceo's note:
+// AppRecvBufMap will only be exported in the .h with a typedef like:
+// typedef struct quiceh_app_recv_buff_map quiceh_app_recv_buff_map;
+//
+// Like this, their is no need create a C compatible ABI.
+// I still have to have a function able to return a pointer to AppRevBufMap for this to work.
+
 #[no_mangle]
-pub extern fn quiceh_conn_recv(
-    conn: &mut Connection, buf: *mut u8, buf_len: size_t, info: &RecvInfo,
+pub extern "C" fn quiceh_conn_recv(
+    conn: &mut Connection, buf: *mut u8, buf_len: size_t, app_buffers: &mut AppRecvBufMap, info: &RecvInfo,
 ) -> ssize_t {
     if buf_len > <ssize_t>::max_value() as usize {
         panic!("The provided buffer is too large");
@@ -753,13 +759,13 @@ pub extern fn quiceh_conn_recv(
 
     let buf = unsafe { slice::from_raw_parts_mut(buf, buf_len) };
 
-    match conn.recv(buf, info.into()) {
+    match conn.recv(buf, app_buffers, info.into()) {
         Ok(v) => v as ssize_t,
 
         Err(e) => e.to_c(),
     }
 }
-*/
+
 
 #[repr(C)]
 pub struct SendInfo {
