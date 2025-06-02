@@ -100,7 +100,7 @@ use winapi::shared::ws2ipdef::SOCKADDR_IN6_LH_u;
 use crate::*;
 
 #[no_mangle]
-pub extern fn quiceh_version() -> *const u8 {
+pub extern "C" fn quiceh_version() -> *const u8 {
     static VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "\0");
     VERSION.as_ptr()
 }
@@ -742,6 +742,7 @@ impl<'a> From<&RecvInfo<'a>> for crate::RecvInfo {
     }
 }
 
+/*
 #[no_mangle]
 pub extern fn quiceh_conn_recv(
     conn: &mut Connection, buf: *mut u8, buf_len: size_t, info: &RecvInfo,
@@ -758,6 +759,7 @@ pub extern fn quiceh_conn_recv(
         Err(e) => e.to_c(),
     }
 }
+*/
 
 #[repr(C)]
 pub struct SendInfo {
