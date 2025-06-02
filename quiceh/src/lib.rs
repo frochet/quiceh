@@ -760,6 +760,9 @@ impl Error {
             Error::OutOfIdentifiers => -19,
             Error::KeyUpdate => -20,
             Error::CryptoBufferExceeded => -21,
+            Error::AppRecvBufNotFound => -22,
+            Error::InvalidOffset => -23,
+            Error::InvalidAPICall(_) => -24
         }
     }
 }
