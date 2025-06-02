@@ -343,9 +343,11 @@ typedef struct {
     socklen_t to_len;
 } quiceh_recv_info;
 
+typedef struct quiceh_app_recv_buff_map quiceh_app_recv_buff_map;
+
 // Processes QUIC packets received from the peer.
 ssize_t quiceh_conn_recv(quiceh_conn *conn, uint8_t *buf, size_t buf_len,
-                         const quiceh_recv_info *info);
+                         quiceh_app_recv_buff_map* app_buffers, const quiceh_recv_info *info);
 
 typedef struct {
     // The local address the packet should be sent from.
