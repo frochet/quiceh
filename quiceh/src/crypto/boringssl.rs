@@ -239,7 +239,7 @@ impl PacketKey {
     }
 }
 
-extern {
+extern "C" {
     fn EVP_aead_aes_128_gcm() -> *const EVP_AEAD;
 
     fn EVP_aead_aes_256_gcm() -> *const EVP_AEAD;
