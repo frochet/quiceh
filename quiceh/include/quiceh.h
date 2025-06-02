@@ -24,8 +24,8 @@
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef QUICHE_H
-#define QUICHE_H
+#ifndef QUICEH_H
+#define QUICEH_H
 
 #if defined(__cplusplus)
 extern "C" {
@@ -56,77 +56,77 @@ extern "C" {
 //
 
 // The current QUIC wire version.
-#define QUICHE_PROTOCOL_VERSION 0x00000001
+#define QUICEH_PROTOCOL_VERSION 0x00000001
 
 // The maximum length of a connection ID.
-#define QUICHE_MAX_CONN_ID_LEN 20
+#define QUICEH_MAX_CONN_ID_LEN 20
 
 // The minimum length of Initial packets sent by a client.
-#define QUICHE_MIN_CLIENT_INITIAL_LEN 1200
+#define QUICEH_MIN_CLIENT_INITIAL_LEN 1200
 
 enum quiceh_error {
     // There is no more work to do.
-    QUICHE_ERR_DONE = -1,
+    QUICEH_ERR_DONE = -1,
 
     // The provided buffer is too short.
-    QUICHE_ERR_BUFFER_TOO_SHORT = -2,
+    QUICEH_ERR_BUFFER_TOO_SHORT = -2,
 
     // The provided packet cannot be parsed because its version is unknown.
-    QUICHE_ERR_UNKNOWN_VERSION = -3,
+    QUICEH_ERR_UNKNOWN_VERSION = -3,
 
     // The provided packet cannot be parsed because it contains an invalid
     // frame.
-    QUICHE_ERR_INVALID_FRAME = -4,
+    QUICEH_ERR_INVALID_FRAME = -4,
 
     // The provided packet cannot be parsed.
-    QUICHE_ERR_INVALID_PACKET = -5,
+    QUICEH_ERR_INVALID_PACKET = -5,
 
     // The operation cannot be completed because the connection is in an
     // invalid state.
-    QUICHE_ERR_INVALID_STATE = -6,
+    QUICEH_ERR_INVALID_STATE = -6,
 
     // The operation cannot be completed because the stream is in an
     // invalid state.
-    QUICHE_ERR_INVALID_STREAM_STATE = -7,
+    QUICEH_ERR_INVALID_STREAM_STATE = -7,
 
     // The peer's transport params cannot be parsed.
-    QUICHE_ERR_INVALID_TRANSPORT_PARAM = -8,
+    QUICEH_ERR_INVALID_TRANSPORT_PARAM = -8,
 
     // A cryptographic operation failed.
-    QUICHE_ERR_CRYPTO_FAIL = -9,
+    QUICEH_ERR_CRYPTO_FAIL = -9,
 
     // The TLS handshake failed.
-    QUICHE_ERR_TLS_FAIL = -10,
+    QUICEH_ERR_TLS_FAIL = -10,
 
     // The peer violated the local flow control limits.
-    QUICHE_ERR_FLOW_CONTROL = -11,
+    QUICEH_ERR_FLOW_CONTROL = -11,
 
     // The peer violated the local stream limits.
-    QUICHE_ERR_STREAM_LIMIT = -12,
+    QUICEH_ERR_STREAM_LIMIT = -12,
 
     // The specified stream was stopped by the peer.
-    QUICHE_ERR_STREAM_STOPPED = -15,
+    QUICEH_ERR_STREAM_STOPPED = -15,
 
     // The specified stream was reset by the peer.
-    QUICHE_ERR_STREAM_RESET = -16,
+    QUICEH_ERR_STREAM_RESET = -16,
 
     // The received data exceeds the stream's final size.
-    QUICHE_ERR_FINAL_SIZE = -13,
+    QUICEH_ERR_FINAL_SIZE = -13,
 
     // Error in congestion control.
-    QUICHE_ERR_CONGESTION_CONTROL = -14,
+    QUICEH_ERR_CONGESTION_CONTROL = -14,
 
     // Too many identifiers were provided.
-    QUICHE_ERR_ID_LIMIT = -17,
+    QUICEH_ERR_ID_LIMIT = -17,
 
     // Not enough available identifiers.
-    QUICHE_ERR_OUT_OF_IDENTIFIERS = -18,
+    QUICEH_ERR_OUT_OF_IDENTIFIERS = -18,
 
     // Error in key update.
-    QUICHE_ERR_KEY_UPDATE = -19,
+    QUICEH_ERR_KEY_UPDATE = -19,
 
     // The peer sent more data in CRYPTO frames than we can buffer.
-    QUICHE_ERR_CRYPTO_BUFFER_EXCEEDED = -20,
+    QUICEH_ERR_CRYPTO_BUFFER_EXCEEDED = -20,
 };
 
 // Returns a human readable string with the quiceh version number.
@@ -179,7 +179,7 @@ int quiceh_config_set_application_protos(quiceh_config *config,
                                          size_t protos_len);
 
 // Sets the anti-amplification limit factor.
-void quiche_config_set_max_amplification_factor(quiceh_config *config, size_t v);
+void quiceh_config_set_max_amplification_factor(quiceh_config *config, size_t v);
 
 // Sets the `max_idle_timeout` transport parameter, in milliseconds, default is
 // no timeout.
@@ -225,10 +225,10 @@ int quiceh_config_set_cc_algorithm_name(quiceh_config *config, const char *algo)
 void quiceh_config_set_initial_congestion_window_packets(quiceh_config *config, size_t packets);
 
 enum quiceh_cc_algorithm {
-    QUICHE_CC_RENO = 0,
-    QUICHE_CC_CUBIC = 1,
-    QUICHE_CC_BBR = 2,
-    QUICHE_CC_BBR2 = 3,
+    QUICEH_CC_RENO = 0,
+    QUICEH_CC_CUBIC = 1,
+    QUICEH_CC_BBR = 2,
+    QUICEH_CC_BBR2 = 3,
 };
 
 // Sets the congestion control algorithm used.
@@ -396,8 +396,8 @@ ssize_t quiceh_conn_stream_send(quiceh_conn *conn, uint64_t stream_id,
 
 // The side of the stream to be shut down.
 enum quiceh_shutdown {
-    QUICHE_SHUTDOWN_READ = 0,
-    QUICHE_SHUTDOWN_WRITE = 1,
+    QUICEH_SHUTDOWN_READ = 0,
+    QUICEH_SHUTDOWN_WRITE = 1,
 };
 
 // Sets the priority for a stream.
@@ -776,12 +776,12 @@ int quiceh_conn_migrate(quiceh_conn *conn,
                              uint64_t *seq);
 
 enum quiceh_path_event_type {
-    QUICHE_PATH_EVENT_NEW,
-    QUICHE_PATH_EVENT_VALIDATED,
-    QUICHE_PATH_EVENT_FAILED_VALIDATION,
-    QUICHE_PATH_EVENT_CLOSED,
-    QUICHE_PATH_EVENT_REUSED_SOURCE_CONNECTION_ID,
-    QUICHE_PATH_EVENT_PEER_MIGRATED,
+    QUICEH_PATH_EVENT_NEW,
+    QUICEH_PATH_EVENT_VALIDATED,
+    QUICEH_PATH_EVENT_FAILED_VALIDATION,
+    QUICEH_PATH_EVENT_CLOSED,
+    QUICEH_PATH_EVENT_REUSED_SOURCE_CONNECTION_ID,
+    QUICEH_PATH_EVENT_PEER_MIGRATED,
 };
 
 typedef struct quiceh_path_event quiceh_path_event;
@@ -792,30 +792,30 @@ const quiceh_path_event *quiceh_conn_path_event_next(quiceh_conn *conn);
 // Returns the type of the event.
 enum quiceh_path_event_type quiceh_path_event_type(quiceh_path_event *ev);
 
-// Should be called if the quiceh_path_event_type(...) returns QUICHE_PATH_EVENT_NEW.
+// Should be called if the quiceh_path_event_type(...) returns QUICEH_PATH_EVENT_NEW.
 void quiceh_path_event_new(quiceh_path_event *ev,
                            struct sockaddr_storage *local, socklen_t *local_len, struct sockaddr_storage *peer, socklen_t *peer_len);
 
-// Should be called if the quiceh_path_event_type(...) returns QUICHE_PATH_EVENT_VALIDATED.
+// Should be called if the quiceh_path_event_type(...) returns QUICEH_PATH_EVENT_VALIDATED.
 void quiceh_path_event_validated(quiceh_path_event *ev,
                            struct sockaddr_storage *local, socklen_t *local_len, struct sockaddr_storage *peer, socklen_t *peer_len);
 
-// Should be called if the quiceh_path_event_type(...) returns QUICHE_PATH_EVENT_FAILED_VALIDATION.
+// Should be called if the quiceh_path_event_type(...) returns QUICEH_PATH_EVENT_FAILED_VALIDATION.
 void quiceh_path_event_failed_validation(quiceh_path_event *ev,
                            struct sockaddr_storage *local, socklen_t *local_len, struct sockaddr_storage *peer, socklen_t *peer_len);
 
-// Should be called if the quiceh_path_event_type(...) returns QUICHE_PATH_EVENT_CLOSED.
+// Should be called if the quiceh_path_event_type(...) returns QUICEH_PATH_EVENT_CLOSED.
 void quiceh_path_event_closed(quiceh_path_event *ev,
                            struct sockaddr_storage *local, socklen_t *local_len, struct sockaddr_storage *peer, socklen_t *peer_len);
 
-// Should be called if the quiceh_path_event_type(...) returns QUICHE_PATH_EVENT_REUSED_SOURCE_CONNECTION_ID.
+// Should be called if the quiceh_path_event_type(...) returns QUICEH_PATH_EVENT_REUSED_SOURCE_CONNECTION_ID.
 void quiceh_path_event_reused_source_connection_id(quiceh_path_event *ev, uint64_t *id,
                            struct sockaddr_storage *old_local, socklen_t *old_local_len,
                            struct sockaddr_storage *old_peer, socklen_t *old_peer_len,
                            struct sockaddr_storage *local, socklen_t *local_len,
                            struct sockaddr_storage *peer, socklen_t *peer_len);
 
-// Should be called if the quiceh_path_event_type(...) returns QUICHE_PATH_EVENT_PEER_MIGRATED.
+// Should be called if the quiceh_path_event_type(...) returns QUICEH_PATH_EVENT_PEER_MIGRATED.
 void quiceh_path_event_peer_migrated(quiceh_path_event *ev,
                            struct sockaddr_storage *local, socklen_t *local_len,
                            struct sockaddr_storage *peer, socklen_t *peer_len);
@@ -861,135 +861,135 @@ ssize_t quiceh_get_varint(const uint8_t *buf, size_t buf_len,
 //
 
 // List of ALPN tokens of supported HTTP/3 versions.
-#define QUICHE_H3_APPLICATION_PROTOCOL "\x02h3"
+#define QUICEH_H3_APPLICATION_PROTOCOL "\x02h3"
 
 enum quiceh_h3_error {
     // There is no error or no work to do
-    QUICHE_H3_ERR_DONE = -1,
+    QUICEH_H3_ERR_DONE = -1,
 
     // The provided buffer is too short.
-    QUICHE_H3_ERR_BUFFER_TOO_SHORT = -2,
+    QUICEH_H3_ERR_BUFFER_TOO_SHORT = -2,
 
     // Internal error in the HTTP/3 stack.
-    QUICHE_H3_ERR_INTERNAL_ERROR = -3,
+    QUICEH_H3_ERR_INTERNAL_ERROR = -3,
 
     // Endpoint detected that the peer is exhibiting behavior that causes.
     // excessive load.
-    QUICHE_H3_ERR_EXCESSIVE_LOAD = -4,
+    QUICEH_H3_ERR_EXCESSIVE_LOAD = -4,
 
     // Stream ID or Push ID greater that current maximum was
     // used incorrectly, such as exceeding a limit, reducing a limit,
     // or being reused.
-    QUICHE_H3_ERR_ID_ERROR= -5,
+    QUICEH_H3_ERR_ID_ERROR= -5,
 
     // The endpoint detected that its peer created a stream that it will not
     // accept.
-    QUICHE_H3_ERR_STREAM_CREATION_ERROR = -6,
+    QUICEH_H3_ERR_STREAM_CREATION_ERROR = -6,
 
     // A required critical stream was closed.
-    QUICHE_H3_ERR_CLOSED_CRITICAL_STREAM = -7,
+    QUICEH_H3_ERR_CLOSED_CRITICAL_STREAM = -7,
 
     // No SETTINGS frame at beginning of control stream.
-    QUICHE_H3_ERR_MISSING_SETTINGS = -8,
+    QUICEH_H3_ERR_MISSING_SETTINGS = -8,
 
     // A frame was received which is not permitted in the current state.
-    QUICHE_H3_ERR_FRAME_UNEXPECTED = -9,
+    QUICEH_H3_ERR_FRAME_UNEXPECTED = -9,
 
     // Frame violated layout or size rules.
-    QUICHE_H3_ERR_FRAME_ERROR = -10,
+    QUICEH_H3_ERR_FRAME_ERROR = -10,
 
     // QPACK Header block decompression failure.
-    QUICHE_H3_ERR_QPACK_DECOMPRESSION_FAILED = -11,
+    QUICEH_H3_ERR_QPACK_DECOMPRESSION_FAILED = -11,
 
     // -12 was previously used for TransportError, skip it
 
     // The underlying QUIC stream (or connection) doesn't have enough capacity
     // for the operation to complete. The application should retry later on.
-    QUICHE_H3_ERR_STREAM_BLOCKED = -13,
+    QUICEH_H3_ERR_STREAM_BLOCKED = -13,
 
     // Error in the payload of a SETTINGS frame.
-    QUICHE_H3_ERR_SETTINGS_ERROR = -14,
+    QUICEH_H3_ERR_SETTINGS_ERROR = -14,
 
     // Server rejected request.
-    QUICHE_H3_ERR_REQUEST_REJECTED = -15,
+    QUICEH_H3_ERR_REQUEST_REJECTED = -15,
 
     // Request or its response cancelled.
-    QUICHE_H3_ERR_REQUEST_CANCELLED = -16,
+    QUICEH_H3_ERR_REQUEST_CANCELLED = -16,
 
     // Client's request stream terminated without containing a full-formed
     // request.
-    QUICHE_H3_ERR_REQUEST_INCOMPLETE = -17,
+    QUICEH_H3_ERR_REQUEST_INCOMPLETE = -17,
 
     // An HTTP message was malformed and cannot be processed.
-    QUICHE_H3_ERR_MESSAGE_ERROR = -18,
+    QUICEH_H3_ERR_MESSAGE_ERROR = -18,
 
     // The TCP connection established in response to a CONNECT request was
     // reset or abnormally closed.
-    QUICHE_H3_ERR_CONNECT_ERROR = -19,
+    QUICEH_H3_ERR_CONNECT_ERROR = -19,
 
     // The requested operation cannot be served over HTTP/3. Peer should retry
     // over HTTP/1.1.
-    QUICHE_H3_ERR_VERSION_FALLBACK = -20,
+    QUICEH_H3_ERR_VERSION_FALLBACK = -20,
 
-    // The following QUICHE_H3_TRANSPORT_ERR_* errors are propagated
+    // The following QUICEH_H3_TRANSPORT_ERR_* errors are propagated
     // from the QUIC transport layer.
 
-    // See QUICHE_ERR_DONE.
-    QUICHE_H3_TRANSPORT_ERR_DONE = QUICHE_ERR_DONE - 1000,
+    // See QUICEH_ERR_DONE.
+    QUICEH_H3_TRANSPORT_ERR_DONE = QUICEH_ERR_DONE - 1000,
 
-    // See QUICHE_ERR_BUFFER_TOO_SHORT.
-    QUICHE_H3_TRANSPORT_ERR_BUFFER_TOO_SHORT = QUICHE_ERR_BUFFER_TOO_SHORT - 1000,
+    // See QUICEH_ERR_BUFFER_TOO_SHORT.
+    QUICEH_H3_TRANSPORT_ERR_BUFFER_TOO_SHORT = QUICEH_ERR_BUFFER_TOO_SHORT - 1000,
 
-    // See QUICHE_ERR_UNKNOWN_VERSION.
-    QUICHE_H3_TRANSPORT_ERR_UNKNOWN_VERSION = QUICHE_ERR_UNKNOWN_VERSION - 1000,
+    // See QUICEH_ERR_UNKNOWN_VERSION.
+    QUICEH_H3_TRANSPORT_ERR_UNKNOWN_VERSION = QUICEH_ERR_UNKNOWN_VERSION - 1000,
 
-    // See QUICHE_ERR_INVALID_FRAME.
-    QUICHE_H3_TRANSPORT_ERR_INVALID_FRAME = QUICHE_ERR_INVALID_FRAME - 1000,
+    // See QUICEH_ERR_INVALID_FRAME.
+    QUICEH_H3_TRANSPORT_ERR_INVALID_FRAME = QUICEH_ERR_INVALID_FRAME - 1000,
 
-    // See QUICHE_ERR_INVALID_PACKET.
-    QUICHE_H3_TRANSPORT_ERR_INVALID_PACKET = QUICHE_ERR_INVALID_PACKET - 1000,
+    // See QUICEH_ERR_INVALID_PACKET.
+    QUICEH_H3_TRANSPORT_ERR_INVALID_PACKET = QUICEH_ERR_INVALID_PACKET - 1000,
 
-    // See QUICHE_ERR_INVALID_STATE.
-    QUICHE_H3_TRANSPORT_ERR_INVALID_STATE = QUICHE_ERR_INVALID_STATE - 1000,
+    // See QUICEH_ERR_INVALID_STATE.
+    QUICEH_H3_TRANSPORT_ERR_INVALID_STATE = QUICEH_ERR_INVALID_STATE - 1000,
 
-    // See QUICHE_ERR_INVALID_STREAM_STATE.
-    QUICHE_H3_TRANSPORT_ERR_INVALID_STREAM_STATE = QUICHE_ERR_INVALID_STREAM_STATE - 1000,
+    // See QUICEH_ERR_INVALID_STREAM_STATE.
+    QUICEH_H3_TRANSPORT_ERR_INVALID_STREAM_STATE = QUICEH_ERR_INVALID_STREAM_STATE - 1000,
 
-    // See QUICHE_ERR_INVALID_TRANSPORT_PARAM.
-    QUICHE_H3_TRANSPORT_ERR_INVALID_TRANSPORT_PARAM = QUICHE_ERR_INVALID_TRANSPORT_PARAM - 1000,
+    // See QUICEH_ERR_INVALID_TRANSPORT_PARAM.
+    QUICEH_H3_TRANSPORT_ERR_INVALID_TRANSPORT_PARAM = QUICEH_ERR_INVALID_TRANSPORT_PARAM - 1000,
 
-    // See QUICHE_ERR_CRYPTO_FAIL.
-    QUICHE_H3_TRANSPORT_ERR_CRYPTO_FAIL = QUICHE_ERR_CRYPTO_FAIL - 1000,
+    // See QUICEH_ERR_CRYPTO_FAIL.
+    QUICEH_H3_TRANSPORT_ERR_CRYPTO_FAIL = QUICEH_ERR_CRYPTO_FAIL - 1000,
 
-    // See QUICHE_ERR_TLS_FAIL.
-    QUICHE_H3_TRANSPORT_ERR_TLS_FAIL = QUICHE_ERR_TLS_FAIL - 1000,
+    // See QUICEH_ERR_TLS_FAIL.
+    QUICEH_H3_TRANSPORT_ERR_TLS_FAIL = QUICEH_ERR_TLS_FAIL - 1000,
 
-    // See QUICHE_ERR_FLOW_CONTROL.
-    QUICHE_H3_TRANSPORT_ERR_FLOW_CONTROL = QUICHE_ERR_FLOW_CONTROL - 1000,
+    // See QUICEH_ERR_FLOW_CONTROL.
+    QUICEH_H3_TRANSPORT_ERR_FLOW_CONTROL = QUICEH_ERR_FLOW_CONTROL - 1000,
 
-    // See QUICHE_ERR_STREAM_LIMIT.
-    QUICHE_H3_TRANSPORT_ERR_STREAM_LIMIT = QUICHE_ERR_STREAM_LIMIT - 1000,
+    // See QUICEH_ERR_STREAM_LIMIT.
+    QUICEH_H3_TRANSPORT_ERR_STREAM_LIMIT = QUICEH_ERR_STREAM_LIMIT - 1000,
 
-    // See QUICHE_ERR_STREAM_STOPPED.
-    QUICHE_H3_TRANSPORT_ERR_STREAM_STOPPED = QUICHE_ERR_STREAM_STOPPED - 1000,
+    // See QUICEH_ERR_STREAM_STOPPED.
+    QUICEH_H3_TRANSPORT_ERR_STREAM_STOPPED = QUICEH_ERR_STREAM_STOPPED - 1000,
 
-    // See QUICHE_ERR_STREAM_RESET.
-    QUICHE_H3_TRANSPORT_ERR_STREAM_RESET = QUICHE_ERR_STREAM_RESET - 1000,
+    // See QUICEH_ERR_STREAM_RESET.
+    QUICEH_H3_TRANSPORT_ERR_STREAM_RESET = QUICEH_ERR_STREAM_RESET - 1000,
 
-    // See QUICHE_ERR_FINAL_SIZE.
-    QUICHE_H3_TRANSPORT_ERR_FINAL_SIZE = QUICHE_ERR_FINAL_SIZE - 1000,
+    // See QUICEH_ERR_FINAL_SIZE.
+    QUICEH_H3_TRANSPORT_ERR_FINAL_SIZE = QUICEH_ERR_FINAL_SIZE - 1000,
 
-    // See QUICHE_ERR_CONGESTION_CONTROL.
-    QUICHE_H3_TRANSPORT_ERR_CONGESTION_CONTROL = QUICHE_ERR_CONGESTION_CONTROL - 1000,
+    // See QUICEH_ERR_CONGESTION_CONTROL.
+    QUICEH_H3_TRANSPORT_ERR_CONGESTION_CONTROL = QUICEH_ERR_CONGESTION_CONTROL - 1000,
 
-    // See QUICHE_ERR_ID_LIMIT.
-    QUICHE_H3_TRANSPORT_ERR_ID_LIMIT = QUICHE_ERR_ID_LIMIT - 1000,
+    // See QUICEH_ERR_ID_LIMIT.
+    QUICEH_H3_TRANSPORT_ERR_ID_LIMIT = QUICEH_ERR_ID_LIMIT - 1000,
 
-    // See QUICHE_ERR_OUT_OF_IDENTIFIERS.
-    QUICHE_H3_TRANSPORT_ERR_OUT_OF_IDENTIFIERS = QUICHE_ERR_OUT_OF_IDENTIFIERS - 1000,
+    // See QUICEH_ERR_OUT_OF_IDENTIFIERS.
+    QUICEH_H3_TRANSPORT_ERR_OUT_OF_IDENTIFIERS = QUICEH_ERR_OUT_OF_IDENTIFIERS - 1000,
 
-    // See QUICHE_ERR_KEY_UPDATE.
-    QUICHE_H3_TRANSPORT_ERR_KEY_UPDATE = QUICHE_ERR_KEY_UPDATE - 1000,
+    // See QUICEH_ERR_KEY_UPDATE.
+    QUICEH_H3_TRANSPORT_ERR_KEY_UPDATE = QUICEH_ERR_KEY_UPDATE - 1000,
 };
 
 // Stores configuration shared between multiple connections.
@@ -1021,12 +1021,12 @@ quiceh_h3_conn *quiceh_h3_conn_new_with_transport(quiceh_conn *quiceh_conn,
                                                   quiceh_h3_config *config);
 
 enum quiceh_h3_event_type {
-    QUICHE_H3_EVENT_HEADERS,
-    QUICHE_H3_EVENT_DATA,
-    QUICHE_H3_EVENT_FINISHED,
-    QUICHE_H3_EVENT_GOAWAY,
-    QUICHE_H3_EVENT_RESET,
-    QUICHE_H3_EVENT_PRIORITY_UPDATE,
+    QUICEH_H3_EVENT_HEADERS,
+    QUICEH_H3_EVENT_DATA,
+    QUICEH_H3_EVENT_FINISHED,
+    QUICEH_H3_EVENT_GOAWAY,
+    QUICEH_H3_EVENT_RESET,
+    QUICEH_H3_EVENT_PRIORITY_UPDATE,
 };
 
 typedef struct quiceh_h3_event quiceh_h3_event;
@@ -1147,4 +1147,4 @@ void quiceh_h3_conn_free(quiceh_h3_conn *conn);
 }  // extern C
 #endif
 
-#endif // QUICHE_H
+#endif // QUICEH_H
