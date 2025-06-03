@@ -143,14 +143,14 @@ After cloning the project according to the command mentioned in the
 [building](#building) section, the client can be run as follows:
 
 ```bash
- $ cargo run --bin quiceh-client --wire-version 00791097 -- https://reverso.info.unamur.be:4433
+ $ cargo run --bin quiceh-client -- --wire-version 00791097 -- https://reverso.info.unamur.be:4433
 ```
 
 Using `--wire-version 00791097` configures PROTOCOL_VERSION_VREVERSO.
 If you want QUIC V1, you may use 00000001.
 
 ```bash
- $ cargo run --bin quiceh-server -- --cert apps/src/bin/cert.crt --key apps/src/bin/cert.key
+ $ cargo run --bin quiceh-server -- --cert apps/src/bin/cert.crt --key apps/src/bin/cert.key --root .
 ```
 
 (note that the certificate provided is self-signed and should not be used in
