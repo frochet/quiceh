@@ -56,7 +56,7 @@ extern "C" {
 //
 
 // The current QUIC wire version.
-#define QUICEH_PROTOCOL_VERSION 0x00000001
+#define QUICEH_PROTOCOL_VERSION 0x00791097
 
 // The maximum length of a connection ID.
 #define QUICEH_MAX_CONN_ID_LEN 20
@@ -71,62 +71,70 @@ enum quiceh_error {
     // The provided buffer is too short.
     QUICEH_ERR_BUFFER_TOO_SHORT = -2,
 
+    QUICEH_ERR_BUFFER_PROTOCOL = -3,
+
     // The provided packet cannot be parsed because its version is unknown.
-    QUICEH_ERR_UNKNOWN_VERSION = -3,
+    QUICEH_ERR_UNKNOWN_VERSION = -4,
 
     // The provided packet cannot be parsed because it contains an invalid
     // frame.
-    QUICEH_ERR_INVALID_FRAME = -4,
+    QUICEH_ERR_INVALID_FRAME = -5,
 
     // The provided packet cannot be parsed.
-    QUICEH_ERR_INVALID_PACKET = -5,
+    QUICEH_ERR_INVALID_PACKET = -6,
 
     // The operation cannot be completed because the connection is in an
     // invalid state.
-    QUICEH_ERR_INVALID_STATE = -6,
+    QUICEH_ERR_INVALID_STATE = -7,
 
     // The operation cannot be completed because the stream is in an
     // invalid state.
-    QUICEH_ERR_INVALID_STREAM_STATE = -7,
+    QUICEH_ERR_INVALID_STREAM_STATE = -8,
 
     // The peer's transport params cannot be parsed.
-    QUICEH_ERR_INVALID_TRANSPORT_PARAM = -8,
+    QUICEH_ERR_INVALID_TRANSPORT_PARAM = -9,
 
     // A cryptographic operation failed.
-    QUICEH_ERR_CRYPTO_FAIL = -9,
+    QUICEH_ERR_CRYPTO_FAIL = -10,
 
     // The TLS handshake failed.
-    QUICEH_ERR_TLS_FAIL = -10,
+    QUICEH_ERR_TLS_FAIL = -11,
 
     // The peer violated the local flow control limits.
-    QUICEH_ERR_FLOW_CONTROL = -11,
+    QUICEH_ERR_FLOW_CONTROL = -12,
 
     // The peer violated the local stream limits.
-    QUICEH_ERR_STREAM_LIMIT = -12,
-
-    // The specified stream was stopped by the peer.
-    QUICEH_ERR_STREAM_STOPPED = -15,
-
-    // The specified stream was reset by the peer.
-    QUICEH_ERR_STREAM_RESET = -16,
+    QUICEH_ERR_STREAM_LIMIT = -13,
 
     // The received data exceeds the stream's final size.
-    QUICEH_ERR_FINAL_SIZE = -13,
+    QUICEH_ERR_FINAL_SIZE = -14,
 
     // Error in congestion control.
-    QUICEH_ERR_CONGESTION_CONTROL = -14,
+    QUICEH_ERR_CONGESTION_CONTROL = -15,
+
+    // The specified stream was stopped by the peer.
+    QUICEH_ERR_STREAM_STOPPED = -16,
+
+    // The specified stream was reset by the peer.
+    QUICEH_ERR_STREAM_RESET = -17,
 
     // Too many identifiers were provided.
-    QUICEH_ERR_ID_LIMIT = -17,
+    QUICEH_ERR_ID_LIMIT = -18,
 
     // Not enough available identifiers.
-    QUICEH_ERR_OUT_OF_IDENTIFIERS = -18,
+    QUICEH_ERR_OUT_OF_IDENTIFIERS = -19,
 
     // Error in key update.
-    QUICEH_ERR_KEY_UPDATE = -19,
+    QUICEH_ERR_KEY_UPDATE = -20,
 
     // The peer sent more data in CRYPTO frames than we can buffer.
-    QUICEH_ERR_CRYPTO_BUFFER_EXCEEDED = -20,
+    QUICEH_ERR_CRYPTO_BUFFER_EXCEEDED = -21,
+
+    QUICEH_ERR_APP_RECV_BUF_NOT_FOUND = -22,
+
+    QUICEH_ERR_INVALID_OFFSET = -23,
+
+    QUICEH_ERR_INVALID_API_CALL = -24,
 };
 
 // Returns a human readable string with the quiceh version number.
@@ -344,6 +352,13 @@ typedef struct {
 } quiceh_recv_info;
 
 typedef struct quiceh_app_recv_buff_map quiceh_app_recv_buff_map;
+
+quiceh_app_recv_buff_map* quiceh_app_recv_buf_map_new(size_t recycled_capacity,
+    uint64_t max_buffer_data, uint64_t max_streams_bidi, uint64_t max_streams_uni_remote);
+
+quiceh_app_recv_buff_map* quiceh_app_recv_buf_map_default();
+
+void quiceh_app_recv_buf_map_free(quiceh_app_recv_buff_map* app_buffers);
 
 // Processes QUIC packets received from the peer.
 ssize_t quiceh_conn_recv(quiceh_conn *conn, uint8_t *buf, size_t buf_len,

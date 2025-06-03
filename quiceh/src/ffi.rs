@@ -424,6 +424,10 @@ pub extern "C" fn quiceh_config_set_ticket_key(
 
 #[no_mangle]
 pub extern "C" fn quiceh_config_free(config: *mut Config) {
+    if config.is_null()
+    {
+        return;
+    }
     drop(unsafe { Box::from_raw(config) });
 }
 
@@ -725,6 +729,30 @@ pub extern "C" fn quiceh_conn_set_session(
     }
 }
 
+#[no_mangle]
+pub extern "C" fn quiceh_app_recv_buf_map_new(
+    recycled_capacity: usize, max_buffer_data: u64,
+    max_streams_bidi: u64, max_streams_uni_remote: u64
+) -> *mut AppRecvBufMap {
+    Box::into_raw(Box::new(AppRecvBufMap::new(
+        recycled_capacity, max_buffer_data, max_streams_bidi, max_streams_uni_remote
+    )))
+}
+
+#[no_mangle]
+pub extern "C" fn quiceh_app_recv_buf_map_default() -> *mut AppRecvBufMap {
+    Box::into_raw(Box::new(AppRecvBufMap::default()))
+}
+
+#[no_mangle]
+pub extern "C" fn quiceh_app_recv_buf_map_free(app_buffers: *mut AppRecvBufMap) {
+    if app_buffers.is_null()
+    {
+        return;
+    }
+    drop(unsafe { Box::from_raw(app_buffers) });
+}
+
 #[repr(C)]
 pub struct RecvInfo<'a> {
     from: &'a sockaddr,
@@ -747,7 +775,7 @@ impl<'a> From<&RecvInfo<'a>> for crate::RecvInfo {
 // typedef struct quiceh_app_recv_buff_map quiceh_app_recv_buff_map;
 //
 // Like this, their is no need create a C compatible ABI.
-// I still have to have a function able to return a pointer to AppRevBufMap for this to work.
+// I still have to have a function able to return a pointer to AppRecvBufMap for this to work.
 
 #[no_mangle]
 pub extern "C" fn quiceh_conn_recv(
@@ -1063,6 +1091,10 @@ pub extern "C" fn quiceh_connection_id_iter_next(
 
 #[no_mangle]
 pub extern "C" fn quiceh_connection_id_iter_free(iter: *mut ConnectionIdIter) {
+    if iter.is_null()
+    {
+        return;
+    }
     drop(unsafe { Box::from_raw(iter) });
 }
 
@@ -1207,6 +1239,10 @@ pub extern "C" fn quiceh_stream_iter_next(
 
 #[no_mangle]
 pub extern "C" fn quiceh_stream_iter_free(iter: *mut StreamIter) {
+    if iter.is_null()
+    {
+        return;
+    }
     drop(unsafe { Box::from_raw(iter) });
 }
 
@@ -1475,6 +1511,10 @@ pub extern "C" fn quiceh_conn_send_ack_eliciting_on_path(
 
 #[no_mangle]
 pub extern "C" fn quiceh_conn_free(conn: *mut Connection) {
+    if conn.is_null()
+    {
+        return;
+    }
     drop(unsafe { Box::from_raw(conn) });
 }
 
@@ -1598,6 +1638,10 @@ pub extern "C" fn quiceh_socket_addr_iter_next(
 
 #[no_mangle]
 pub extern "C" fn quiceh_socket_addr_iter_free(iter: *mut SocketAddrIter) {
+    if iter.is_null()
+    {
+        return;
+    }
     drop(unsafe { Box::from_raw(iter) });
 }
 
@@ -1791,6 +1835,10 @@ pub extern "C" fn quiceh_path_event_peer_migrated(
 
 #[no_mangle]
 pub extern "C" fn quiceh_path_event_free(ev: *mut PathEvent) {
+    if ev.is_null()
+    {
+        return;
+    }
     drop(unsafe { Box::from_raw(ev) });
 }
 
