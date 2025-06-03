@@ -43,7 +43,7 @@ fn bench_v3_receive(
     }
     let (b, ..) = pipe
         .client
-        .stream_recv_v3(1, &mut pipe.client_app_buffers)
+        .stream_peek(1, &mut pipe.client_app_buffers)
         .unwrap();
 
     black_box(b);
@@ -98,7 +98,7 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
 
     // We only Micro-benchmark processing the QUIC packets and emitting them to
     // the application through the stream_recv() call in V1 or the
-    // stream_recv_v3() call in V3. We do this for a full cwnd.
+    // stream_peek() call in V3. We do this for a full cwnd.
     group.bench_with_input(
         BenchmarkId::new("Quic_V3_Recv_Path", 10000),
         &sendbuf,
@@ -113,7 +113,7 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
                     pipe_v3.advance().unwrap();
                     pipe_v3
                         .client
-                        .stream_recv_v3(1, &mut pipe_v3.client_app_buffers)
+                        .stream_peek(1, &mut pipe_v3.client_app_buffers)
                         .unwrap();
                     pipe_v3
                         .client

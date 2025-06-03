@@ -498,7 +498,7 @@ impl HttpConn for Http09Conn {
         app_buffers: &mut quiceh::AppRecvBufMap, req_start: &std::time::Instant,
     ) {
         for s in conn.readable() {
-            if let Ok((b, len, fin)) = conn.stream_recv_v3(s, app_buffers) {
+            if let Ok((b, len, fin)) = conn.stream_peek(s, app_buffers) {
                 trace!(
                     "received {}  bytes available to consume, fin is {}",
                     len,
@@ -654,7 +654,7 @@ impl HttpConn for Http09Conn {
         index: &str, app_buffers: &mut quiceh::AppRecvBufMap,
     ) -> quiceh::h3::Result<()> {
         for s in conn.readable() {
-            if let Ok((b, len, fin)) = conn.stream_recv_v3(s, app_buffers) {
+            if let Ok((b, len, fin)) = conn.stream_peek(s, app_buffers) {
                 trace!(
                     "{} has {} bytes available to consume  with fin bit {}",
                     conn.trace_id(),
@@ -1421,7 +1421,7 @@ impl HttpConn for Http3Conn {
                 },
 
                 Ok((stream_id, quiceh::h3::Event::Data)) => {
-                    let b = match self.h3_conn.recv_body_v3(
+                    let b = match self.h3_conn.body_peek(
                         conn,
                         stream_id,
                         app_buffers,

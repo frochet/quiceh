@@ -1473,7 +1473,7 @@ impl Connection {
     /// [`body_consumed()`]: struct.Connection.html#method.body_consumed
     /// [`Data`]: enum.Event.html#variant.Data
     /// [`Done`]: enum.Error.html#variant.Done
-    pub fn recv_body_v3<'a>(
+    pub fn body_peek<'a>(
         &mut self, conn: &mut super::Connection, stream_id: u64,
         app_buf: &'a mut crate::AppRecvBufMap,
     ) -> Result<(&'a [u8], usize)> {
@@ -1487,24 +1487,30 @@ impl Connection {
         let stream = self.streams.get_mut(&stream_id).ok_or(Error::Done)?;
 
         if stream.state() != stream::State::Data {
+            trace!("{} Stream id {} is not into a State::Data",
+               conn.trace_id(),
+               stream_id,
+            );
             return Err(Error::Done);
         }
 
         let (b, len, _) = stream.try_acquire_data(conn, app_buf)?;
 
         if len == 0 {
+            trace!("{} Stream id {} could not acquire any data from the underyling buffer",
+                   conn.trace_id(),
+                   stream_id
+            );
             return Err(Error::Done);
         }
-        // TODO should we keep returning the total data, or do we update it
-        // accounting to what was consumed?
         Ok((b, stream.get_state_len() - stream.get_state_off()))
     }
 
     /// Marks the data acquired by the application as consumed by it.
     ///
     /// Applications should call this method once they processed data from
-    /// [`recv_body_v3()`], and doesn't need it to stay available. That is,
-    /// application should always consume the data from [`recv_body_v3()`]
+    /// [`body_peek()`], and doesn't need it to stay available. That is,
+    /// application should always consume the data from [`body_peek()`]
     /// either through a copy, or by processing it. Ideally, the stream
     /// capacity is large enough such that the whole data can be processed right
     /// away without requiring a copy on the application.
@@ -1513,7 +1519,7 @@ impl Connection {
     /// block on its receiving capacity, and the HTTP/3 to not change its
     /// processing state.
     ///
-    /// [`recv_body_v3()`]: struct.Connection.html#method.recv_body_v3
+    /// [`body_peek()`]: struct.Connection.html#method.body_peek
     pub fn body_consumed(
         &mut self, conn: &mut super::Connection, stream_id: u64, consumed: usize,
         app_buf: &mut crate::AppRecvBufMap,
@@ -1816,7 +1822,7 @@ impl Connection {
     /// is re-armed.
     ///
     /// The events [`Headers`], [`Data`] and [`Finished`] return a stream ID,
-    /// which is used in methods [`recv_body_v3()`], [`body_consumed()`],
+    /// which is used in methods [`body_peek()`], [`body_consumed()`],
     /// [`send_response()`] or [`send_body()`].
     ///
     /// The event [`GoAway`] returns an ID that depends on the connection role.
@@ -1837,7 +1843,7 @@ impl Connection {
     /// [`Finished`]: enum.Event.html#variant.Finished
     /// [`GoAway`]: enum.Event.html#variant.GoAWay
     /// [`PriorityUpdate`]: enum.Event.html#variant.PriorityUpdate
-    /// [`recv_body_v3()`]: struct.Connection.html#method.recv_body_v3
+    /// [`body_peek()`]: struct.Connection.html#method.body_peek
     /// [`body_consumed()`]: struct.Connection.html#method.body_consumed
     /// [`send_response()`]: struct.Connection.html#method.send_response
     /// [`send_body()`]: struct.Connection.html#method.send_body
@@ -1941,7 +1947,7 @@ impl Connection {
                 // indicate that there is a pending error, such as reset.
                 if let Some(ref mut app_buf) = app_buf {
                     if let Err(crate::Error::StreamReset(e)) =
-                        conn.stream_recv_v3(finished, app_buf)
+                        conn.stream_peek(finished, app_buf)
                     {
                         return Ok((finished, Event::Reset(e)));
                     }
@@ -2813,6 +2819,7 @@ impl Connection {
                     }
 
                     if !stream.try_trigger_data_event() {
+                        trace!("Data event was not reset");
                         break;
                     }
 
@@ -2830,7 +2837,7 @@ impl Connection {
                             // stream here,
                             // and its stream buffer within app_buf
                             let (_, read, _) =
-                                conn.stream_recv_v3(stream_id, app_buf)?;
+                                conn.stream_peek(stream_id, app_buf)?;
                             conn.stream_consumed(stream_id, read, app_buf)?;
                         }
                     } else {
@@ -3510,10 +3517,10 @@ pub mod testing {
         /// Fetches DATA payload from the server
         ///
         /// On success, it returns a slice of the DATA payload
-        pub fn recv_body_v3_client(
+        pub fn body_peek_client(
             &mut self, stream: u64,
         ) -> Result<(&[u8], usize)> {
-            self.client.recv_body_v3(
+            self.client.body_peek(
                 &mut self.pipe.client,
                 stream,
                 &mut self.pipe.client_app_buffers,
@@ -3560,10 +3567,10 @@ pub mod testing {
         /// Fetches DATA payload from the client
         ///
         /// On success, it returns a slice of the DATA payload
-        pub fn recv_body_v3_server(
+        pub fn body_peek_server(
             &mut self, stream: u64,
         ) -> Result<(&[u8], usize)> {
-            self.server.recv_body_v3(
+            self.server.body_peek(
                 &mut self.pipe.server,
                 stream,
                 &mut self.pipe.server_app_buffers,
@@ -3807,7 +3814,7 @@ mod tests {
         } else {
             let (b, read, fin) = pipe
                 .server
-                .stream_recv_v3(6, &mut pipe.server_app_buffers)
+                .stream_peek(6, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((read, fin), (5, true));
             assert_eq!(&b[..5], b"aaaaa");
@@ -3893,7 +3900,7 @@ mod tests {
 
         assert_eq!(s.poll_client(), Ok((stream, Event::Data)));
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            let (b, tot_exp_len) = s.recv_body_v3_client(stream).unwrap();
+            let (b, tot_exp_len) = s.body_peek_client(stream).unwrap();
             assert_eq!(b.len(), body.len());
             assert_eq!(tot_exp_len, b.len());
             let len = b.len();
@@ -3945,7 +3952,7 @@ mod tests {
 
         for _ in 0..total_data_frames {
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                let (b, tot_exp_len) = s.recv_body_v3_client(stream).unwrap();
+                let (b, tot_exp_len) = s.body_peek_client(stream).unwrap();
                 assert_eq!(b.len(), body.len());
                 assert_eq!(tot_exp_len, body.len());
                 assert!(s.body_consumed_client(stream, body.len()).is_ok());
@@ -3999,17 +4006,17 @@ mod tests {
             assert_eq!(s.poll_client(), Err(Error::Done));
             // Consume in two parts.
             for _ in 0..total_data_frames - 1 {
-                let (b, _) = s.recv_body_v3_client(stream).unwrap();
+                let (b, _) = s.body_peek_client(stream).unwrap();
                 assert_eq!(b.len(), body.len());
                 assert!(s.body_consumed_client(stream, body.len() - 1).is_ok());
                 assert!(s.body_consumed_client(stream, 1).is_ok());
             }
             // Read and consume body.len()-1
-            let (b, _) = s.recv_body_v3_client(stream).unwrap();
+            let (b, _) = s.body_peek_client(stream).unwrap();
             assert_eq!(b.len(), body.len());
             assert!(s.body_consumed_client(stream, body.len() - 1).is_ok());
             // Read and consume the last byte
-            let (b, _) = s.recv_body_v3_client(stream).unwrap();
+            let (b, _) = s.body_peek_client(stream).unwrap();
             assert_eq!(b.len(), 1);
             assert!(s.body_consumed_client(stream, 1).is_ok());
         }
@@ -4036,7 +4043,7 @@ mod tests {
 
         assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            let (b, tot_exp_len) = s.recv_body_v3_server(stream).unwrap();
+            let (b, tot_exp_len) = s.body_peek_server(stream).unwrap();
             assert_eq!(b.len(), body.len());
             assert_eq!(tot_exp_len, body.len());
             assert!(s.body_consumed_server(stream, body.len()).is_ok());
@@ -4086,7 +4093,7 @@ mod tests {
 
         for _ in 0..total_data_frames {
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                let (b, tot_exp_len) = s.recv_body_v3_server(stream).unwrap();
+                let (b, tot_exp_len) = s.body_peek_server(stream).unwrap();
                 assert_eq!(b.len(), body.len());
                 assert_eq!(tot_exp_len, body.len());
                 assert!(s.body_consumed_server(stream, body.len()).is_ok());
@@ -4173,14 +4180,14 @@ mod tests {
 
         assert_eq!(s.poll_server(), Ok((0 + off_by, Event::Data)));
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(s.recv_body_v3_server(4).unwrap().0.len(), body.len());
+            assert_eq!(s.body_peek_server(4).unwrap().0.len(), body.len());
             assert!(s.body_consumed_server(4, body.len()).is_ok());
         } else {
             assert_eq!(s.recv_body_server(0, &mut recv_buf), Ok(body.len()));
         }
         assert_eq!(s.poll_client(), Err(Error::Done));
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(s.recv_body_v3_server(4).unwrap().0.len(), body.len());
+            assert_eq!(s.body_peek_server(4).unwrap().0.len(), body.len());
             assert!(s.body_consumed_server(4, body.len()).is_ok());
         } else {
             assert_eq!(s.recv_body_server(0, &mut recv_buf), Ok(body.len()));
@@ -4189,14 +4196,14 @@ mod tests {
         assert_eq!(s.poll_server(), Ok((4 + off_by, Event::Data)));
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(s.recv_body_v3_server(8).unwrap().0.len(), body.len());
+            assert_eq!(s.body_peek_server(8).unwrap().0.len(), body.len());
             assert!(s.body_consumed_server(8, body.len()).is_ok());
         } else {
             assert_eq!(s.recv_body_server(4, &mut recv_buf), Ok(body.len()));
         }
         assert_eq!(s.poll_client(), Err(Error::Done));
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(s.recv_body_v3_server(8).unwrap().0.len(), body.len());
+            assert_eq!(s.body_peek_server(8).unwrap().0.len(), body.len());
             assert!(s.body_consumed_server(8, body.len()).is_ok());
         } else {
             assert_eq!(s.recv_body_server(4, &mut recv_buf), Ok(body.len()));
@@ -4205,14 +4212,14 @@ mod tests {
         assert_eq!(s.poll_server(), Ok((8 + off_by, Event::Data)));
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(s.recv_body_v3_server(12).unwrap().0.len(), body.len());
+            assert_eq!(s.body_peek_server(12).unwrap().0.len(), body.len());
             assert!(s.body_consumed_server(12, body.len()).is_ok());
         } else {
             assert_eq!(s.recv_body_server(8, &mut recv_buf), Ok(body.len()));
         }
         assert_eq!(s.poll_client(), Err(Error::Done));
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(s.recv_body_v3_server(12).unwrap().0.len(), body.len());
+            assert_eq!(s.body_peek_server(12).unwrap().0.len(), body.len());
             assert!(s.body_consumed_server(12, body.len()).is_ok());
         } else {
             assert_eq!(s.recv_body_server(8, &mut recv_buf), Ok(body.len()));
@@ -4278,7 +4285,7 @@ mod tests {
         assert_eq!(s.poll_client(), Ok((stream, Event::Data)));
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
-                s.recv_body_v3_client(stream).unwrap().0.len(),
+                s.body_peek_client(stream).unwrap().0.len(),
                 body.len()
             );
             assert!(s.body_consumed_client(stream, body.len()).is_ok());
@@ -5653,7 +5660,7 @@ mod tests {
         for _ in 0..total_data_frames {
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
                 assert_eq!(
-                    s.recv_body_v3_server(stream).unwrap().0.len(),
+                    s.body_peek_server(stream).unwrap().0.len(),
                     bytes.len()
                 );
                 assert!(s.body_consumed_server(stream, bytes.len()).is_ok());
@@ -5667,7 +5674,7 @@ mod tests {
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
-                s.recv_body_v3_server(stream).unwrap().0.len(),
+                s.body_peek_server(stream).unwrap().0.len(),
                 bytes.len() - 2
             );
             assert!(s.body_consumed_server(stream, bytes.len() - 2).is_ok());
@@ -6225,7 +6232,7 @@ mod tests {
         assert!(s.poll_client().is_ok());
         assert_eq!(s.poll_client(), Ok((stream, Event::Data)));
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(s.recv_body_v3_client(stream).unwrap().0.len(), 11995);
+            assert_eq!(s.body_peek_client(stream).unwrap().0.len(), 11995);
             assert!(s.body_consumed_client(stream, 11995).is_ok());
         } else {
             assert_eq!(s.recv_body_client(stream, &mut recv_buf), Ok(11995));
@@ -6317,7 +6324,7 @@ mod tests {
         assert!(s.poll_client().is_ok());
         assert_eq!(s.poll_client(), Ok((stream, Event::Data)));
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(s.recv_body_v3_client(stream).unwrap().0.len(), 11994);
+            assert_eq!(s.body_peek_client(stream).unwrap().0.len(), 11994);
             assert!(s.body_consumed_client(stream, 11994).is_ok());
         } else {
             assert_eq!(s.recv_body_client(stream, &mut recv_buf), Ok(11994));
@@ -6367,7 +6374,7 @@ mod tests {
 
         assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(s.recv_body_v3_server(stream), Err(Error::Done));
+            assert_eq!(s.body_peek_server(stream), Err(Error::Done));
         } else {
             assert_eq!(
                 s.recv_body_server(stream, &mut recv_buf),
@@ -6402,7 +6409,7 @@ mod tests {
 
         assert_eq!(s.poll_client(), Ok((stream, Event::Data)));
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(s.recv_body_v3_client(stream), Err(Error::Done));
+            assert_eq!(s.body_peek_client(stream), Err(Error::Done));
         } else {
             assert_eq!(
                 s.recv_body_client(stream, &mut recv_buf),
@@ -6967,7 +6974,7 @@ mod tests {
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
-                s.recv_body_v3_server(stream).unwrap().0.len(),
+                s.body_peek_server(stream).unwrap().0.len(),
                 body.len()
             );
             assert!(s.body_consumed_server(stream, body.len()).is_ok());
@@ -7002,7 +7009,7 @@ mod tests {
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
-                s.recv_body_v3_client(stream).unwrap().0.len(),
+                s.body_peek_client(stream).unwrap().0.len(),
                 body.len()
             );
             assert!(s.body_consumed_client(stream, body.len()).is_ok());
@@ -7088,7 +7095,7 @@ mod tests {
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
-                s.recv_body_v3_server(stream).unwrap().0.len(),
+                s.body_peek_server(stream).unwrap().0.len(),
                 body.len()
             );
             assert!(s.body_consumed_server(stream, body.len()).is_ok());
@@ -7153,7 +7160,7 @@ mod tests {
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
-                s.recv_body_v3_client(stream).unwrap().0.len(),
+                s.body_peek_client(stream).unwrap().0.len(),
                 body.len()
             );
             assert!(s.body_consumed_client(stream, body.len()).is_ok());
@@ -7219,7 +7226,7 @@ mod tests {
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
-                s.recv_body_v3_server(stream).unwrap().0.len(),
+                s.body_peek_server(stream).unwrap().0.len(),
                 body.len()
             );
             assert!(s.body_consumed_server(stream, body.len()).is_ok());
@@ -7229,7 +7236,7 @@ mod tests {
         assert_eq!(s.poll_server(), Ok((stream, Event::Finished)));
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(s.recv_body_v3_server(stream), Err(Error::Done));
+            assert_eq!(s.body_peek_server(stream), Err(Error::Done));
         } else {
             assert_eq!(
                 s.recv_body_server(stream, &mut recv_buf),
@@ -7281,7 +7288,7 @@ mod tests {
 
         // Read the available body data.
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            let (b, tot_exp_len) = s.recv_body_v3_server(stream).unwrap();
+            let (b, tot_exp_len) = s.body_peek_server(stream).unwrap();
             assert_eq!(b.len(), 5);
             assert_eq!(tot_exp_len, 10);
             assert!(s.body_consumed_server(stream, 5).is_ok());
@@ -7298,7 +7305,7 @@ mod tests {
 
         // Read the rest of the body data.
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            let (b, tot_exp_len) = s.recv_body_v3_server(stream).unwrap();
+            let (b, tot_exp_len) = s.body_peek_server(stream).unwrap();
             assert_eq!(b.len(), 5);
             assert_eq!(tot_exp_len, 5);
             assert!(s.body_consumed_server(stream, 5).is_ok());
@@ -7315,7 +7322,7 @@ mod tests {
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
-                s.recv_body_v3_server(stream).unwrap().0.len(),
+                s.body_peek_server(stream).unwrap().0.len(),
                 body.len()
             );
             assert!(s.body_consumed_server(stream, body.len()).is_ok());
@@ -7344,7 +7351,7 @@ mod tests {
         assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
-                s.recv_body_v3_server(stream).unwrap().0.len(),
+                s.body_peek_server(stream).unwrap().0.len(),
                 body.len()
             );
             assert!(s.body_consumed_server(stream, body.len()).is_ok());
@@ -7357,7 +7364,7 @@ mod tests {
         assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
-                s.recv_body_v3_server(stream).unwrap().0.len(),
+                s.body_peek_server(stream).unwrap().0.len(),
                 body.len()
             );
             assert!(s.body_consumed_server(stream, body.len()).is_ok());
@@ -7390,7 +7397,7 @@ mod tests {
         assert_eq!(s.poll_server(), Err(Error::Done));
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(s.recv_body_v3_server(stream), Err(Error::Done));
+            assert_eq!(s.body_peek_server(stream), Err(Error::Done));
         } else {
             assert_eq!(
                 s.recv_body_server(stream, &mut recv_buf),
@@ -7406,7 +7413,7 @@ mod tests {
         assert_eq!(s.poll_server(), Err(Error::Done));
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            let (b, tot_exp_len) = s.recv_body_v3_server(stream).unwrap();
+            let (b, tot_exp_len) = s.body_peek_server(stream).unwrap();
             assert_eq!(b.len(), 5);
             assert_eq!(tot_exp_len, 10);
             assert!(s.body_consumed_server(stream, 5).is_ok());
@@ -7421,7 +7428,7 @@ mod tests {
         assert_eq!(s.poll_server(), Err(Error::Done));
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            let (b, tot_exp_len) = s.recv_body_v3_server(stream).unwrap();
+            let (b, tot_exp_len) = s.body_peek_server(stream).unwrap();
             assert_eq!(b.len(), 5);
             assert_eq!(tot_exp_len, 5);
             assert!(s.body_consumed_server(stream, 5).is_ok());
@@ -7455,7 +7462,7 @@ mod tests {
             for _ in 0..3 {
                 // In V3 we process one DATA frame per recv by design of
                 // zero-copy.
-                let (b, tot_exp_len) = s.recv_body_v3_server(stream).unwrap();
+                let (b, tot_exp_len) = s.body_peek_server(stream).unwrap();
                 assert_eq!(b.len(), body.len());
                 assert_eq!(tot_exp_len, body.len());
                 assert!(s.body_consumed_server(stream, body.len()).is_ok());
@@ -7551,7 +7558,7 @@ mod tests {
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
-                s.recv_body_v3_server(stream).unwrap().0.len(),
+                s.body_peek_server(stream).unwrap().0.len(),
                 body.len()
             );
             assert!(s.body_consumed_server(stream, body.len()).is_ok());

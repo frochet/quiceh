@@ -110,7 +110,7 @@
 //! To support contiguous zero-copy, quiceh exposes internal Stream buffers with
 //! the [`AppRecvBufMap`] object. This object needs to be initialized by the
 //! Application, and a mutable reference is latter passed to certain quiceh API,
-//! such as [`recv()`], [`stream_recv_v3()`], [`stream_consumed()`] and HTTP/3
+//! such as [`recv()`], [`stream_peek()`], [`stream_consumed()`] and HTTP/3
 //! specific APIs.
 //!
 //! One of such object must be created per Connection.
@@ -124,11 +124,11 @@
 //! // to available memory.
 //! # Ok::<(), quiceh::Error>(())
 //! ```
-//! To optimize memory consumption, the application may want to look into:
+//! To optimize memory consumption, the application may want to look into [`AppRecvBufMap`]:
 //!
-//! - [`AppRecvBufMap::set_max_buffer_data()`]
-//! - [`AppRecvBufMap::set_expected_chunklen_to_consume()`]
-//! - [`AppRecvBufMap::set_max_recycled_buffer_size()`]
+//! - [`set_max_chunks_buffered()`]
+//! - [`set_expected_chunklen_to_consume()`]
+//! - [`set_max_chunks_recycled()`]
 //!
 //! ## Handling incoming packets
 //!
@@ -303,7 +303,7 @@
 //! the connection's [`readable()`] method, which returns an iterator over all
 //! the streams that have outstanding data to read.
 //!
-//! The [`stream_recv_v3()`] method can then be used to retrieve the application
+//! The [`stream_peek()`] method can then be used to retrieve the application
 //! data from the readable stream. The [`stream_consumed()`] is used alongside
 //! to tell [quiceh] how many bytes have been consumed from the stream:
 //!
@@ -319,7 +319,7 @@
 //!     // Iterate over readable streams.
 //!     for stream_id in conn.readable() {
 //!         // Stream is readable, read until there's no more data.
-//!         match conn.stream_recv_v3(stream_id, &mut app_buffers) {
+//!         match conn.stream_peek(stream_id, &mut app_buffers) {
 //!             Ok((b, len, _)) => {
 //!                 println!("Got {} bytes on stream {}", len, stream_id);
 //!                 // ... do something with the buffer b.
@@ -365,8 +365,12 @@
 //! [`on_timeout()`]: struct.Connection.html#method.on_timeout
 //! [`stream_send()`]: struct.Connection.html#method.stream_send
 //! [`readable()`]: struct.Connection.html#method.readable
-//! [`stream_recv_v3()`]: struct.Connection.html#method.stream_recv_v3
-//! [`stream_consumed()`]: struct.Connection.html#method.stream_consumed
+//! [`stream_peek()`]: struct.Connection.html#method.stream_peek
+//! [`stream_recv_zc()`]: struct.Connection.html#method.stream_recv_zc
+//! [`AppRecvBufMap`]: struct.AppRecvBufMap
+//! [`set_expected_chunklen_to_consume`]: struct.AppRecvBufMap.html#method.set_expected_chunklen_to_consume
+//! [`set_max_chunks_buffered`]: struct.AppRecvBufMap.html#method.set_max_chunks_buffered
+//! [`set_max_chunks_recycled`]: struct.AppRecvBufMap.html#method.set_max_chunks_recycled
 //! [HTTP/3 module]: h3/index.html
 //!
 //! ## Congestion Control
@@ -482,6 +486,8 @@ const PAYLOAD_MIN_LEN: usize = 4;
 #[cfg(not(feature = "fuzzing"))]
 const PAYLOAD_MIN_LEN_V3: usize = 12;
 
+// PAYLOAD_MIN_LEN_V3 + tag (16 bytes)
+const PAYLOAD_MIN_LEN_WITH_TAG: usize = 28;
 #[cfg(feature = "fuzzing")]
 // Due to the fact that in fuzzing mode we use a zero-length AEAD tag (which
 // would normally be 16 bytes), we need to adjust the minimum payload size to
@@ -597,11 +603,11 @@ pub enum Error {
     /// The peer's transport params cannot be parsed.
     InvalidTransportParam,
 
-    /// V3 introduces a contiguous Zero-Copy stream_recv_v3() call. Calling the
+    /// V3 introduces a contiguous Zero-Copy stream_peek() call. Calling the
     /// previous stream_recv() when the connection is configured to use
     /// PROTOCOL_VERSION_VREVERSO should result to an InvalidAPICall error. This
     /// is designed to properly enforce the migration. if the application
-    /// decides to use PROTOCOL_VERSION_VREVERSO. Calling stream_recv_v3() if
+    /// decides to use PROTOCOL_VERSION_VREVERSO. Calling stream_peek() if
     /// PROTOCOL_VERSION_V1 is used should result to the same error.
     InvalidAPICall(&'static str),
 
@@ -628,6 +634,9 @@ pub enum Error {
     /// The error code sent as part of the `RESET_STREAM` frame is provided as
     /// associated data.
     StreamReset(u64),
+
+    /// A buffer is storing more chunks than allowed.
+    TooManyChunksBuffered,
 
     /// The received data exceeds the stream's final size.
     FinalSize,
@@ -760,7 +769,7 @@ impl Error {
             Error::CryptoBufferExceeded => -21,
             Error::AppRecvBufNotFound => -22,
             Error::InvalidOffset => -23,
-            Error::InvalidAPICall(_) => -24
+            Error::InvalidAPICall(_) => -24,
         }
     }
 }
@@ -2369,7 +2378,7 @@ impl Connection {
     /// # let peer = "127.0.0.1:1234".parse().unwrap();
     /// # let local = socket.local_addr().unwrap();
     /// # let mut conn = quiceh::accept(&scid, None, local, peer, &mut config)?;
-    /// # let mut app_buffers = quiceh::AppRecvBufMap::new(3, 1024*1024*32, 100, 100);
+    /// # let mut app_buffers = quiceh::AppRecvBufMap::new(3, 100, 100);
     /// loop {
     ///     let (read, from) = socket.recv_from(&mut buf).unwrap();
     ///
@@ -2539,7 +2548,7 @@ impl Connection {
         info: &RecvInfo, recv_pid: Option<usize>,
     ) -> Result<usize> {
         let now = time::Instant::now();
-        let mut clean_on_dec_error = false;
+        let mut collect_stream_on_dec_error = false;
 
         if buf.is_empty() {
             return Err(Error::Done);
@@ -2852,21 +2861,22 @@ impl Connection {
 
         let pn_len = hdr.pkt_num_len;
         let mut enc_hdr_len = pn_len;
-        let mut outbuf = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
+        let mut maybe_chunk_enum = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
             // let's use this control flow to also add the true enc_hdr_len
             // on V3.
+            // XXX Long Header packets should not have a stream_id and truncated offset bytes
             enc_hdr_len += hdr.expected_stream_id_len;
             enc_hdr_len += hdr.truncated_offset_len;
 
             // A stream_id 0 indicates no stream frame encrypted.
-            if hdr.expected_stream_id > 0 {
+            if hdr.expected_stream_id > 0 && (hdr.ty == packet::Type::Short || hdr.ty == packet::Type::ZeroRTT) {
                 match self.streams.get(hdr.expected_stream_id) {
                     Some(s) => {
-                        let outbuf = app_buffers.get_or_create_stream_buffer(hdr.expected_stream_id)?;
+                        let appbuf = app_buffers.get_or_create_stream_buffer(hdr.expected_stream_id)?;
                         let mut offset = s.recv.contiguous_off().saturating_sub(1);
                         offset = packet::decode_pkt_offset(offset, hdr.truncated_offset, hdr.truncated_offset_len);
                         trace!("Decoded offset={}", offset);
-                        offset = match outbuf.get_outbuf_offset(offset, payload_len-aead_tag_len, &s.recv) {
+                        let chunk_enum = match appbuf.get_stream_chunk(offset, payload_len as u64 - aead_tag_len as u64 - enc_hdr_len as u64, &s.recv) {
                             Ok(v) => v,
                             Err(e) => {
                                 // This could happen if the network flipped some bits in the
@@ -2875,40 +2885,44 @@ impl Connection {
                                 //
                                 // We need to check for integrity of pn and header data before
                                 // acking it.
-                                //
-                                // XXX we only need to check the tag.
-                                match packet::decrypt_pkt(
-                                    &mut b,
-                                    pn,
-                                    enc_hdr_len,
-                                    payload_len,
-                                    aead
-                                ) {
-                                    Ok(_v) => {
-                                        trace!(
-                                            "Dropping a legit packet due to incorrect decoded offset {}, or due to a \
-                                             buffer too short with capacity {}", offset, outbuf.outbuf.capacity(),
-                                        );
-                                        self.pkt_num_spaces[epoch].recv_pkt_num.insert(pn);
-                                        self.pkt_num_spaces[epoch].recv_pkt_need_ack.push_item(pn);
-                                        self.pkt_num_spaces[epoch].ack_elicited = true;
-                                        self.pkt_num_spaces[epoch].largest_rx_pkt_num =
-                                            cmp::max(self.pkt_num_spaces[epoch].largest_rx_pkt_num, pn);
+                                match e {
+                                    Error::InvalidOffset => {
+                                        match packet::decrypt_pkt(
+                                            &mut b,
+                                            pn,
+                                            enc_hdr_len,
+                                            payload_len,
+                                            aead
+                                        ) {
+                                            Ok(_v) => {
+                                                // XXX Maybe we should process control frames --
+                                                // depends on ongoing discussion (i.e., resubmitted
+                                                // stream frame should fly alone.
+                                                trace!(
+                                                    "Dropping a legit packet due to incorrect decoded offset {}", offset,
+                                                );
+                                                self.pkt_num_spaces[epoch].recv_pkt_num.insert(pn);
+                                                self.pkt_num_spaces[epoch].recv_pkt_need_ack.push_item(pn);
+                                                self.pkt_num_spaces[epoch].ack_elicited = true;
+                                                self.pkt_num_spaces[epoch].largest_rx_pkt_num =
+                                                    cmp::max(self.pkt_num_spaces[epoch].largest_rx_pkt_num, pn);
 
-                                    }
-                                    Err(_e) => {
-                                        trace!(
-                                            "We failed to decrypt a packet for which an incorrect offset has been delivery_rate_check_if_app_limited"
-                                        );
-                                    }
-
+                                            }
+                                            Err(_e) => {
+                                                trace!(
+                                                    "We failed to decrypt a packet for which an incorrect offset has been delivery_rate_check_if_app_limited"
+                                                );
+                                            }
+                                        }
+                                    },
+                                    _ => (),
                                 }
 
                                 return Err(drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id))
                             }
                         };
-                        let oct_out = octets_rev::OctetsMut::with_slice(&mut outbuf.get_mut()[offset as usize..]);
-                        Some(oct_out)
+                        //let oct_out = octets_rev::OctetsMut::with_slice(&mut chunk_enum.as_mut()[offset-chunkEnum.stream_offset_start..]);
+                        Some(chunk_enum)
                     },
                     None => {
                         // This could have been touch by someone on the network.
@@ -2929,10 +2943,10 @@ impl Connection {
                                 return Err(drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id));
                               },
                         };
-                        let outbuf = app_buffers.get_or_create_stream_buffer(hdr.expected_stream_id)?;
+                        let appbuf = app_buffers.get_or_create_stream_buffer(hdr.expected_stream_id)?;
                         let mut offset = s.recv.contiguous_off().saturating_sub(1);
                         offset = packet::decode_pkt_offset(offset, hdr.truncated_offset, hdr.truncated_offset_len);
-                        offset = match outbuf.get_outbuf_offset(offset, payload_len-aead_tag_len, &s.recv) {
+                        let chunk_enum = match appbuf.get_stream_chunk(offset, payload_len as u64 - aead_tag_len as u64 - enc_hdr_len as u64, &s.recv) {
                             Ok(v) => v,
                             Err(e) => {
                                 debug!(
@@ -2950,13 +2964,11 @@ impl Connection {
                                 return Err(drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id));
                             }
                         };
-                        let oct_out = octets_rev::OctetsMut::with_slice(&mut outbuf.get_mut()[offset as usize..]);
-                        // We need to remember to collect buffer & stream in case the
+                        // We need to remember to collect the stream in case the
                         // authentication of this packet fails.
-                        clean_on_dec_error = true;
-                        Some(oct_out)
+                        collect_stream_on_dec_error = true;
+                        Some(chunk_enum)
                     },
-
                 }
             }
             else {
@@ -3017,24 +3029,101 @@ impl Connection {
             }
         }
 
+        let enc_payload_len = payload_len - enc_hdr_len - aead_tag_len;
         // update payload_len too, removing the QUIC AES-ECB header
         let (mut payload, payload_len) = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
-            match packet::decrypt_pkt_v3(
-                &mut b,
-                pn,
-                enc_hdr_len,
-                payload_len,
-                outbuf.as_mut(),
-                aead,
-            ) {
-                Ok(v) => v,
-                Err(e) => {
-                    if clean_on_dec_error {
-                        app_buffers.collect(hdr.expected_stream_id);
-                        self.streams.collect_on_recv_error(hdr.expected_stream_id);
-                    }
-                    return Err(drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id));
+            if let Some(chunk_enum) = &mut maybe_chunk_enum {
+                match chunk_enum {
+                    StreamChunkMem::NewlyAllocated(ref mut chunk, offset) => {
+                        packet::decrypt_pkt_v3(
+                            &mut b,
+                            pn,
+                            enc_hdr_len,
+                            payload_len,
+                            Some(&mut chunk.as_mut()[*offset..]),
+                            aead
+                        ).map_err(|e| {
+                            if collect_stream_on_dec_error {
+                                app_buffers.collect(hdr.expected_stream_id);
+                                self.streams.collect_on_recv_error(hdr.expected_stream_id);
+                            }
+                            drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
+                        })?
+                    },
+                    StreamChunkMem::NotNewlyAllocated(ref mut chunk, offset) => {
+
+                        match packet::decrypt_pkt_v3(
+                            &mut b,
+                            pn,
+                            enc_hdr_len,
+                            payload_len,
+                            Some(&mut chunk.as_mut()[*offset..]),
+                            aead
+                        ) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                if collect_stream_on_dec_error {
+                                    app_buffers.collect(hdr.expected_stream_id);
+                                    self.streams.collect_on_recv_error(hdr.expected_stream_id);
+                                } else {
+                                    let appbuf = app_buffers.get_or_create_stream_buffer(hdr.expected_stream_id)?;
+                                    appbuf.insert_stream_chunk(chunk.clone());
+                                }
+                                return Err(drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id));
+                            }
+                        }
+                    },
+                    StreamChunkMem::NewlyAllocatedMayNeedCopyAcross(_) => {
+                        // decrypt in place
+                        packet::decrypt_pkt(
+                            &mut b,
+                            pn,
+                            enc_hdr_len,
+                            payload_len,
+                            aead
+                        ).map_err(|e| {
+                            if collect_stream_on_dec_error {
+                                app_buffers.collect(hdr.expected_stream_id);
+                                self.streams.collect_on_recv_error(hdr.expected_stream_id);
+                            }
+                            drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
+                        })?
+                    },
+                    StreamChunkMem::NotNewlyAllocatedMayNeedCopyAcross(chunk) => {
+                        packet::decrypt_pkt(
+                            &mut b,
+                            pn,
+                            enc_hdr_len,
+                            payload_len,
+                            aead
+                        ).map_err(|e| {
+                            if collect_stream_on_dec_error {
+                                app_buffers.collect(hdr.expected_stream_id);
+                                self.streams.collect_on_recv_error(hdr.expected_stream_id);
+                            } else {
+                                // move the chunk back into the appbuffer.
+                                // This may only happens on a decryption error, so cloning is fine.
+                                match app_buffers.get_or_create_stream_buffer(hdr.expected_stream_id) {
+                                    Ok(appbuf) => {
+                                        appbuf.insert_stream_chunk(chunk.clone());
+                                    },
+                                    Err(_) => (),
+                                }
+                            }
+                            drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
+                        })?
+                    },
                 }
+            } else {
+                packet::decrypt_pkt(
+                    &mut b,
+                    pn,
+                    enc_hdr_len,
+                    payload_len,
+                    aead,
+                ).map_err(|e| {
+                    drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
+                })?
             }
         } else {
             packet::decrypt_pkt(
@@ -3050,16 +3139,24 @@ impl Connection {
         }};
 
         if self.pkt_num_spaces[epoch].recv_pkt_num.contains(pn) {
-            if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
-                // Rewind the appropriate buffer if the streamid != 0
-                self.streams.rewind_recv_buf(hdr.expected_stream_id, payload_len)?;
-            }};
             trace!("{} ignored duplicate packet {}", self.trace_id, pn);
             return Err(Error::Done);
         }
 
         // Packets with no frames are invalid.
         if payload.cap() == 0 {
+            if let Some(chunk_enum) = maybe_chunk_enum {
+                match chunk_enum {
+                    StreamChunkMem::NotNewlyAllocatedMayNeedCopyAcross(chunk) |
+                    StreamChunkMem::NotNewlyAllocated(chunk, _) => {
+                        let appbuf = app_buffers.get_or_create_stream_buffer(
+                            hdr.expected_stream_id,
+                        )?;
+                        appbuf.insert_stream_chunk(chunk);
+                    },
+                    _ => (),
+                }
+            }
             return Err(Error::InvalidPacket);
         }
 
@@ -3180,11 +3277,17 @@ impl Connection {
 
         // Process packet payload.
         if_likely! { self.version == PROTOCOL_VERSION_VREVERSO => {
+
+            struct ChunkMetaData {
+                stream_id: u64,
+                start_off: u64,
+                len: usize,
+            }
+            let mut smeta = ChunkMetaData { stream_id: 0, start_off: 0, len: 0 };
             //set the offset at the end
             let payload_start_offset = payload.off();
             payload.skip(payload_len)?;
             // start reverse buffer processing
-            let mut stream_id = 0;
             while payload.off() > payload_start_offset {
                 let frame = frame::Frame::from_bytes(&mut payload, hdr.ty, self.version)?;
                 qlog_with_type!(QLOG_PACKET_RX, self.qlog, _q, {
@@ -3201,9 +3304,14 @@ impl Connection {
 
                 if let frame::Frame::StreamV3 {
                     stream_id: s,
-                    ..
+                    metadata: ref m,
                 } = frame {
-                    stream_id = s;
+                    // If this is the stream frame intented for zc.
+                    if payload.off() == payload_start_offset {
+                        smeta.stream_id = s;
+                        smeta.start_off = m.off();
+                        smeta.len = m.len();
+                    }
                 }
 
                 if let Err(e) = self.process_frame(frame, &hdr, &mut payload, recv_pid, epoch, now)
@@ -3212,11 +3320,38 @@ impl Connection {
                     break;
                 }
             }
-            // Check wether we can advance contiguous data to avoid the next packet to
-            // be believed not in order.
-            if stream_id > 0 {
-                if let Ok(stream) = self.get_or_create_stream(stream_id, false) {
-                    app_buffers.advance_if_possible(stream_id, stream)?;
+            // Handle chunks and check wether we can advance contiguous data to avoid the next
+            // packet to be believed not in order.
+
+            if smeta.stream_id > 0 {
+                if let Ok(stream) = self.get_or_create_stream(smeta.stream_id, false) {
+                    match maybe_chunk_enum {
+                        Some(StreamChunkMem::NewlyAllocated(chunk, _)) | Some(StreamChunkMem::NotNewlyAllocated(chunk, _)) => {
+                            let appbuf = app_buffers.get_or_create_stream_buffer(smeta.stream_id)?;
+                            appbuf.insert_stream_chunk(chunk);
+                        },
+                        Some(StreamChunkMem::NewlyAllocatedMayNeedCopyAcross(mut chunk)) | Some(StreamChunkMem::NotNewlyAllocatedMayNeedCopyAcross(mut chunk)) => {
+                            // Assuming the Application is setting large enough chunk length, this
+                            // would be a rare event.
+
+                            // Copy the steam data into the chunk.
+                            // We need rewinding b of payload_len, and start to copy len bits
+                            // into until we filled all necessary chunks.
+                            b.rewind(enc_payload_len)?;
+                            let written = chunk.fill_from(&b.as_ref()[..smeta.len], smeta.start_off);
+                            b.skip(written)?;
+                            let from_target_offset = chunk.max_off();
+
+                            let appbuf = app_buffers.get_or_create_stream_buffer(smeta.stream_id)?;
+                            let idx = appbuf.insert_stream_chunk(chunk);
+                            appbuf.create_missing_chunks_and_copy(idx, &b.as_ref()[..smeta.len - written], from_target_offset)?;
+                            // put back buf where it was
+                            b.skip(enc_payload_len - written)?;
+                        },
+                        None => (),
+                    }
+
+                    app_buffers.advance_if_possible(smeta.stream_id, stream)?;
                 }
             }
         } else {
@@ -5310,7 +5445,7 @@ impl Connection {
     /// # let mut conn = quiceh::accept(&scid, None, local, peer, &mut config)?;
     /// # let mut app_buffers = quiceh::AppRecvBufMap::default();
     /// # let stream_id = 4;
-    /// if let Ok((b, len, fin)) = conn.stream_recv_v3(stream_id, &mut app_buffers) {
+    /// if let Ok((b, len, fin)) = conn.stream_peek(stream_id, &mut app_buffers) {
     ///     println!("Has {} bytes available on stream {}", len, stream_id);
     /// }
     /// # Ok::<(), quiceh::Error>(())
@@ -5318,7 +5453,7 @@ impl Connection {
     ///
     /// [`send()`]: struct.Connection.html#method.send
     #[inline]
-    pub fn stream_recv_v3<'b>(
+    pub fn stream_peek<'b>(
         &mut self, stream_id: u64, app_buffers: &'b mut AppRecvBufMap,
     ) -> Result<(&'b [u8], usize, bool)> {
         if self.version != PROTOCOL_VERSION_VREVERSO {
@@ -5357,7 +5492,7 @@ impl Connection {
                 self.streams.collect(stream_id, local);
                 // TODO should we do that now or let the application decides?
                 // The application may still have data to read from a previous
-                // successful stream_recv_v3 call.
+                // successful stream_peek call.
                 //
                 // The problem is that it isn't really intuitive to call
                 // stream_comsumed() on a stream_id that got a reset, but the
@@ -5425,7 +5560,7 @@ impl Connection {
     /// # let mut conn = quiceh::accept(&scid, None, local, peer, &mut config)?;
     /// # let mut app_buffers = quiceh::AppRecvBufMap::default();
     /// # let stream_id = 4;
-    /// if let Ok((b, len, fin)) = conn.stream_recv_v3(stream_id, &mut app_buffers) {
+    /// if let Ok((b, len, fin)) = conn.stream_peek(stream_id, &mut app_buffers) {
     ///     println!("Has {} bytes available on stream {}", len, stream_id);
     ///
     ///     // Do something with b.
@@ -5478,6 +5613,77 @@ impl Connection {
         Ok(())
     }
 
+    /// Zero-Copy Emission of contiguous data from a stream provided as an
+    /// indexable `StreamChunk`. Only available if the caller establishes a
+    /// session with PROTOCOL_VERSION_VREVERSO. Function [`stream_peek()`] may
+    /// be used to read within a chunk that is not yet complete.
+    /// [`stream_consumed()`] may be used to consume some of the bytes of the
+    /// chunk, such that this function would return an indexable chunk
+    /// starting at the consumed offset.
+    ///
+    /// The size of the [`StreamChunk`] may be set by the caller using the
+    /// [`AppRecvBufMap`] method [`set_expected_chunklen_to_consume()`] and is expected to be
+    /// the amount the caller would process at once without additional
+    /// copies on its side (that is, let the zero-copy buffering being done
+    /// at the QUIC layer).
+    ///
+    /// On success the chunk and a flag indicating the fin state is returned
+    /// as a tuple, or [`Done`] if there is no complete chunk yet.
+    ///
+    /// Reading data from a stream may trigger queueing of control messages
+    /// (e.g. MAX_STREAM_DATA). [`send()`] should be called after successful reading.
+    ///
+    /// [`Done`]: enum.Error.html#variant.Done
+    /// [`send()`]: struct.Connection.html#method.send
+    /// [`stream_peek`]: struct.Connection.html#method.stream_peek
+    /// [`StreamChunk`]: struct.StreamChunk
+    /// [`AppRecvBufMap`]: struct.AppRecvBufMap
+    /// [`set_expected_chunklen_to_consume`]: struct.AppRecvBufMap.html#method.set_expected_chunklen_to_consume
+    ///
+    ///
+    /// ## Examples:
+    ///
+    /// ```no_run
+    /// # use std::num::NonZero;
+    /// # let mut buf = [0; 512];
+    /// # let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    /// # let mut config = quiceh::Config::new(quiceh::PROTOCOL_VERSION)?;
+    /// # let scid = quiceh::ConnectionId::from_ref(&[0xba; 16]);
+    /// # let peer = "127.0.0.1:1234".parse().unwrap();
+    /// # let local = socket.local_addr().unwrap();
+    /// # let mut conn = quiceh::accept(&scid, None, local, peer, &mut config)?;
+    /// # let mut app_buffers = quiceh::AppRecvBufMap::default();
+    /// # app_buffers.set_expected_chunklen_to_consume(NonZero::new(65536).unwrap());
+    /// # let stream_id = 4;
+    /// while let Ok((chunk, fin)) = conn.stream_recv_zc(stream_id, &mut app_buffers) {
+    ///     println!("Got {} bytes on stream {}", chunk.len(), stream_id);
+    /// }
+    /// # Ok::<(), quiceh::Error>(())
+    /// ```
+    pub fn stream_recv_zc(
+        &mut self, stream_id: u64, app_buffers: &mut AppRecvBufMap,
+    ) -> Result<(StreamChunk, bool)> {
+        if self.version != PROTOCOL_VERSION_VREVERSO {
+            return Err(Error::InvalidAPICall("This function should be called on a \
+                                             PROTOCOL_VERSION_VREVERSO connection version"));
+        }
+
+        let (maybechunk, _, fin) =
+            self.stream_recv_common(stream_id, |stream| {
+                let (chunk, fin) = app_buffers.emit(stream_id, stream)?;
+                Ok((Some(chunk), None, fin))
+            })?;
+
+        // Additional app_buffers cleanup specific to ZC version
+        if let Some(stream) = self.streams.get(stream_id) {
+            if stream.is_complete() {
+                app_buffers.collect(stream_id);
+            }
+        }
+
+        Ok((maybechunk.unwrap(), fin))
+    }
+
     /// Reads contiguous data from a stream into the provided slice.
     ///
     /// The slice must be sized by the caller and will be populated up to its
@@ -5516,6 +5722,47 @@ impl Connection {
                                              PROTOCOL_VERSION_VREVERSO connection version"));
         }
 
+        #[cfg(feature = "qlog")]
+        let offset = self
+            .streams
+            .get_mut(stream_id)
+            .map(|s| s.recv.off_front())
+            .ok_or(Error::InvalidStreamState(stream_id))?;
+
+        let (_, mayberead, fin) =
+            self.stream_recv_common(stream_id, |stream| {
+                let (read, fin) = stream.recv.emit(out)?;
+                Ok((None, Some(read), fin))
+            })?;
+
+        let read = mayberead.unwrap();
+
+        qlog_with_type!(QLOG_DATA_MV, self.qlog, q, {
+            let ev_data = EventData::DataMoved(qlog::events::quic::DataMoved {
+                stream_id: Some(stream_id),
+                offset: Some(offset),
+                length: Some(read as u64),
+                from: Some(DataRecipient::Transport),
+                to: Some(DataRecipient::Application),
+                raw: None,
+            });
+
+            let now = time::Instant::now();
+            q.add_event_data_with_instant(ev_data, now).ok();
+        });
+
+        Ok((read, fin))
+    }
+
+    #[inline(always)]
+    fn stream_recv_common<F>(
+        &mut self, stream_id: u64, emit_fn: F,
+    ) -> Result<(Option<StreamChunk>, Option<usize>, bool)>
+    where
+        F: FnOnce(
+            &mut Stream,
+        ) -> Result<(Option<StreamChunk>, Option<usize>, bool)>,
+    {
         // We can't read on our own unidirectional streams.
         if !stream::is_bidi(stream_id) &&
             stream::is_local(stream_id, self.is_server)
@@ -5535,30 +5782,26 @@ impl Connection {
         let local = stream.local;
         let priority_key = Arc::clone(&stream.priority_key);
 
-        #[cfg(feature = "qlog")]
-        let offset = stream.recv.off_front();
-
-        let (read, fin) = match stream.recv.emit(out) {
+        let (maybechunk, mayberead, fin) = match emit_fn(stream) {
             Ok(v) => v,
-
             Err(e) => {
-                // Collect the stream if it is now complete. This can happen if
-                // we got a `StreamReset` error which will now be propagated to
-                // the application, so we don't need to keep the stream's state
-                // anymore.
                 if stream.is_complete() {
                     self.streams.collect(stream_id, local);
                 }
-
                 self.streams.remove_readable(&priority_key);
                 return Err(e);
             },
         };
 
-        self.flow_control.add_consumed(read as u64);
+        let consumed = if let Some(chunk) = &maybechunk {
+            chunk.len()
+        } else {
+            mayberead.unwrap()
+        };
+
+        self.flow_control.add_consumed(consumed as u64);
 
         let readable = stream.is_readable();
-
         let complete = stream.is_complete();
 
         if stream.recv.almost_full() {
@@ -5573,20 +5816,6 @@ impl Connection {
             self.streams.collect(stream_id, local);
         }
 
-        qlog_with_type!(QLOG_DATA_MV, self.qlog, q, {
-            let ev_data = EventData::DataMoved(qlog::events::quic::DataMoved {
-                stream_id: Some(stream_id),
-                offset: Some(offset),
-                length: Some(read as u64),
-                from: Some(DataRecipient::Transport),
-                to: Some(DataRecipient::Application),
-                raw: None,
-            });
-
-            let now = time::Instant::now();
-            q.add_event_data_with_instant(ev_data, now).ok();
-        });
-
         if self.should_update_max_data() {
             self.almost_full = true;
         }
@@ -5597,7 +5826,7 @@ impl Connection {
             self.streams.insert_readable(&priority_key);
         }
 
-        Ok((read, fin))
+        Ok((maybechunk, mayberead, fin))
     }
 
     /// Writes data to a stream.
@@ -9348,6 +9577,8 @@ impl TransportParams {
 #[doc(hidden)]
 pub mod testing {
     use super::*;
+    use std::num::NonZero;
+    use std::ops::DerefMut;
 
     pub struct Pipe {
         pub client: Connection,
@@ -9394,15 +9625,13 @@ pub mod testing {
             let server_scid = ConnectionId::from_ref(&server_scid);
             let server_addr = Pipe::server_addr();
 
-            let mut client_app_buffers =
-                AppRecvBufMap::new(3, stream::MAX_STREAM_WINDOW, 1000, 1000);
+            let mut client_app_buffers = AppRecvBufMap::new(3, 1000, 1000);
             client_app_buffers
-                .set_expected_chunklen_to_consume(1000)
+                .set_expected_chunklen_to_consume(NonZero::new(32000).unwrap())
                 .unwrap();
-            let mut server_app_buffers =
-                AppRecvBufMap::new(3, stream::MAX_STREAM_WINDOW, 1000, 1000);
+            let mut server_app_buffers = AppRecvBufMap::new(3, 1000, 1000);
             server_app_buffers
-                .set_expected_chunklen_to_consume(1000)
+                .set_expected_chunklen_to_consume(NonZero::new(32000).unwrap())
                 .unwrap();
 
             Ok(Pipe {
@@ -9453,18 +9682,8 @@ pub mod testing {
                     client_addr,
                     config,
                 )?,
-                client_app_buffers: AppRecvBufMap::new(
-                    3,
-                    stream::MAX_STREAM_WINDOW,
-                    100,
-                    100,
-                ),
-                server_app_buffers: AppRecvBufMap::new(
-                    3,
-                    stream::MAX_STREAM_WINDOW,
-                    100,
-                    100,
-                ),
+                client_app_buffers: AppRecvBufMap::new(3, 100, 100),
+                server_app_buffers: AppRecvBufMap::new(3, 100, 100),
             })
         }
 
@@ -9505,18 +9724,8 @@ pub mod testing {
                     client_addr,
                     &mut config,
                 )?,
-                client_app_buffers: AppRecvBufMap::new(
-                    3,
-                    stream::MAX_STREAM_WINDOW,
-                    100,
-                    100,
-                ),
-                server_app_buffers: AppRecvBufMap::new(
-                    3,
-                    stream::MAX_STREAM_WINDOW,
-                    100,
-                    100,
-                ),
+                client_app_buffers: AppRecvBufMap::new(3, 100, 100),
+                server_app_buffers: AppRecvBufMap::new(3, 100, 100),
             })
         }
 
@@ -9555,18 +9764,8 @@ pub mod testing {
                     client_addr,
                     server_config,
                 )?,
-                client_app_buffers: AppRecvBufMap::new(
-                    3,
-                    stream::MAX_STREAM_WINDOW,
-                    100,
-                    100,
-                ),
-                server_app_buffers: AppRecvBufMap::new(
-                    3,
-                    stream::MAX_STREAM_WINDOW,
-                    100,
-                    100,
-                ),
+                client_app_buffers: AppRecvBufMap::new(3, 100, 100),
+                server_app_buffers: AppRecvBufMap::new(3, 100, 100),
             })
         }
 
@@ -9598,19 +9797,25 @@ pub mod testing {
                     client_addr,
                     server_config,
                 )?,
-                client_app_buffers: AppRecvBufMap::new(
-                    3,
-                    stream::MAX_STREAM_WINDOW,
-                    100,
-                    100,
-                ),
-                server_app_buffers: AppRecvBufMap::new(
-                    3,
-                    stream::MAX_STREAM_WINDOW,
-                    100,
-                    100,
-                ),
+                client_app_buffers: AppRecvBufMap::new(3, 100, 100),
+                server_app_buffers: AppRecvBufMap::new(3, 100, 100),
             })
+        }
+
+        pub fn set_client_expected_chunklen_to_consume(
+            &mut self, chunklen: usize,
+        ) {
+            self.client_app_buffers
+                .set_expected_chunklen_to_consume(NonZero::new(chunklen).unwrap())
+                .unwrap();
+        }
+
+        pub fn set_server_expected_chunklen_to_consume(
+            &mut self, chunklen: usize,
+        ) {
+            self.server_app_buffers
+                .set_expected_chunklen_to_consume(NonZero::new(chunklen).unwrap())
+                .unwrap();
         }
 
         pub fn handshake(&mut self) -> Result<()> {
@@ -9973,7 +10178,7 @@ pub mod testing {
 
         let pn_len = hdr.pkt_num_len;
         let mut enc_hdr_len = pn_len;
-        let mut outbuf = if_likely! {conn.version == PROTOCOL_VERSION_VREVERSO => {
+        let mut maybe_chunk_enum = if_likely! {conn.version == PROTOCOL_VERSION_VREVERSO => {
             // let's use this control flow to also add the true enc_hdr_len
             // on V3.
             enc_hdr_len += hdr.expected_stream_id_len;
@@ -9983,24 +10188,30 @@ pub mod testing {
             if hdr.expected_stream_id > 0 {
                 match conn.streams.get(hdr.expected_stream_id) {
                     Some(s) => {
-                        let outbuf = app_buffers.get_or_create_stream_buffer(hdr.expected_stream_id)?;
+                        let appbuf = app_buffers.get_or_create_stream_buffer(hdr.expected_stream_id)?;
                         let mut offset = s.recv.contiguous_off().saturating_sub(1);
                         offset = packet::decode_pkt_offset(offset, hdr.truncated_offset, hdr.truncated_offset_len);
-                        offset = match outbuf.get_outbuf_offset(offset, payload_len-aead.alg().tag_len(), &s.recv)
-                            {
+                        let chunk_enum = match appbuf.get_stream_chunk(offset, payload_len as u64 - aead.alg().tag_len() as u64, &s.recv) {
                             Ok(v) => v,
                             Err(e) => {
 
-                                conn.pkt_num_spaces[epoch].recv_pkt_num.insert(pn);
-                                conn.pkt_num_spaces[epoch].recv_pkt_need_ack.push_item(pn);
-                                conn.pkt_num_spaces[epoch].ack_elicited = true;
-                                conn.pkt_num_spaces[epoch].largest_rx_pkt_num =
-                                    cmp::max(conn.pkt_num_spaces[epoch].largest_rx_pkt_num, pn);
+                                match e {
+                                    // XXX it assumes the sender is not buffering other control
+                                    // cells. We should process them if decryption succeeds.
+                                    Error::InvalidOffset => {
+                                        conn.pkt_num_spaces[epoch].recv_pkt_num.insert(pn);
+                                        conn.pkt_num_spaces[epoch].recv_pkt_need_ack.push_item(pn);
+                                        conn.pkt_num_spaces[epoch].ack_elicited = true;
+                                        conn.pkt_num_spaces[epoch].largest_rx_pkt_num =
+                                            cmp::max(conn.pkt_num_spaces[epoch].largest_rx_pkt_num, pn);
+                                    },
+                                    _ => (),
+                                };
+
                                 return Err(drop_pkt_on_err(e, conn.recv_count, conn.is_server, &conn.trace_id))
                             }
                         };
-                        let oct_out = octets_rev::OctetsMut::with_slice(&mut outbuf.get_mut()[offset as usize..]);
-                        Some(oct_out)
+                        Some(chunk_enum)
                     }
                     None =>  {
                         // This could have been touch by someone on the network.
@@ -10020,10 +10231,10 @@ pub mod testing {
                                   return Err(drop_pkt_on_err(e, conn.recv_count, conn.is_server, &conn.trace_id));
                               },
                         };
-                        let outbuf = app_buffers.get_or_create_stream_buffer(hdr.expected_stream_id)?;
+                        let appbuf = app_buffers.get_or_create_stream_buffer(hdr.expected_stream_id)?;
                         let mut offset = s.recv.contiguous_off().saturating_sub(1);
                         offset = packet::decode_pkt_offset(offset, hdr.truncated_offset, hdr.truncated_offset_len);
-                        offset = match outbuf.get_outbuf_offset(offset, payload_len-aead.alg().tag_len(), &s.recv) {
+                        let chunk_enum = match appbuf.get_stream_chunk(offset, (payload_len - aead.alg().tag_len()) as u64, &s.recv) {
                             Ok(v) => v,
                             Err(e) => {
                                 // This could happen if the network flipped some bits in the
@@ -10033,8 +10244,7 @@ pub mod testing {
                                 return Err(drop_pkt_on_err(e, conn.recv_count, conn.is_server, &conn.trace_id));
                             }
                         };
-                        let oct_out = octets_rev::OctetsMut::with_slice(&mut outbuf.get_mut()[offset as usize..]);
-                        Some(oct_out)
+                        Some(chunk_enum)
                     },
                 }
             }
@@ -10046,13 +10256,23 @@ pub mod testing {
         }};
 
         let (mut payload, payload_len) = if_likely! {conn.version == PROTOCOL_VERSION_VREVERSO => {
-            packet::decrypt_pkt_v3(&mut b,
-                                   pn,
-                                   enc_hdr_len,
-                                   payload_len,
-                                   outbuf.as_mut(),
-                                   aead)
-                .unwrap()
+            if let Some(chunk_enum) = &mut maybe_chunk_enum {
+                packet::decrypt_pkt_v3(&mut b,
+                                       pn,
+                                       enc_hdr_len,
+                                       payload_len,
+                                       Some(chunk_enum.deref_mut().as_mut()),
+                                       aead)
+                    .unwrap()
+            } else {
+                packet::decrypt_pkt_v3(&mut b,
+                                       pn,
+                                       enc_hdr_len,
+                                       payload_len,
+                                       None,
+                                       aead)
+                    .unwrap()
+            }
         } else {
             packet::decrypt_pkt(&mut b, pn, hdr.pkt_num_len, payload_len, aead)
                 .unwrap()
@@ -10652,7 +10872,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (b, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (5, true));
             assert_eq!(&b[..5], b"aaaaa");
@@ -10737,7 +10957,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (b, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (5, true));
             assert_eq!(&b[..5], b"aaaaa");
@@ -10967,7 +11187,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (b, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (12, true));
             assert_eq!(&b[..12], b"hello, world");
@@ -10980,6 +11200,96 @@ mod tests {
             assert_eq!(&b[..12], b"hello, world");
         }
         assert!(pipe.server.stream_finished(4));
+    }
+
+    #[test]
+    fn stream_peek_and_recv_zc_combined() {
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+            let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
+            config
+                .load_cert_chain_from_pem_file("examples/cert.crt")
+                .unwrap();
+            config
+                .load_priv_key_from_pem_file("examples/cert.key")
+                .unwrap();
+            config
+                .set_application_protos(&[b"proto1", b"proto2"])
+                .unwrap();
+            config.set_initial_max_streams_bidi(3);
+            config.set_initial_max_stream_data_bidi_local(100);
+            config.set_initial_max_stream_data_bidi_remote(100);
+            config.set_initial_max_data(100);
+
+            let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
+            pipe.set_server_expected_chunklen_to_consume(28);
+            assert_eq!(pipe.handshake(), Ok(()));
+            assert_eq!(pipe.client.stream_send(4, b"hello, world", false), Ok(12));
+            assert_eq!(pipe.advance(), Ok(()));
+
+            assert!(!pipe.server.stream_finished(4));
+
+            let (b, len, is_fin) = pipe
+                .server
+                .stream_peek(4, &mut pipe.server_app_buffers)
+                .unwrap();
+            assert_eq!((len, is_fin), (12, false));
+            assert_eq!(&b[..12], b"hello, world");
+            assert!(pipe
+                .server
+                .stream_consumed(4, len, &mut pipe.server_app_buffers)
+                .is_ok());
+            assert_eq!(pipe.client.stream_send(4, b"hello, world", false), Ok(12));
+            assert_eq!(pipe.client.stream_send(4, b"hello, world", true), Ok(12));
+
+            assert_eq!(pipe.advance(), Ok(()));
+
+            let (chunk, fin) = pipe
+                .server
+                .stream_recv_zc(4, &mut pipe.server_app_buffers)
+                .unwrap();
+
+            assert_eq!((chunk.len(), fin), (16, false));
+            assert_eq!(&chunk[..], b"hello, worldhell");
+
+            let (chunk, fin) = pipe
+                .server
+                .stream_recv_zc(4, &mut pipe.server_app_buffers)
+                .unwrap();
+
+            assert_eq!((chunk.len(), fin), (8, true));
+            assert_eq!(&chunk[..], b"o, world");
+
+            assert!(pipe.server.stream_finished(4));
+
+
+            assert_eq!(pipe.client.stream_send(8, b"hello, world", false), Ok(12));
+            assert_eq!(pipe.client.stream_send(8, b"hello, world", false), Ok(12));
+            assert_eq!(pipe.client.stream_send(8, b"hello, world", true), Ok(12));
+
+            assert_eq!(pipe.advance(), Ok(()));
+
+
+            let (chunk, fin) = pipe
+                .server
+                .stream_recv_zc(8, &mut pipe.server_app_buffers)
+                .unwrap();
+
+            assert_eq!((chunk.len(), fin), (28, false));
+
+
+            let (_, len, is_fin) = pipe
+                .server
+                .stream_peek(8, &mut pipe.server_app_buffers)
+                .unwrap();
+            assert_eq!((len, is_fin), (8, true));
+
+            assert!(pipe
+                .server
+                .stream_consumed(8, len, &mut pipe.server_app_buffers)
+                .is_ok());
+
+            assert!(pipe.server.stream_finished(8));
+        }
     }
 
     #[cfg(not(feature = "openssl"))] // 0-RTT not supported when using openssl/quictls
@@ -11016,7 +11326,7 @@ mod tests {
 
             let (b, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (12, false));
             assert_eq!(&b[..5], b"hello");
@@ -11028,7 +11338,7 @@ mod tests {
             // consumed.
             let (b, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (7, false));
             assert_eq!(&b[..7], b", world");
@@ -11042,7 +11352,7 @@ mod tests {
             // Zero-copy recv of more stream data
             let (b, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (20, true));
             assert_eq!(&b[..20], b", world and goodbye!");
@@ -11107,7 +11417,7 @@ mod tests {
                 .is_ok());
             // nothing to read yet on this new stream.
             assert_eq!(
-                pipe.server.stream_recv_v3(4, &mut pipe.server_app_buffers),
+                pipe.server.stream_peek(4, &mut pipe.server_app_buffers),
                 Err(Error::Done)
             );
             assert!(pipe
@@ -11120,7 +11430,7 @@ mod tests {
                 .is_ok());
             let (b, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (5, false));
             assert_eq!(&b[..len], b"aaaaa");
@@ -11134,7 +11444,7 @@ mod tests {
                 .is_ok());
             let (b, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (15, false));
             assert_eq!(&b[..len], b"aaaaabbbbbccccc");
@@ -11170,6 +11480,7 @@ mod tests {
             let sendbuf = [0; 12000];
 
             let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
+            pipe.set_client_expected_chunklen_to_consume(120_000);
             assert_eq!(pipe.handshake(), Ok(()));
 
             for _ in 1..10 {
@@ -11178,7 +11489,7 @@ mod tests {
 
                 let (_, len, _) = pipe
                     .client
-                    .stream_recv_v3(1, &mut pipe.client_app_buffers)
+                    .stream_peek(1, &mut pipe.client_app_buffers)
                     .unwrap();
                 assert!(pipe
                     .client
@@ -11191,12 +11502,471 @@ mod tests {
 
             let (_, len, _) = pipe
                 .client
-                .stream_recv_v3(1, &mut pipe.client_app_buffers)
+                .stream_peek(1, &mut pipe.client_app_buffers)
                 .unwrap();
             assert!(pipe
                 .client
                 .stream_consumed(1, len, &mut pipe.client_app_buffers)
                 .is_ok());
+            assert!(pipe.client.stream_finished(1));
+        }
+    }
+
+    #[test]
+    fn streamv3_send_recv_various_chunklen() {
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+            let mut buf = [0; 65535];
+            let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
+            config
+                .load_cert_chain_from_pem_file("examples/cert.crt")
+                .unwrap();
+            config
+                .load_priv_key_from_pem_file("examples/cert.key")
+                .unwrap();
+            config
+                .set_application_protos(&[b"proto1", b"proto2"])
+                .unwrap();
+            config.set_initial_max_data(10 * 32 * 1024);
+            config.set_initial_max_streams_bidi(3);
+            config.set_initial_max_stream_data_bidi_local(10 * 32 * 1024);
+            config.set_initial_max_stream_data_bidi_remote(10 * 32 * 1024);
+            config.set_initial_max_streams_uni(10 * 32 * 1024);
+            config.set_initial_max_stream_data_uni(10 * 32 * 1024);
+            config.set_initial_max_data(10 * 32 * 1024);
+
+            let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
+            pipe.set_server_expected_chunklen_to_consume(
+                PAYLOAD_MIN_LEN_WITH_TAG,
+            );
+            assert_eq!(pipe.handshake(), Ok(()));
+
+            let frames = [
+                frame::Frame::Stream {
+                    stream_id: 4,
+                    data: stream::RangeBuf::from(b"aaaaaaaaaaaaaa", 0, false),
+                },
+                frame::Frame::Stream {
+                    stream_id: 4,
+                    data: stream::RangeBuf::from(b"bbbbbbbbbbbbbb", 14, false),
+                },
+                frame::Frame::Stream {
+                    stream_id: 4,
+                    data: stream::RangeBuf::from(
+                        b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        28,
+                        false,
+                    ),
+                },
+                frame::Frame::Stream {
+                    stream_id: 4,
+                    data: stream::RangeBuf::from(
+                        b"ccccccccccccccccccccccccccccccccccc",
+                        57,
+                        true,
+                    ),
+                },
+            ];
+
+            let pkt_type = packet::Type::Short;
+
+            // Send first 14 bytes at offset 0 (half a chunk).
+            assert!(pipe
+                .send_pkt_to_server(
+                    pkt_type,
+                    &[frames[0].clone()],
+                    &mut buf,
+                    None
+                )
+                .is_ok());
+
+            let (_, len, is_fin) = pipe
+                .server
+                .stream_peek(4, &mut pipe.server_app_buffers)
+                .unwrap();
+            assert_eq!((len, is_fin), (14, false));
+
+            // Fill the chunk with another 14 bytes at offset 14.
+            assert!(pipe
+                .send_pkt_to_server(
+                    pkt_type,
+                    &[frames[1].clone()],
+                    &mut buf,
+                    None
+                )
+                .is_ok());
+
+            let (b, len, is_fin) = pipe
+                .server
+                .stream_peek(4, &mut pipe.server_app_buffers)
+                .unwrap();
+            assert_eq!((len, is_fin), (28, false));
+
+            assert_eq!(&b[..], b"aaaaaaaaaaaaaabbbbbbbbbbbbbb");
+
+            // Send 29 bytes (more than 1 chunk) at offset 28.
+            assert!(pipe
+                .send_pkt_to_server(
+                    pkt_type,
+                    &[frames[2].clone()],
+                    &mut buf,
+                    None
+                )
+                .is_ok());
+
+            let (b, len, is_fin) = pipe
+                .server
+                .stream_peek(4, &mut pipe.server_app_buffers)
+                .unwrap();
+            assert_eq!((len, is_fin), (28, false));
+
+            assert_eq!(&b[..], b"aaaaaaaaaaaaaabbbbbbbbbbbbbb");
+
+            // let's consume the first 28 bytes
+            assert!(pipe
+                .server
+                .stream_consumed(4, 28, &mut pipe.server_app_buffers)
+                .is_ok());
+
+            let (b, len, is_fin) = pipe
+                .server
+                .stream_peek(4, &mut pipe.server_app_buffers)
+                .unwrap();
+            assert_eq!((len, is_fin), (28, false));
+            assert_eq!(&b[..], b"bbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+
+            // let's send a frame that would spill over multiple chunks
+            assert!(pipe
+                .send_pkt_to_server(
+                    pkt_type,
+                    &[frames[3].clone()],
+                    &mut buf,
+                    None
+                )
+                .is_ok());
+
+            let (b, len, is_fin) = pipe
+                .server
+                .stream_peek(4, &mut pipe.server_app_buffers)
+                .unwrap();
+
+            assert_eq!((len, is_fin), (28, false));
+            assert_eq!(&b[..], b"bbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+
+            // let's consume 27 bytes
+            assert!(pipe
+                .server
+                .stream_consumed(4, 27, &mut pipe.server_app_buffers)
+                .is_ok());
+
+            let (b, len, is_fin) = pipe
+                .server
+                .stream_peek(4, &mut pipe.server_app_buffers)
+                .unwrap();
+            // One byte left
+            assert_eq!((len, is_fin), (1, false));
+            assert_eq!(&b[..], b"b");
+
+            // let's consume 1 byte to finish the chunk
+            assert!(pipe
+                .server
+                .stream_consumed(4, 1, &mut pipe.server_app_buffers)
+                .is_ok());
+
+            let (b, len, is_fin) = pipe
+                .server
+                .stream_peek(4, &mut pipe.server_app_buffers)
+                .unwrap();
+
+            assert_eq!((len, is_fin), (28, false));
+            assert_eq!(&b[..], b"bccccccccccccccccccccccccccc");
+
+            assert!(pipe
+                .server
+                .stream_consumed(4, 28, &mut pipe.server_app_buffers)
+                .is_ok());
+
+            let (b, len, is_fin) = pipe
+                .server
+                .stream_peek(4, &mut pipe.server_app_buffers)
+                .unwrap();
+            // 8 bytes left
+            assert_eq!((len, is_fin), (8, true));
+            assert_eq!(&b[..], b"cccccccc");
+
+            assert!(pipe
+                .server
+                .stream_consumed(4, 8, &mut pipe.server_app_buffers)
+                .is_ok());
+
+            // Now let's send into a new stream but not in order
+
+            let frames = [
+                frame::Frame::Stream {
+                    stream_id: 8,
+                    data: stream::RangeBuf::from(b"aaaaaaaaaaaaaa", 0, false),
+                },
+                frame::Frame::Stream {
+                    stream_id: 8,
+                    data: stream::RangeBuf::from(b"bbbbbbbbbbbbbb", 14, false),
+                },
+                frame::Frame::Stream {
+                    stream_id: 8,
+                    data: stream::RangeBuf::from(
+                        b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        28,
+                        false,
+                    ),
+                },
+                frame::Frame::Stream {
+                    stream_id: 8,
+                    data: stream::RangeBuf::from(
+                        b"ccccccccccccccccccccccccccccccccccc",
+                        57,
+                        true,
+                    ),
+                },
+            ];
+
+            assert!(pipe
+                .send_pkt_to_server(
+                    pkt_type,
+                    &[frames[3].clone()],
+                    &mut buf,
+                    None
+                )
+                .is_ok());
+
+            assert!(!pipe.server.is_readable());
+
+            assert!(pipe
+                .send_pkt_to_server(
+                    pkt_type,
+                    &[frames[1].clone()],
+                    &mut buf,
+                    None
+                )
+                .is_ok());
+
+            assert!(!pipe.server.is_readable());
+
+            assert!(pipe
+                .send_pkt_to_server(
+                    pkt_type,
+                    &[frames[0].clone()],
+                    &mut buf,
+                    None
+                )
+                .is_ok());
+
+            assert!(pipe.server.is_readable());
+
+            let (b, len, is_fin) = pipe
+                .server
+                .stream_peek(8, &mut pipe.server_app_buffers)
+                .unwrap();
+            assert_eq!((len, is_fin), (28, false));
+
+            assert_eq!(&b[..], b"aaaaaaaaaaaaaabbbbbbbbbbbbbb");
+            assert!(pipe
+                .server
+                .stream_consumed(8, 28, &mut pipe.server_app_buffers)
+                .is_ok());
+
+            assert!(!pipe.server.is_readable());
+
+            assert!(pipe
+                .send_pkt_to_server(
+                    pkt_type,
+                    &[frames[2].clone()],
+                    &mut buf,
+                    None
+                )
+                .is_ok());
+
+            assert!(pipe.server.is_readable());
+
+            let (b, len, is_fin) = pipe
+                .server
+                .stream_peek(8, &mut pipe.server_app_buffers)
+                .unwrap();
+            assert_eq!((len, is_fin), (28, false));
+
+            assert_eq!(&b[..], b"bbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+            assert!(pipe
+                .server
+                .stream_consumed(8, 28, &mut pipe.server_app_buffers)
+                .is_ok());
+
+            let (b, len, is_fin) = pipe
+                .server
+                .stream_peek(8, &mut pipe.server_app_buffers)
+                .unwrap();
+            assert_eq!((len, is_fin), (28, false));
+
+            assert_eq!(&b[..], b"bccccccccccccccccccccccccccc");
+            assert!(pipe
+                .server
+                .stream_consumed(8, 28, &mut pipe.server_app_buffers)
+                .is_ok());
+
+            let (b, len, is_fin) = pipe
+                .server
+                .stream_peek(8, &mut pipe.server_app_buffers)
+                .unwrap();
+            // 8 bytes left
+            assert_eq!((len, is_fin), (8, true));
+            assert_eq!(&b[..], b"cccccccc");
+
+            assert!(pipe
+                .server
+                .stream_consumed(8, 8, &mut pipe.server_app_buffers)
+                .is_ok());
+            assert!(!pipe.server.is_readable());
+        }
+    }
+
+    #[test]
+    fn stream_vrev_missing_chunk_with_existing_chunk_away() {
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+            let mut buf = [0; 65535];
+            let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
+            config
+                .load_cert_chain_from_pem_file("examples/cert.crt")
+                .unwrap();
+            config
+                .load_priv_key_from_pem_file("examples/cert.key")
+                .unwrap();
+            config
+                .set_application_protos(&[b"proto1", b"proto2"])
+                .unwrap();
+            config.set_initial_max_data(10 * 32 * 1024);
+            config.set_initial_max_streams_bidi(3);
+            config.set_initial_max_stream_data_bidi_local(10 * 32 * 1024);
+            config.set_initial_max_stream_data_bidi_remote(10 * 32 * 1024);
+            config.set_initial_max_streams_uni(10 * 32 * 1024);
+            config.set_initial_max_stream_data_uni(10 * 32 * 1024);
+            config.set_initial_max_data(10 * 32 * 1024);
+
+            let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
+            pipe.set_server_expected_chunklen_to_consume(
+                PAYLOAD_MIN_LEN_WITH_TAG,
+            );
+            assert_eq!(pipe.handshake(), Ok(()));
+            let pkt_type = packet::Type::Short;
+
+            let frames = [
+                frame::Frame::Stream {
+                    stream_id: 4,
+                    data: stream::RangeBuf::from(
+                        b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        0,
+                        false,
+                    ),
+                },
+                frame::Frame::Stream {
+                    stream_id: 4,
+                    data: stream::RangeBuf::from(
+                        b"ccccccccccccccccccccccccccccccccccc",
+                        113,
+                        true,
+                    ),
+                },
+            ];
+
+            // send the chunk at offset 113
+            assert!(pipe
+                .send_pkt_to_server(
+                    pkt_type,
+                    &[frames[1].clone()],
+                    &mut buf,
+                    None
+                )
+                .is_ok());
+
+            assert!(!pipe.server.is_readable());
+            assert!(pipe
+                .send_pkt_to_server(
+                    pkt_type,
+                    &[frames[0].clone()],
+                    &mut buf,
+                    None
+                )
+                .is_ok());
+
+            assert!(pipe.server.is_readable());
+
+            let (b, len, is_fin) = pipe
+                .server
+                .stream_peek(4, &mut pipe.server_app_buffers)
+                .unwrap();
+
+            assert_eq!((len, is_fin), (28, false));
+            assert_eq!(&b[..], b"bbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+            assert!(pipe
+                .server
+                .stream_consumed(4, 28, &mut pipe.server_app_buffers)
+                .is_ok());
+            assert!(pipe.server.is_readable());
+            let (b, len, is_fin) = pipe
+                .server
+                .stream_peek(4, &mut pipe.server_app_buffers)
+                .unwrap();
+            assert_eq!((len, is_fin), (1, false));
+            assert_eq!(&b[..], b"b");
+            assert!(pipe
+                .server
+                .stream_consumed(4, 1, &mut pipe.server_app_buffers)
+                .is_ok());
+
+            assert!(!pipe.server.is_readable());
+        }
+    }
+
+    #[test]
+    fn stream_recv_zc_send_recv() {
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+            let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
+            config
+                .load_cert_chain_from_pem_file("examples/cert.crt")
+                .unwrap();
+            config
+                .load_priv_key_from_pem_file("examples/cert.key")
+                .unwrap();
+            config
+                .set_application_protos(&[b"proto1", b"proto2"])
+                .unwrap();
+            config.set_initial_max_data(10 * 32 * 1024);
+            config.set_initial_max_streams_bidi(3);
+            config.set_initial_max_stream_data_bidi_local(10 * 32 * 1024);
+            config.set_initial_max_stream_data_bidi_remote(10 * 32 * 1024);
+            config.set_initial_max_streams_uni(10 * 32 * 1024);
+            config.set_initial_max_stream_data_uni(10 * 32 * 1024);
+            config.set_initial_max_data(10 * 32 * 1024);
+
+            let datasize = 12000;
+            let sendbuf = [0; 12000];
+
+            let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
+            pipe.set_client_expected_chunklen_to_consume(12000);
+            assert_eq!(pipe.handshake(), Ok(()));
+
+            for _ in 1..10 {
+                assert!(pipe.server.stream_send(1, &sendbuf, false).is_ok());
+                assert_eq!(pipe.advance(), Ok(()));
+
+                let (chunk, fin) = pipe
+                    .client
+                    .stream_recv_zc(1, &mut pipe.client_app_buffers).unwrap();
+                assert_eq!((chunk.len(), fin), (12000, false));
+            }
+
+            assert_eq!(pipe.server.stream_send(1, &sendbuf, true), Ok(datasize));
+            assert_eq!(pipe.advance(), Ok(()));
+
+            let (chunk, fin) = pipe
+                .client
+                .stream_recv_zc(1, &mut pipe.client_app_buffers).unwrap();
+            assert_eq!((chunk.len(), fin), (12000, true));
             assert!(pipe.client.stream_finished(1));
         }
     }
@@ -11260,7 +12030,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (b, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (12, true));
             assert_eq!(&b[..12], b"hello, world");
@@ -11336,7 +12106,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (5, false));
             assert_eq!(
@@ -11371,7 +12141,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (0, true));
             assert_eq!(
@@ -11415,7 +12185,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (b, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (5, false));
             assert_eq!(&b[..5], b"hello");
@@ -11449,7 +12219,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (b, len, is_fin) = pipe
                 .client
-                .stream_recv_v3(4, &mut pipe.client_app_buffers)
+                .stream_peek(4, &mut pipe.client_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (5, true));
             assert_eq!(&b[..5], b"world");
@@ -11730,14 +12500,14 @@ mod tests {
 
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             pipe.server
                 .stream_consumed(4, len, &mut pipe.server_app_buffers)
                 .unwrap();
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(8, &mut pipe.server_app_buffers)
+                .stream_peek(8, &mut pipe.server_app_buffers)
                 .unwrap();
             pipe.server
                 .stream_consumed(8, len, &mut pipe.server_app_buffers)
@@ -11889,7 +12659,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             pipe.server
                 .stream_consumed(4, len, &mut pipe.server_app_buffers)
@@ -12169,7 +12939,7 @@ mod tests {
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
-                pipe.server.stream_recv_v3(4, &mut pipe.server_app_buffers),
+                pipe.server.stream_peek(4, &mut pipe.server_app_buffers),
                 Err(Error::StreamReset(1001))
             );
         } else {
@@ -12208,11 +12978,11 @@ mod tests {
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
-                pipe.server.stream_recv_v3(8, &mut pipe.server_app_buffers),
+                pipe.server.stream_peek(8, &mut pipe.server_app_buffers),
                 Err(Error::StreamReset(1001))
             );
             assert_eq!(
-                pipe.server.stream_recv_v3(12, &mut pipe.server_app_buffers),
+                pipe.server.stream_peek(12, &mut pipe.server_app_buffers),
                 Err(Error::StreamReset(1001))
             );
         } else {
@@ -12490,7 +13260,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (b, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (5, false));
             // Open question: As currently written in stream::RangeBuf::write()
@@ -12517,7 +13287,7 @@ mod tests {
                 .is_ok());
             let (b, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (6, false));
             assert_eq!(&b[..6], b"bccccc");
@@ -12590,7 +13360,7 @@ mod tests {
         if pipe.client.version == PROTOCOL_VERSION_VREVERSO {
             let (b, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (5, false));
             // Stream frame are read from right to left in V3,
@@ -12628,7 +13398,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (5, false));
             assert!(pipe
@@ -12653,7 +13423,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, is_fin) = pipe
                 .client
-                .stream_recv_v3(4, &mut pipe.client_app_buffers)
+                .stream_peek(4, &mut pipe.client_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (0, true));
             assert!(pipe
@@ -12692,7 +13462,7 @@ mod tests {
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
-                pipe.server.stream_recv_v3(4, &mut pipe.server_app_buffers),
+                pipe.server.stream_peek(4, &mut pipe.server_app_buffers),
                 Err(Error::StreamReset(42))
             );
         } else {
@@ -12733,7 +13503,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (1, false));
             assert!(pipe
@@ -12758,7 +13528,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, is_fin) = pipe
                 .client
-                .stream_recv_v3(4, &mut pipe.client_app_buffers)
+                .stream_peek(4, &mut pipe.client_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (0, true));
             assert!(pipe
@@ -12797,7 +13567,7 @@ mod tests {
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
-                pipe.server.stream_recv_v3(4, &mut pipe.server_app_buffers),
+                pipe.server.stream_peek(4, &mut pipe.server_app_buffers),
                 Err(Error::StreamReset(42))
             );
         } else {
@@ -13044,7 +13814,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (5, true));
             assert!(pipe
@@ -13200,7 +13970,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (5, true));
             assert!(pipe
@@ -13305,7 +14075,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (10, true));
             assert!(pipe
@@ -13431,7 +14201,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, is_fin) = pipe
                 .client
-                .stream_recv_v3(4, &mut pipe.client_app_buffers)
+                .stream_peek(4, &mut pipe.client_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (12, true));
             pipe.client
@@ -13492,7 +14262,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, is_fin) = pipe
                 .client
-                .stream_recv_v3(4, &mut pipe.client_app_buffers)
+                .stream_peek(4, &mut pipe.client_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (12, true));
             pipe.client
@@ -13541,7 +14311,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (1, false));
             pipe.server
@@ -13677,7 +14447,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (15, true));
             pipe.server
@@ -13694,7 +14464,7 @@ mod tests {
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
-                pipe.client.stream_recv_v3(4, &mut pipe.client_app_buffers),
+                pipe.client.stream_peek(4, &mut pipe.client_app_buffers),
                 Err(Error::StreamReset(42))
             );
         } else {
@@ -13750,7 +14520,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (5, true));
             pipe.server
@@ -13956,7 +14726,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .client
-                .stream_recv_v3(4, &mut pipe.client_app_buffers)
+                .stream_peek(4, &mut pipe.client_app_buffers)
                 .unwrap();
             pipe.client
                 .stream_consumed(4, len, &mut pipe.client_app_buffers)
@@ -14047,7 +14817,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .client
-                .stream_recv_v3(4, &mut pipe.client_app_buffers)
+                .stream_peek(4, &mut pipe.client_app_buffers)
                 .unwrap();
             pipe.client
                 .stream_consumed(4, len, &mut pipe.client_app_buffers)
@@ -14139,7 +14909,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             pipe.server
                 .stream_consumed(4, len, &mut pipe.server_app_buffers)
@@ -14415,7 +15185,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, fin), (5, true));
             assert!(pipe
@@ -14541,7 +15311,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, fin), (5, true));
             assert!(pipe
@@ -14568,7 +15338,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, fin) = pipe
                 .client
-                .stream_recv_v3(4, &mut pipe.client_app_buffers)
+                .stream_peek(4, &mut pipe.client_app_buffers)
                 .unwrap();
             assert_eq!((len, fin), (5, false));
             assert!(pipe
@@ -14640,14 +15410,14 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             pipe.server
                 .stream_consumed(4, len, &mut pipe.server_app_buffers)
                 .unwrap();
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(8, &mut pipe.server_app_buffers)
+                .stream_peek(8, &mut pipe.server_app_buffers)
                 .unwrap();
             pipe.server
                 .stream_consumed(8, len, &mut pipe.server_app_buffers)
@@ -14733,14 +15503,14 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(2, &mut pipe.server_app_buffers)
+                .stream_peek(2, &mut pipe.server_app_buffers)
                 .unwrap();
             pipe.server
                 .stream_consumed(2, len, &mut pipe.server_app_buffers)
                 .unwrap();
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(6, &mut pipe.server_app_buffers)
+                .stream_peek(6, &mut pipe.server_app_buffers)
                 .unwrap();
             pipe.server
                 .stream_consumed(6, len, &mut pipe.server_app_buffers)
@@ -14793,7 +15563,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             pipe.server
                 .stream_consumed(4, len, &mut pipe.server_app_buffers)
@@ -14816,7 +15586,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             pipe.server
                 .stream_consumed(4, len, &mut pipe.server_app_buffers)
@@ -14858,7 +15628,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             pipe.server
                 .stream_consumed(4, len, &mut pipe.server_app_buffers)
@@ -14885,7 +15655,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             pipe.server
                 .stream_consumed(4, len, &mut pipe.server_app_buffers)
@@ -14910,7 +15680,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .client
-                .stream_recv_v3(4, &mut pipe.client_app_buffers)
+                .stream_peek(4, &mut pipe.client_app_buffers)
                 .unwrap();
             pipe.client
                 .stream_consumed(4, len, &mut pipe.client_app_buffers)
@@ -14972,7 +15742,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(stream_id, &mut pipe.server_app_buffers)
+                .stream_peek(stream_id, &mut pipe.server_app_buffers)
                 .unwrap();
             // drop the data and tell we read them
             pipe.server
@@ -14996,7 +15766,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .client
-                .stream_recv_v3(stream_id, &mut pipe.client_app_buffers)
+                .stream_peek(stream_id, &mut pipe.client_app_buffers)
                 .unwrap();
             pipe.client
                 .stream_consumed(stream_id, len, &mut pipe.client_app_buffers)
@@ -15588,9 +16358,9 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (b, ..) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
-            // The buffer isn't sized by the app. It means that stream_recv_v3
+            // The buffer isn't sized by the app. It means that stream_peek
             // would "read" as many bytes as it can (up to the stream
             // window) and tell the app "len" bytes are available.
             // assert_eq!((len, is_fin), (15, false));
@@ -15682,7 +16452,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(stream_id, &mut pipe.server_app_buffers)
+                .stream_peek(stream_id, &mut pipe.server_app_buffers)
                 .unwrap();
             pipe.server
                 .stream_consumed(stream_id, len, &mut pipe.server_app_buffers)
@@ -15735,7 +16505,7 @@ mod tests {
             pipe.server.stream_recv(4, &mut b).unwrap();
         } else {
             pipe.server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
         }
         assert_eq!(pipe.advance(), Ok(()));
@@ -15951,7 +16721,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(stream_id, &mut pipe.server_app_buffers)
+                .stream_peek(stream_id, &mut pipe.server_app_buffers)
                 .unwrap();
             pipe.server
                 .stream_consumed(stream_id, len, &mut pipe.server_app_buffers)
@@ -16010,7 +16780,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(stream_id, &mut pipe.server_app_buffers)
+                .stream_peek(stream_id, &mut pipe.server_app_buffers)
                 .unwrap();
             pipe.server
                 .stream_consumed(stream_id, len, &mut pipe.server_app_buffers)
@@ -16067,7 +16837,7 @@ mod tests {
         let mut b = [0; 15];
         if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
             pipe.server
-                .stream_recv_v3(stream_id, &mut pipe.server_app_buffers)
+                .stream_peek(stream_id, &mut pipe.server_app_buffers)
                 .unwrap();
         } else {
             pipe.server.stream_recv(stream_id, &mut b).unwrap();
@@ -16221,7 +16991,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             pipe.server
                 .stream_consumed(4, len, &mut pipe.server_app_buffers)
@@ -16237,7 +17007,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(16, &mut pipe.server_app_buffers)
+                .stream_peek(16, &mut pipe.server_app_buffers)
                 .unwrap();
             pipe.server
                 .stream_consumed(16, len, &mut pipe.server_app_buffers)
@@ -16253,7 +17023,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(20, &mut pipe.server_app_buffers)
+                .stream_peek(20, &mut pipe.server_app_buffers)
                 .unwrap();
             pipe.server
                 .stream_consumed(20, len, &mut pipe.server_app_buffers)
@@ -16269,7 +17039,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(8, &mut pipe.server_app_buffers)
+                .stream_peek(8, &mut pipe.server_app_buffers)
                 .unwrap();
             pipe.server
                 .stream_consumed(8, len, &mut pipe.server_app_buffers)
@@ -16285,7 +17055,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(12, &mut pipe.server_app_buffers)
+                .stream_peek(12, &mut pipe.server_app_buffers)
                 .unwrap();
             pipe.server
                 .stream_consumed(12, len, &mut pipe.server_app_buffers)
@@ -16301,7 +17071,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(24, &mut pipe.server_app_buffers)
+                .stream_peek(24, &mut pipe.server_app_buffers)
                 .unwrap();
             pipe.server
                 .stream_consumed(24, len, &mut pipe.server_app_buffers)
@@ -16568,7 +17338,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert!(pipe
                 .server
@@ -16583,7 +17353,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(16, &mut pipe.server_app_buffers)
+                .stream_peek(16, &mut pipe.server_app_buffers)
                 .unwrap();
             assert!(pipe
                 .server
@@ -16598,7 +17368,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(12, &mut pipe.server_app_buffers)
+                .stream_peek(12, &mut pipe.server_app_buffers)
                 .unwrap();
             assert!(pipe
                 .server
@@ -16613,7 +17383,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(8, &mut pipe.server_app_buffers)
+                .stream_peek(8, &mut pipe.server_app_buffers)
                 .unwrap();
             assert!(pipe
                 .server
@@ -16799,7 +17569,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             pipe.server
                 .stream_consumed(4, len, &mut pipe.server_app_buffers)
@@ -17635,7 +18405,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .client
-                .stream_recv_v3(4, &mut pipe.client_app_buffers)
+                .stream_peek(4, &mut pipe.client_app_buffers)
                 .unwrap();
             pipe.client
                 .stream_consumed(4, len, &mut pipe.client_app_buffers)
@@ -18072,18 +18842,8 @@ mod tests {
                 &mut server_config,
             )
             .unwrap(),
-            client_app_buffers: AppRecvBufMap::new(
-                3,
-                stream::MAX_STREAM_WINDOW,
-                100,
-                100,
-            ),
-            server_app_buffers: AppRecvBufMap::new(
-                3,
-                stream::MAX_STREAM_WINDOW,
-                100,
-                100,
-            ),
+            client_app_buffers: AppRecvBufMap::new(3, 100, 100),
+            server_app_buffers: AppRecvBufMap::new(3, 100, 100),
         };
 
         // Before handshake
@@ -18169,7 +18929,7 @@ mod tests {
             for i in (4..16).step_by(4) {
                 let (_, len, is_fin) = pipe
                     .server
-                    .stream_recv_v3(i, &mut pipe.server_app_buffers)
+                    .stream_peek(i, &mut pipe.server_app_buffers)
                     .unwrap();
                 assert_eq!((len, is_fin), (6, true));
                 assert!(pipe
@@ -18296,7 +19056,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, _) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert!(pipe
                 .server
@@ -19925,7 +20685,7 @@ mod tests {
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
                 let (_, len, _) = pipe
                     .client
-                    .stream_recv_v3(1, &mut pipe.client_app_buffers)
+                    .stream_peek(1, &mut pipe.client_app_buffers)
                     .unwrap();
                 pipe.client
                     .stream_consumed(1, len, &mut pipe.client_app_buffers)
@@ -20024,7 +20784,7 @@ mod tests {
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
                 let (_, len, is_fin) = pipe
                     .client
-                    .stream_recv_v3(1, &mut pipe.client_app_buffers)
+                    .stream_peek(1, &mut pipe.client_app_buffers)
                     .unwrap();
                 pipe.client
                     .stream_consumed(1, len, &mut pipe.client_app_buffers)
@@ -20259,7 +21019,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let (_, len, is_fin) = pipe
                 .server
-                .stream_recv_v3(4, &mut pipe.server_app_buffers)
+                .stream_peek(4, &mut pipe.server_app_buffers)
                 .unwrap();
             assert_eq!((len, is_fin), (5, true));
             assert!(pipe
@@ -20617,6 +21377,10 @@ pub use crate::recovery::CongestionControlAlgorithm;
 pub use crate::stream::StreamIter;
 
 pub use crate::stream::app_recv_buf::AppRecvBufMap;
+pub use crate::stream::app_recv_buf::StreamChunk;
+
+use crate::stream::app_recv_buf::StreamChunkMem;
+use crate::stream::Stream;
 
 mod cid;
 mod crypto;

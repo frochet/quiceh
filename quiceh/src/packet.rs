@@ -833,8 +833,7 @@ pub fn decode_pkt_offset(
 
 pub fn decrypt_pkt_v3<'a>(
     b: &'a mut octets_rev::OctetsMut, pn: u64, hdr_enc_len: usize,
-    payload_len: usize, outbuf: Option<&'a mut octets_rev::OctetsMut>,
-    aead: &crypto::Open,
+    payload_len: usize, outbuf: Option<&'a mut [u8]>, aead: &crypto::Open,
 ) -> Result<(octets_rev::Octets<'a>, usize)> {
     // PROTOCOL_REVERSO: temporary for testing
     let payload_offset = b.off();
@@ -851,12 +850,15 @@ pub fn decrypt_pkt_v3<'a>(
             pn,
             header.as_ref(),
             ciphertext.as_ref(),
-            outbuf.as_mut(),
+            outbuf,
         )?;
         // Number of read bytes is computed from b's offset. We need skip since
         // we process the frame from another buffer in V3.
         b.skip(payload_len)?;
-        Ok((outbuf.get_bytes(payload_len)?, payload_len))
+        Ok((
+            octets_rev::Octets::with_slice(&outbuf[..payload_len]),
+            payload_len,
+        ))
     } else {
         let payload_len =
             aead.open_with_u64_counter(pn, header.as_ref(), ciphertext.as_mut())?;

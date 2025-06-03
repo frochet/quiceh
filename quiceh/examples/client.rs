@@ -137,7 +137,7 @@ fn main() {
     let req_start = std::time::Instant::now();
 
     let mut req_sent = false;
-    let mut app_buffers = AppRecvBufMap::new(3, 10_000_000, 1_000_000, 1_000_000);
+    let mut app_buffers = AppRecvBufMap::new(3, 1_000_000, 1_000_000);
 
     loop {
         poll.poll(&mut events, conn.timeout()).unwrap();
@@ -240,7 +240,7 @@ fn main() {
                     }
                 }
             } else if conn.version() == quiceh::PROTOCOL_VERSION_VREVERSO {
-                match conn.stream_recv_v3(s, &mut app_buffers) {
+                match conn.stream_peek(s, &mut app_buffers) {
                     Ok((b, len, fin)) => {
                         debug!("received {} bytes", len);
 

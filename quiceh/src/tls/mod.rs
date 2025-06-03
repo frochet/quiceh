@@ -714,7 +714,7 @@ fn get_cipher_from_ptr(cipher: *const SSL_CIPHER) -> Result<crypto::Algorithm> {
     Ok(alg)
 }
 
-extern "C" fn set_read_secret(
+extern fn set_read_secret(
     ssl: *mut SSL, level: crypto::Level, cipher: *const SSL_CIPHER,
     secret: *const u8, secret_len: usize,
 ) -> c_int {
@@ -765,7 +765,7 @@ extern "C" fn set_read_secret(
     1
 }
 
-extern "C" fn set_write_secret(
+extern fn set_write_secret(
     ssl: *mut SSL, level: crypto::Level, cipher: *const SSL_CIPHER,
     secret: *const u8, secret_len: usize,
 ) -> c_int {
@@ -811,7 +811,7 @@ extern "C" fn set_write_secret(
     1
 }
 
-extern "C" fn add_handshake_data(
+extern fn add_handshake_data(
     ssl: *mut SSL, level: crypto::Level, data: *const u8, len: usize,
 ) -> c_int {
     let ex_data = match get_ex_data_from_ptr::<ExData>(ssl, *QUICHE_EX_DATA_INDEX)
@@ -847,14 +847,14 @@ extern "C" fn add_handshake_data(
     1
 }
 
-extern "C" fn flush_flight(_ssl: *mut SSL) -> c_int {
+extern fn flush_flight(_ssl: *mut SSL) -> c_int {
     // We don't really need to anything here since the output packets are
     // generated separately, when conn.send() is called.
 
     1
 }
 
-extern "C" fn send_alert(ssl: *mut SSL, level: crypto::Level, alert: u8) -> c_int {
+extern fn send_alert(ssl: *mut SSL, level: crypto::Level, alert: u8) -> c_int {
     let ex_data = match get_ex_data_from_ptr::<ExData>(ssl, *QUICHE_EX_DATA_INDEX)
     {
         Some(v) => v,
@@ -879,7 +879,7 @@ extern "C" fn send_alert(ssl: *mut SSL, level: crypto::Level, alert: u8) -> c_in
     1
 }
 
-extern "C" fn keylog(ssl: *const SSL, line: *const c_char) {
+extern fn keylog(ssl: *const SSL, line: *const c_char) {
     let ex_data = match get_ex_data_from_ptr::<ExData>(ssl, *QUICHE_EX_DATA_INDEX)
     {
         Some(v) => v,
@@ -899,7 +899,7 @@ extern "C" fn keylog(ssl: *const SSL, line: *const c_char) {
     }
 }
 
-extern "C" fn select_alpn(
+extern fn select_alpn(
     ssl: *mut SSL, out: *mut *const u8, out_len: *mut u8, inp: *mut u8,
     in_len: c_uint, _arg: *mut c_void,
 ) -> c_int {
@@ -959,7 +959,7 @@ extern "C" fn select_alpn(
     TLS_ERROR
 }
 
-extern "C" fn new_session(ssl: *mut SSL, session: *mut SSL_SESSION) -> c_int {
+extern fn new_session(ssl: *mut SSL, session: *mut SSL_SESSION) -> c_int {
     let ex_data = match get_ex_data_from_ptr::<ExData>(ssl, *QUICHE_EX_DATA_INDEX)
     {
         Some(v) => v,
@@ -1043,7 +1043,7 @@ fn log_ssl_error() {
     trace!("{}", std::str::from_utf8(&err).unwrap());
 }
 
-extern "C" {
+extern {
     // Note: some vendor-specific methods are implemented by each vendor's
     // submodule (openssl-quictls / boringssl).
 
@@ -1075,13 +1075,13 @@ extern "C" {
     fn SSL_CTX_set_verify(
         ctx: *mut SSL_CTX, mode: c_int,
         cb: Option<
-            unsafe extern "C" fn(ok: c_int, store_ctx: *mut X509_STORE_CTX) -> c_int,
+            unsafe extern fn(ok: c_int, store_ctx: *mut X509_STORE_CTX) -> c_int,
         >,
     );
 
     fn SSL_CTX_set_keylog_callback(
         ctx: *mut SSL_CTX,
-        cb: Option<unsafe extern "C" fn(ssl: *const SSL, line: *const c_char)>,
+        cb: Option<unsafe extern fn(ssl: *const SSL, line: *const c_char)>,
     );
 
     fn SSL_CTX_set_alpn_protos(
@@ -1091,7 +1091,7 @@ extern "C" {
     fn SSL_CTX_set_alpn_select_cb(
         ctx: *mut SSL_CTX,
         cb: Option<
-            unsafe extern "C" fn(
+            unsafe extern fn(
                 ssl: *mut SSL,
                 out: *mut *const u8,
                 out_len: *mut u8,
@@ -1106,7 +1106,7 @@ extern "C" {
     fn SSL_CTX_sess_set_new_cb(
         ctx: *mut SSL_CTX,
         cb: Option<
-            unsafe extern "C" fn(ssl: *mut SSL, session: *mut SSL_SESSION) -> c_int,
+            unsafe extern fn(ssl: *mut SSL, session: *mut SSL_SESSION) -> c_int,
         >,
     );
 

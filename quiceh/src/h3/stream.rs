@@ -406,7 +406,7 @@ impl Stream {
         //
         // This gives everything readable until it is explicitely
         // marrked as consumed.
-        let b = match conn.stream_recv_v3(self.id, app_buf) {
+        let b = match conn.stream_peek(self.id, app_buf) {
             Ok((b, len, _)) => {
                 // We read nothing form the QUIC stream
                 if len == 0 {
@@ -439,6 +439,8 @@ impl Stream {
         self.state_off += consumed;
 
         conn.stream_consumed(self.id, consumed, app_buf)?;
+
+        self.reset_data_event();
 
         trace!(
             "{} consumed {} bytes on stream {}",
@@ -563,6 +565,9 @@ impl Stream {
         self.state_off += consumed;
 
         stream.set_position(stream.position() + consumed as u64);
+
+        self.reset_data_event();
+
         Ok(())
     }
 
@@ -668,7 +673,7 @@ impl Stream {
     pub fn try_acquire_data<'a>(
         &mut self, conn: &mut crate::Connection, app_buf: &'a mut AppRecvBufMap,
     ) -> Result<(&'a [u8], usize, bool)> {
-        let (b, len, fin) = match conn.stream_recv_v3(self.id, app_buf) {
+        let (b, len, fin) = match conn.stream_peek(self.id, app_buf) {
             Ok(v) => v,
 
             Err(e) => {
@@ -731,12 +736,18 @@ impl Stream {
         // Account for DATA consumed by the app
         self.state_off += consumed;
 
+        let (_, len, _) = conn.stream_peek(self.id, app_buf)?;
+
         // Tell the underlying QUIC stream that we consumed part of the data.
         conn.stream_consumed(self.id, consumed, app_buf)?;
 
-        // We can transition if we consumed the whole data frame.
         if self.state_buffer_complete() {
+            // We can transition if we consumed the whole data frame.
             self.state_transition(State::FrameType, 1, true)?;
+        } else if len == consumed {
+            // We have consumed all available data, let's rearm the Data event
+            trace!("Consumed the whole stream chunk. Rearming data event");
+            self.reset_data_event();
         }
 
         Ok(())
@@ -813,7 +824,7 @@ impl Stream {
 
     /// Returns true if the state buffer has enough data to complete the state.
     fn state_buffer_complete(&self) -> bool {
-        // with stream_recv_v3, we may read more than the state buffer
+        // with stream_peek, we may read more than the state buffer
         // although it is not an issue since everything is zero-copy
         self.state_off >= self.state_len
     }

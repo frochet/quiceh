@@ -571,7 +571,7 @@ mod tests {
 
         let buf = RangeBuf::from(b"hello", 0, false);
         let bufinfo = RecvBufInfo::from(0, 5, false);
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert!(recv.write(buf).is_ok());
             assert_eq!(recv.data.len(), 1);
@@ -687,7 +687,7 @@ mod tests {
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
 
         let first = RangeBuf::from(b"hello", 0, false);
         let firstinfo = RecvBufInfo::from(0, 5, false);
@@ -796,7 +796,7 @@ mod tests {
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
 
         let first = RangeBuf::from(b"something", 0, false);
         let firstinfo = RecvBufInfo::from(0, 9, false);
@@ -844,7 +844,7 @@ mod tests {
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
 
         let first = RangeBuf::from(b"something", 0, false);
         let firstinfo = RecvBufInfo::from(0, 9, false);
@@ -895,7 +895,7 @@ mod tests {
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
 
         let first = RangeBuf::from(b"something", 0, false);
         let firstinfo = RecvBufInfo::from(0, 9, false);
@@ -966,7 +966,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1022,7 +1022,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1079,7 +1079,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1138,7 +1138,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1208,7 +1208,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1266,7 +1266,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1322,7 +1322,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1401,7 +1401,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1482,7 +1482,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1551,7 +1551,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
