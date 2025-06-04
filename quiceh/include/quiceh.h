@@ -182,9 +182,22 @@ void quiceh_config_log_keys(quiceh_config *config);
 void quiceh_config_enable_early_data(quiceh_config *config);
 
 // Configures the list of supported application protocols.
-int quiceh_config_set_application_protos(quiceh_config *config,
+int quiceh_config_set_application_protos_wire_format(quiceh_config *config,
                                          const uint8_t *protos,
                                          size_t protos_len);
+
+// Expect a `const char* array[]` with a NULL sentinel
+// Exemple:
+// ```c
+// const char* protos[] = {
+//     "h3",
+//     "hq-interop"
+//     "http/0.9",
+//     NULL
+// };
+// quiceh_config_set_application_protos(config, protos);
+// ```
+int quiceh_config_set_application_protos(quiceh_config *config, const char* protos[]);
 
 // Sets the anti-amplification limit factor.
 void quiceh_config_set_max_amplification_factor(quiceh_config *config, size_t v);

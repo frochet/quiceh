@@ -125,9 +125,14 @@ int main()
 
     quiceh_config_verify_peer(config, false);
 
-    uint8_t protos[] = "\x02h3" "\x0Ahq-interop" "\x08http/0.9";
+    const char* protos[] = {
+        "h3",
+        "hq-interop",
+        "http/0.9",
+        NULL
+    };
 
-    quiceh_config_set_application_protos(config, protos, sizeof(protos)-1);
+    quiceh_config_set_application_protos(config, protos);
 
     quiceh_config_set_max_idle_timeout(config, 5000);
     quiceh_config_set_max_recv_udp_payload_size(config, MAX_DATAGRAM_SIZE);
