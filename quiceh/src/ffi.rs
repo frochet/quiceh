@@ -228,7 +228,7 @@ pub extern "C" fn quiceh_config_enable_early_data(config: &mut Config) {
 #[no_mangle]
 /// Corresponds to the `Config::set_application_protos_wire_format` Rust
 /// function.
-pub extern "C" fn quiceh_config_set_application_protos(
+pub extern "C" fn quiceh_config_set_application_protos_wire_format(
     config: &mut Config, protos: *const u8, protos_len: size_t,
 ) -> c_int {
     let protos = unsafe { slice::from_raw_parts(protos, protos_len) };
@@ -237,6 +237,50 @@ pub extern "C" fn quiceh_config_set_application_protos(
         Ok(_) => 0,
 
         Err(e) => e.to_c() as c_int,
+    }
+}
+
+#[no_mangle]
+/// Expect a `const char* array[]` with a NULL sentinel
+/// Exemple:
+/// ```c
+/// const char* protos[] = {
+///     "h3",
+///     "hq-interop"
+///     "http/0.9",
+///     NULL
+/// };
+/// ```
+pub extern "C" fn quiceh_config_set_application_protos(
+    config: &mut Config, protos: *const *const c_char
+) -> c_int {
+    unsafe {
+        if protos.is_null() {
+            return -1;
+        }
+
+        let mut slices: Vec<&[u8]> = Vec::new();
+        let mut i = 0;
+
+        loop {
+            let ptr = *protos.add(i);
+            if ptr.is_null() {
+                break; // sentinel
+            }
+
+            // Convert C string to &[u8], excluding the null terminator
+            let c_str = ffi::CStr::from_ptr(ptr);
+            let bytes: &[u8] = c_str.to_bytes();
+            slices.push(bytes);
+
+            i += 1;
+        }
+
+        match config.set_application_protos(&slices) {
+            Ok(_) => 0,
+
+            Err(e) => e.to_c() as c_int,
+        }
     }
 }
 
