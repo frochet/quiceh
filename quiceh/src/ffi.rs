@@ -819,12 +819,6 @@ impl<'a> From<&RecvInfo<'a>> for crate::RecvInfo {
     }
 }
 
-// Maceo's note:
-// AppRecvBufMap will only be exported in the .h with a typedef like:
-// typedef struct quiceh_app_recv_buff_map quiceh_app_recv_buff_map;
-//
-// Like this, their is no need create a C compatible ABI.
-// I still have to have a function able to return a pointer to AppRecvBufMap for this to work.
 
 #[no_mangle]
 pub extern "C" fn quiceh_conn_recv(

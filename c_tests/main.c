@@ -190,7 +190,10 @@ int main(int argc, char* argv[])
     {
         goto FREE;
     }
-    printf("%ld, %ld\n", n, send(fd, out, n, 0));
+    if(send(fd, out, n, 0) != n)
+    {
+        perror("send didn't send enough bytes");
+    }
 
     printf("first packet sent\n");
 
@@ -291,7 +294,10 @@ int main(int argc, char* argv[])
 
         while((n = quiceh_conn_send(conn, (uint8_t*)out, sizeof(out), &out_info)) > 0)
         {
-            printf("send %ld, %ld\n", n, send(fd, out, n, 0));
+            if(send(fd, out, n, 0) != n)
+            {
+                perror("send didn't send enough bytes");
+            }
         }
         if(n < 0 && n != QUICEH_ERR_DONE)
         {
