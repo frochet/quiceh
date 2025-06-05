@@ -5,7 +5,7 @@ metadata:
   name: "quiceh"
   description: "Savoury implementation of the QUIC transport protocol and HTTP/3."
   annotations:
-    backstage.io/source-location: url:https://github.com/cloudflare/quiceh
+    backstage.io/source-location: url:https://github.com/frochet/quiceh
     cloudflare.com/jira-project-key: "FLPROTO"
     cloudflare.com/software-excellence-opt-in: "true"
   links:
