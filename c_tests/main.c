@@ -11,6 +11,7 @@
 #include <fcntl.h>
 
 #include "random.h"
+#include "http_utils.h"
 #include "quiceh.h"
 
 #define MAX_DATAGRAM_SIZE 1350
@@ -97,7 +98,7 @@ static int build_socket(const char* local_hostname, char* str_local_port, const 
 
 int main(int argc, char* argv[])
 {
-    const char* url;
+    http_utils_UrlSplitted url = {.host = "127.0.0.1", .port = "4433", .secured = true, .req = "/README.md"};
     bool req_sent = false;
     int return_code = 1;
 
@@ -117,15 +118,15 @@ int main(int argc, char* argv[])
 
     if(argc > 1)
     {
-        url = argv[1];
-    }
-    else
-    {
-        url = "/README.md";
+        if(!http_utils_parse_url(argv[1], &url))
+        {
+            fprintf(stderr, "Invalid URL provided");
+            goto FREE;
+        }
     }
 
 
-    fd = build_socket("0.0.0.0", "0", "127.0.0.1", "4433", &local, &local_len, &peer, &peer_len);
+    fd = build_socket("0.0.0.0", "0", url.host, url.port, &local, &local_len, &peer, &peer_len);
     if(fd < 0)
     {
         goto FREE;
@@ -170,7 +171,7 @@ int main(int argc, char* argv[])
 
     printf("Peer IP: %s:%d\n", inet_ntop(AF_INET, &((const struct sockaddr_in *)&peer)->sin_addr, ip_buf, peer_len), ntohs(((const struct sockaddr_in *)&peer)->sin_port));
 
-    conn = quiceh_connect("127.0.0.1", (uint8_t*)scid, sizeof(scid), &local, local_len, &peer, peer_len, config);
+    conn = quiceh_connect(url.host, (uint8_t*)scid, sizeof(scid), &local, local_len, &peer, peer_len, config);
     if(conn == NULL)
     {
         goto FREE;
@@ -189,7 +190,7 @@ int main(int argc, char* argv[])
     {
         goto FREE;
     }
-    printf("%d, %ld\n", n, send(fd, out, n, 0));
+    printf("%ld, %ld\n", n, send(fd, out, n, 0));
 
     printf("first packet sent\n");
 
@@ -216,8 +217,6 @@ int main(int argc, char* argv[])
             {
                 quiceh_recv_info recv_info = {.from = &peer, .from_len = peer_len, .to = &local, .to_len = local_len};
 
-                printf("recv\n");
-
                 if(quiceh_conn_recv(conn, (uint8_t*)buffer, n, app_buffers, &recv_info) < 0)
                 {
                     break;
@@ -230,27 +229,21 @@ int main(int argc, char* argv[])
             }
         }
 
-        printf("done reading, now sending\n");
-
-        if(quiceh_conn_is_closed(conn))
-        {
-            goto FREE;
-        }
-
         if(quiceh_conn_is_established(conn) && !req_sent)
         {
-            printf("Connected\n");
-            char req[1024];
+            fprintf(stderr, "Connected\n");
+            char req[2048];
             uint64_t out_code;
 
-            snprintf(req, sizeof(req), "GET %s\r\n", url);
-            quiceh_conn_stream_send(conn, HTTP_REQ_STREAM_ID, req, strlen(req), true, &out_code);
+            snprintf(req, sizeof(req), "GET %s\r\n", url.req);
+            quiceh_conn_stream_send(conn, HTTP_REQ_STREAM_ID, (uint8_t*)req, strlen(req), true, &out_code);
             req_sent = true;
         }
 
         stream_iter = quiceh_conn_readable(conn);
         if(stream_iter == NULL)
         {
+            fprintf(stderr, "quiceh_conn_readable error\n");
             goto FREE;
         }
 
@@ -261,23 +254,24 @@ int main(int argc, char* argv[])
             uint64_t error_code;
             if((n = quiceh_conn_stream_recv(conn, stream_id, (uint8_t*)buffer, sizeof(buffer), &fin, &error_code)) < 0)
             {
+                fprintf(stderr, "quiceh_conn_stream_recv error\n");
                 goto FREE;
             }
-            printf("stream recv\n");
             write(STDOUT_FILENO, buffer, n);
             if(fin)
             {
+                quiceh_conn_close(conn, true, 0x0, (uint8_t*)"kthxbye", 7);
                 break;
             }
         }
 
         while((n = quiceh_conn_send(conn, (uint8_t*)out, sizeof(out), &out_info)) > 0)
         {
-            printf("send %d, %ld\n", n, send(fd, out, n, 0));
+            printf("send %ld, %ld\n", n, send(fd, out, n, 0));
         }
         if(n < 0 && n != QUICEH_ERR_DONE)
         {
-            quiceh_conn_close(conn, false, 0x1, "fail", 4);
+            quiceh_conn_close(conn, false, 0x1, (uint8_t*)"fail", 4);
         }
     }
 
