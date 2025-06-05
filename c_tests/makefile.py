@@ -6,7 +6,7 @@ def cargo_build(config: powermake.Config):
     powermake.run_command_if_needed(config, "../target/debug/libquiceh.so", dependencies=files, command=["cargo", "build", "--color", "always", "--features", "ffi"])
 
 def on_build(config: powermake.Config):
-    config.add_flags("-Wall", "-Wextra", "-fanalyzer", "-Wno-analyzer-fd-phase-mismatch")
+    config.add_flags("-Wall", "-Wextra")
 
     config.add_shared_libs("quiceh")
     config.add_includedirs("../quiceh/include/")
