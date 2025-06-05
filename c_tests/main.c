@@ -133,7 +133,7 @@ int main(int argc, char* argv[])
     }
     set_blocking_mode(fd, false);
 
-    config = quiceh_config_new(QUICEH_PROTOCOL_VERSION_V1);
+    config = quiceh_config_new(QUICEH_PROTOCOL_VERSION);
     if(config == NULL)
     {
         goto FREE;
@@ -252,16 +252,40 @@ int main(int argc, char* argv[])
         {
             bool fin = false;
             uint64_t error_code;
-            if((n = quiceh_conn_stream_recv(conn, stream_id, (uint8_t*)buffer, sizeof(buffer), &fin, &error_code)) < 0)
+            if(quiceh_conn_version(conn) == QUICEH_PROTOCOL_VERSION_V1)
             {
-                fprintf(stderr, "quiceh_conn_stream_recv error\n");
-                goto FREE;
+                if((n = quiceh_conn_stream_recv(conn, stream_id, (uint8_t*)buffer, sizeof(buffer), &fin, &error_code)) < 0)
+                {
+                    fprintf(stderr, "quiceh_conn_stream_recv error\n");
+                    goto FREE;
+                }
+                write(STDOUT_FILENO, buffer, n);
+                if(fin)
+                {
+                    quiceh_conn_close(conn, true, 0x0, (uint8_t*)"kthxbye", 7);
+                    break;
+                }
             }
-            write(STDOUT_FILENO, buffer, n);
-            if(fin)
+            else if(quiceh_conn_version(conn) == QUICEH_PROTOCOL_VERSION_VREVERSO)
             {
-                quiceh_conn_close(conn, true, 0x0, (uint8_t*)"kthxbye", 7);
-                break;
+                const uint8_t* buf;
+                if((n = quiceh_conn_stream_recv_v3(conn, stream_id, app_buffers, &buf, &fin, &error_code)) < 0)
+                {
+                    fprintf(stderr, "quiceh_conn_stream_recv error\n");
+                    goto FREE;
+                }
+                write(STDOUT_FILENO, buf, n);
+                quiceh_conn_stream_consumed(conn, stream_id, n, app_buffers);
+                if(fin)
+                {
+                    quiceh_conn_close(conn, true, 0x0, (uint8_t*)"kthxbye", 7);
+                    break;
+                }
+            }
+            else
+            {
+                fprintf(stderr, "Unexpected conn version\n");
+                goto FREE;
             }
         }
 

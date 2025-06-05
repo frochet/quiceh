@@ -593,6 +593,11 @@ pub extern "C" fn quiceh_connect(
 }
 
 #[no_mangle]
+pub extern "C" fn quiceh_conn_version(conn: &Connection) -> u32 {
+    conn.version()
+}
+
+#[no_mangle]
 pub extern "C" fn quiceh_negotiate_version(
     scid: *const u8, scid_len: size_t, dcid: *const u8, dcid_len: size_t,
     out: *mut u8, out_len: size_t,
@@ -929,6 +934,48 @@ pub extern "C" fn quiceh_conn_stream_recv(
 
     out_len as ssize_t
 }
+
+
+#[no_mangle]
+pub extern "C" fn quiceh_conn_stream_recv_v3<'a>(
+    conn: &mut Connection, stream_id: u64, app_buffers: &'a mut AppRecvBufMap,
+    out: *mut *const u8, fin: &mut bool, out_error_code: &mut u64,
+) -> ssize_t {
+    let (b, out_len, out_fin) = match conn.stream_recv_v3(stream_id, app_buffers) {
+        Ok(v) => v,
+
+        Err(e) => {
+            match e {
+                Error::StreamReset(error) => *out_error_code = error,
+                Error::StreamStopped(error) => *out_error_code = error,
+                _ => {},
+            }
+            return e.to_c();
+        },
+    };
+
+    unsafe {
+        *out = b.as_ptr();
+    }
+
+    *fin = out_fin;
+
+    out_len as ssize_t
+}
+
+
+#[no_mangle]
+pub extern "C" fn quiceh_conn_stream_consumed(
+    conn: &mut Connection, stream_id: u64, consumed: size_t,
+    app_buffers: &mut AppRecvBufMap
+) -> c_int {
+    match conn.stream_consumed(stream_id, consumed as usize, app_buffers) {
+        Ok(_) => 0,
+
+        Err(e) => e.to_c() as c_int,
+    }
+}
+
 
 #[no_mangle]
 pub extern "C" fn quiceh_conn_stream_send(

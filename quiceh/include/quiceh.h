@@ -320,6 +320,8 @@ quiceh_conn *quiceh_connect(const char *server_name,
                             const struct sockaddr *peer, socklen_t peer_len,
                             quiceh_config *config);
 
+uint32_t quiceh_conn_version(quiceh_conn* conn);
+
 // Writes a version negotiation packet.
 ssize_t quiceh_negotiate_version(const uint8_t *scid, size_t scid_len,
                                  const uint8_t *dcid, size_t dcid_len,
@@ -421,6 +423,13 @@ size_t quiceh_conn_send_quantum_on_path(const quiceh_conn *conn,
 ssize_t quiceh_conn_stream_recv(quiceh_conn *conn, uint64_t stream_id,
                                 uint8_t *out, size_t buf_len, bool *fin,
                                 uint64_t *out_error_code);
+
+ssize_t quiceh_conn_stream_recv_v3(quiceh_conn *conn, uint64_t stream_id,
+                                quiceh_app_recv_buff_map* app_buffers, const uint8_t** out,
+                                bool *fin, uint64_t *out_error_code);
+
+ssize_t quiceh_conn_stream_consumed(quiceh_conn *conn, uint64_t stream_id, size_t consumed,
+                                quiceh_app_recv_buff_map* app_buffers);
 
 // Writes data to a stream.
 // out_error_code is only set when STREAM_STOPPED or STREAM_RESET are returned.
