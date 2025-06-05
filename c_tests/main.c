@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <poll.h>
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -13,6 +14,8 @@
 #include "quiceh.h"
 
 #define MAX_DATAGRAM_SIZE 1350
+
+#define HTTP_REQ_STREAM_ID 4
 
 static bool set_blocking_mode(int fd, char blocking)
 {
@@ -92,13 +95,15 @@ static int build_socket(const char* local_hostname, char* str_local_port, const 
 
 
 
-int main()
+int main(int argc, char* argv[])
 {
+    const char* url;
+    bool req_sent = false;
     int return_code = 1;
 
     int fd = -1;
-    int n;
-    int32_t buffer[65535] = {0};
+    ssize_t n;
+    uint8_t buffer[65535] = {0};
     uint8_t out[MAX_DATAGRAM_SIZE] = {0};
 
     uint8_t scid[QUICEH_MAX_CONN_ID_LEN];
@@ -110,14 +115,24 @@ int main()
     quiceh_app_recv_buff_map* app_buffers = NULL;
     quiceh_stream_iter* stream_iter = NULL;
 
+    if(argc > 1)
+    {
+        url = argv[1];
+    }
+    else
+    {
+        url = "/README.md";
+    }
+
 
     fd = build_socket("0.0.0.0", "0", "127.0.0.1", "4433", &local, &local_len, &peer, &peer_len);
     if(fd < 0)
     {
         goto FREE;
     }
+    set_blocking_mode(fd, false);
 
-    config = quiceh_config_new(QUICEH_PROTOCOL_VERSION);
+    config = quiceh_config_new(QUICEH_PROTOCOL_VERSION_V1);
     if(config == NULL)
     {
         goto FREE;
@@ -126,7 +141,6 @@ int main()
     quiceh_config_verify_peer(config, false);
 
     const char* protos[] = {
-        "h3",
         "hq-interop",
         "http/0.9",
         NULL
@@ -175,46 +189,95 @@ int main()
     {
         goto FREE;
     }
-    printf("%d, %ld\n", n, sendto(fd, out, n, 0, &peer, peer_len));
+    printf("%d, %ld\n", n, send(fd, out, n, 0));
 
-    printf("connected\n");
+    printf("first packet sent\n");
 
-    while((n = recvfrom(fd, buffer, sizeof(buffer), 0, &peer, &peer_len)) > 0)
+    struct pollfd pollfd[] = {{.fd = fd, .events = POLLIN}};
+
+    while(!quiceh_conn_is_closed(conn))
     {
-        quiceh_recv_info recv_info = {.from = &peer, .from_len = peer_len, .to = &local, .to_len = local_len};
-
-        printf("recv\n");
-
-        if(quiceh_conn_recv(conn, (uint8_t*)buffer, n, app_buffers, &recv_info) < 0)
+        int nfds = poll(pollfd, sizeof(pollfd) / sizeof(struct pollfd), quiceh_conn_timeout_as_millis(conn));
+        if(nfds < 0)
         {
-            break;
+            perror("poll");
+            goto FREE;
         }
-    }
 
-    if(!quiceh_conn_is_established(conn))
-    {
-        goto FREE;
-    }
+        if(nfds == 0)
+        {
+            // timeout
+            quiceh_conn_on_timeout(conn);
+        }
+        else
+        {
+            errno = 0;
+            while(nfds > 0 && (n = recv(fd, buffer, sizeof(buffer), 0)) > 0)
+            {
+                quiceh_recv_info recv_info = {.from = &peer, .from_len = peer_len, .to = &local, .to_len = local_len};
 
-    stream_iter = quiceh_conn_readable(conn);
-    if(stream_iter == NULL)
-    {
-        goto FREE;
-    }
+                printf("recv\n");
 
-    uint64_t stream_id;
-    while((quiceh_stream_iter_next(stream_iter, &stream_id)))
-    {
-        bool fin = false;
-        uint64_t error_code;
-        if((n = quiceh_conn_stream_recv(conn, stream_id, (uint8_t*)buffer, sizeof(buffer), &fin, &error_code)) < 0)
+                if(quiceh_conn_recv(conn, (uint8_t*)buffer, n, app_buffers, &recv_info) < 0)
+                {
+                    break;
+                }
+            }
+            if(n < 0 && errno != 0 && errno != EWOULDBLOCK)
+            {
+                perror("recv");
+                goto FREE;
+            }
+        }
+
+        printf("done reading, now sending\n");
+
+        if(quiceh_conn_is_closed(conn))
         {
             goto FREE;
         }
-        write(STDOUT_FILENO, buffer, n);
-        if(fin)
+
+        if(quiceh_conn_is_established(conn) && !req_sent)
         {
-            break;
+            printf("Connected\n");
+            char req[1024];
+            uint64_t out_code;
+
+            snprintf(req, sizeof(req), "GET %s\r\n", url);
+            quiceh_conn_stream_send(conn, HTTP_REQ_STREAM_ID, req, strlen(req), true, &out_code);
+            req_sent = true;
+        }
+
+        stream_iter = quiceh_conn_readable(conn);
+        if(stream_iter == NULL)
+        {
+            goto FREE;
+        }
+
+        uint64_t stream_id;
+        while((quiceh_stream_iter_next(stream_iter, &stream_id)))
+        {
+            bool fin = false;
+            uint64_t error_code;
+            if((n = quiceh_conn_stream_recv(conn, stream_id, (uint8_t*)buffer, sizeof(buffer), &fin, &error_code)) < 0)
+            {
+                goto FREE;
+            }
+            printf("stream recv\n");
+            write(STDOUT_FILENO, buffer, n);
+            if(fin)
+            {
+                break;
+            }
+        }
+
+        while((n = quiceh_conn_send(conn, (uint8_t*)out, sizeof(out), &out_info)) > 0)
+        {
+            printf("send %d, %ld\n", n, send(fd, out, n, 0));
+        }
+        if(n < 0 && n != QUICEH_ERR_DONE)
+        {
+            quiceh_conn_close(conn, false, 0x1, "fail", 4);
         }
     }
 

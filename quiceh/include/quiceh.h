@@ -55,8 +55,13 @@ extern "C" {
 // QUIC transport API.
 //
 
+#define QUICEH_PROTOCOL_VERSION_V1 0x00000001
+
+#define QUICEH_PROTOCOL_VERSION_VREVERSO 0x00791097
+
+
 // The current QUIC wire version.
-#define QUICEH_PROTOCOL_VERSION 0x00791097
+#define QUICEH_PROTOCOL_VERSION QUICEH_PROTOCOL_VERSION_VREVERSO
 
 // The maximum length of a connection ID.
 #define QUICEH_MAX_CONN_ID_LEN 20
