@@ -1079,6 +1079,9 @@ typedef struct quiceh_h3_event quiceh_h3_event;
 int64_t quiceh_h3_conn_poll(quiceh_h3_conn *conn, quiceh_conn *quic_conn,
                             quiceh_h3_event **ev);
 
+int64_t quiceh_h3_conn_poll_v3(quiceh_h3_conn *conn, quiceh_conn *quic_conn,
+                               quiceh_app_recv_buff_map* app_buffers, quiceh_h3_event **ev);
+
 // Returns the type of the event.
 enum quiceh_h3_event_type quiceh_h3_event_type(quiceh_h3_event *ev);
 
@@ -1151,6 +1154,14 @@ ssize_t quiceh_h3_send_body(quiceh_h3_conn *conn, quiceh_conn *quic_conn,
 // Reads request or response body data into the provided buffer.
 ssize_t quiceh_h3_recv_body(quiceh_h3_conn *conn, quiceh_conn *quic_conn,
                             uint64_t stream_id, uint8_t *out, size_t out_len);
+
+ssize_t quiceh_h3_recv_body_v3(quiceh_h3_conn *conn, quiceh_conn *quic_conn,
+                            uint64_t stream_id, quiceh_app_recv_buff_map* app_buffers,
+                            const uint8_t **out, size_t* expected_bytes);
+
+int quiceh_h3_body_consumed(quiceh_h3_conn *conn, quiceh_conn *quic_conn,
+                            uint64_t stream_id, size_t consumed,
+                            quiceh_app_recv_buff_map* app_buffers);
 
 // Sends a GOAWAY frame to initiate graceful connection closure.
 int quiceh_h3_send_goaway(quiceh_h3_conn *conn, quiceh_conn *quic_conn,
