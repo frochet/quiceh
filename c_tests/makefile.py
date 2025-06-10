@@ -3,15 +3,15 @@ import powermake
 
 def cargo_build(config: powermake.Config):
     files = powermake.get_files("../quiceh/**/*.rs", "../quiceh/**/*.toml")
-    powermake.run_command_if_needed(config, "../target/debug/libquiceh.so", dependencies=files, command=["cargo", "build", "--color", "always", "--features", "ffi"])
+    powermake.run_command_if_needed(config, "../target/debug/libquiceh.so", dependencies=files, command=["cargo", "build", "--color", "always", "--features", "ffi,pkg-config-meta"])
 
 def on_build(config: powermake.Config):
     config.add_flags("-Wall", "-Wextra")
 
-    config.add_shared_libs("quiceh")
+    config.add_shared_libs("crypto", "ssl", "quiceh")
     config.add_includedirs("../quiceh/include/")
 
-    config.add_ld_flags("-L../target/debug/")
+    config.add_ld_flags("-L../target/debug", "-L../../boringssl/lib")
 
     cargo_build(config)
 
@@ -20,7 +20,7 @@ def on_build(config: powermake.Config):
     powermake.link_files(config, objects)
 
 def on_test(config: powermake.Config, args):
-    os.environ["LD_LIBRARY_PATH"] = "../target/debug/"
+    os.environ["LD_LIBRARY_PATH"] = "../target/debug/:../../boringssl/lib"
     os.environ["RUST_BACKTRACE"] = "1"
     os.environ["RUST_LOGS"] = "trace"
     powermake.default_on_test(config, args)
