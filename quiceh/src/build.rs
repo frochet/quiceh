@@ -191,7 +191,7 @@ libdir={}
 
 Name: quiceh
 Description: quiceh library
-URL: https://github.com/cloudflare/quiceh
+URL: https://github.com/frochet/quiceh
 Version: {version}
 Libs: -Wl,-rpath,${{libdir}} -L${{libdir}} -lquiceh
 Cflags: -I${{includedir}}
