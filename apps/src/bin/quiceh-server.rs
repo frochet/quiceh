@@ -615,7 +615,7 @@ fn main() {
             }
 
             if total_write == 0 || dst_info.is_none() {
-                break;
+                continue;
             }
 
             let transmit = Transmit {
