@@ -489,51 +489,66 @@ pub extern "C" fn quiceh_header_info(
     };
 
     unsafe {
-        *version = hdr.version;
-
-        *ty = match hdr.ty {
-            Type::Initial => 1,
-            Type::Retry => 2,
-            Type::Handshake => 3,
-            Type::ZeroRTT => 4,
-            Type::Short => 5,
-            Type::VersionNegotiation => 6,
-        };
-
-        if *scid_len < hdr.scid.len() {
-            return -1;
+        if !version.is_null()
+        {
+            *version = hdr.version;
         }
 
-        let scid = slice::from_raw_parts_mut(scid, *scid_len);
-        let scid = &mut scid[..hdr.scid.len()];
-        scid.copy_from_slice(&hdr.scid);
-
-        *scid_len = hdr.scid.len();
-
-        if *dcid_len < hdr.dcid.len() {
-            return -1;
+        if !ty.is_null()
+        {
+            *ty = match hdr.ty {
+                Type::Initial => 1,
+                Type::Retry => 2,
+                Type::Handshake => 3,
+                Type::ZeroRTT => 4,
+                Type::Short => 5,
+                Type::VersionNegotiation => 6,
+            };
         }
 
-        let dcid = slice::from_raw_parts_mut(dcid, *dcid_len);
-        let dcid = &mut dcid[..hdr.dcid.len()];
-        dcid.copy_from_slice(&hdr.dcid);
+        if !scid.is_null() && !scid_len.is_null()
+        {
+            if *scid_len < hdr.scid.len() {
+                return -1;
+            }
 
-        *dcid_len = hdr.dcid.len();
+            let scid = slice::from_raw_parts_mut(scid, *scid_len);
+            let scid = &mut scid[..hdr.scid.len()];
+            scid.copy_from_slice(&hdr.scid);
 
-        match hdr.token {
-            Some(tok) => {
-                if *token_len < tok.len() {
-                    return -1;
-                }
+            *scid_len = hdr.scid.len();
+        }
 
-                let token = slice::from_raw_parts_mut(token, *token_len);
-                let token = &mut token[..tok.len()];
-                token.copy_from_slice(&tok);
+        if !dcid.is_null() && !dcid_len.is_null()
+        {
+            if *dcid_len < hdr.dcid.len() {
+                return -1;
+            }
 
-                *token_len = tok.len();
-            },
+            let dcid = slice::from_raw_parts_mut(dcid, *dcid_len);
+            let dcid = &mut dcid[..hdr.dcid.len()];
+            dcid.copy_from_slice(&hdr.dcid);
 
-            None => *token_len = 0,
+            *dcid_len = hdr.dcid.len();
+        }
+
+        if !token.is_null() && !token_len.is_null()
+        {
+            match hdr.token {
+                Some(tok) => {
+                    if *token_len < tok.len() {
+                        return -1;
+                    }
+
+                    let token = slice::from_raw_parts_mut(token, *token_len);
+                    let token = &mut token[..tok.len()];
+                    token.copy_from_slice(&tok);
+
+                    *token_len = tok.len();
+                },
+
+                None => *token_len = 0,
+            }
         }
     }
 
@@ -1101,20 +1116,20 @@ pub extern "C" fn quiceh_conn_close(
 }
 
 #[no_mangle]
-pub extern "C" fn quiceh_conn_timeout_as_nanos(conn: &Connection) -> u64 {
+pub extern "C" fn quiceh_conn_timeout_as_nanos(conn: &Connection) -> i64 {
     match conn.timeout() {
-        Some(timeout) => timeout.as_nanos() as u64,
+        Some(timeout) => timeout.as_nanos() as i64,
 
-        None => u64::MAX,
+        None => -1 as i64,
     }
 }
 
 #[no_mangle]
-pub extern "C" fn quiceh_conn_timeout_as_millis(conn: &Connection) -> u64 {
+pub extern "C" fn quiceh_conn_timeout_as_millis(conn: &Connection) -> i64 {
     match conn.timeout() {
-        Some(timeout) => timeout.as_millis() as u64,
+        Some(timeout) => timeout.as_millis() as i64,
 
-        None => u64::MAX,
+        None => -1 as i64,
     }
 }
 
