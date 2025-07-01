@@ -254,6 +254,8 @@ int main(int argc, char* argv[])
         while((quiceh_stream_iter_next(stream_iter, &stream_id)))
         {
             bool fin = false;
+            ssize_t written;
+            size_t total_written = 0;
             uint64_t error_code;
             if(quiceh_conn_version(conn) == QUICEH_PROTOCOL_VERSION_V1)
             {
@@ -262,7 +264,16 @@ int main(int argc, char* argv[])
                     fprintf(stderr, "quiceh_conn_stream_recv error\n");
                     goto FREE;
                 }
-                write(STDOUT_FILENO, buffer, n);
+                while(total_written < (size_t)n)
+                {
+                    written = write(STDOUT_FILENO, buffer + total_written, n - total_written);
+                    if(written < 0)
+                    {
+                        perror("stdout write");
+                        goto FREE;
+                    }
+                    total_written += (size_t)written;
+                }
                 if(fin)
                 {
                     quiceh_conn_close(conn, true, 0x0, (uint8_t*)"kthxbye", 7);
@@ -271,14 +282,20 @@ int main(int argc, char* argv[])
             }
             else if(quiceh_conn_version(conn) == QUICEH_PROTOCOL_VERSION_VREVERSO)
             {
+                ssize_t written;
                 const uint8_t* buf;
                 if((n = quiceh_conn_stream_recv_v3(conn, stream_id, app_buffers, &buf, &fin, &error_code)) < 0)
                 {
                     fprintf(stderr, "quiceh_conn_stream_recv error\n");
                     goto FREE;
                 }
-                write(STDOUT_FILENO, buf, n);
-                quiceh_conn_stream_consumed(conn, stream_id, n, app_buffers);
+                written = write(STDOUT_FILENO, buf, n);
+                if(written < 0)
+                {
+                    perror("stdout write");
+                    goto FREE;
+                }
+                quiceh_conn_stream_consumed(conn, stream_id, (size_t)written, app_buffers);
                 if(fin)
                 {
                     quiceh_conn_close(conn, true, 0x0, (uint8_t*)"kthxbye", 7);
