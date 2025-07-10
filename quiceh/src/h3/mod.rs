@@ -537,6 +537,8 @@ impl Error {
             Error::MessageError => -18,
             Error::ConnectError => -19,
             Error::VersionFallback => -20,
+            Error::BufferProtocolError => -21,
+            Error::InvalidAPICall(_) => -22,
 
             Error::TransportError(quic_error) => quic_error.to_c() - 1000,
         }
