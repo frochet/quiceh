@@ -10,8 +10,8 @@ implementation is forked from Cloudflare's
 QUIC transport protocol. This repository is not aimed to compete with
 the original implementation, which is qualitative and should be used
 rather than this project. This repository serves as reference
-implementation for an academic paper. However, interested Application
-developers are welcome to try it and offer feebacks. 
+implementation for academic research. However, interested Application
+developers are welcome to try it and offer feedbacks. 
 
 Details on why/how QUIC VReverso implementations are expected to be more
 efficient than QUIC V1 implementations can be read on the blogpost which
@@ -31,14 +31,39 @@ show support to this proposal in any way you feel is suitable. Thanks!
 Efficiency improvement
 ----------------------
 
-We report an improvement of ~30% over the receive code path.
+- VReverso reports an improvement of ~30% over the receive code path using
+[`stream_peek()`] and [`stream_consumed()`] compared to QUIC V1. This is
+currently the default zero-copy interaction being used in apps/ and
+implemented in the HTTP/3 module. This is the main research
+contribution requiring an adaptation of QUIC's wire image, and only
+available if the connection negotiates protocol version 0x00791097. Note
+that this improvement depends on the library architecture and API
+choice. Other QUIC implementations may obtain lower or higher
+improvement depending on their software architecture choice, but some
+improvement should be expected in all cases.
 
-![zero-copy](results_perf.png)
+- Support sending in zero-copy for both QUIC v1 and QUIC VReverso using
+  [`stream_send_zc()`]. Current server behavior implemented in apps/ for
+sending HTTP/3 responses.
 
-Using quiceh
+Experimental:
+
+- [`stream_recv_zc()`] supports the Application to receive contiguous
+  chunks of memory from underlying quiceh buffers in zero-copy in
+expectation. This is designed for concurrent processing of stream data.
+
+- QUIC connection [`Config`] may set a flag using
+  [`enable_hidden_copy_for_zc_sender()`] to make any data buffered
+through either [`stream_send()`] or [`stream_send_zc()`] assembled in
+zero-copy in a QUIC packet using BoringSSL's scatter encryption. This
+has a currently a negative performance impact and is disabled by
+default.
+
+Using quiceh 
 ------------
 
-### Overview of the main differences with [quiche](https://github.com/cloudflare/quiche)
+### Overview of the main differences with
+[quiche](https://github.com/cloudflare/quiche)
 
 quiceh has a few API extensions, and any application using
 [quiche](https://github.com/cloudflare/quiche) would have to slightly
@@ -46,12 +71,13 @@ change its code to hopefully benefits from the optimizations. Of course,
 these optimizations only work if the Application negotiates QUIC
 VReverso with the peer.
 
-```rust
-let mut config = quiceh::Config::new(quiceh::PROTOCOL_VERSION_VREVERSO)?;
+```rust let mut config =
+quiceh::Config::new(quiceh::PROTOCOL_VERSION_VREVERSO)?;
 ```
 
-Using `PROTOCOL_VERSION_VREVERSO` which currently holds the temporary value 0x00791097 would make your endpoint tries to
-negotiate VReverso first, and fallback to QUIC V1 if not available.
+Using `PROTOCOL_VERSION_VREVERSO` which currently holds the temporary
+value 0x00791097 would make your endpoint tries to negotiate VReverso
+first, and fallback to QUIC V1 if not available.
 Client side or server side, the
 [quiche](https://github.com/cloudflare/quiche) API to initiate a
 connection stays the same:
@@ -122,7 +148,7 @@ if conn.is_established() {
         // Optionally mark some data consumed to release it.
         // If this function is not called, then the next stream_peek
         // Would point to the same bytes, + any new content appended up
-        // to a configured max_buffers_data (see AppRecvBufMap's API).
+        // until the internal ring buffer is full (see AppRecvBufMap's API).
 
         conn.stream_consumed(stream_id, len, &mut app_buffers).unwrap();
     }
@@ -200,19 +226,20 @@ to set these to something else to satisfy their needs using the following:
 - [`set_initial_max_stream_data_uni()`]
 
 [`Config`] also holds TLS configuration. This can be changed by mutators on
-the an existing object, or by constructing a TLS context manually and
+the existing object, or by constructing a TLS context manually and
 creating a configuration using [`with_boring_ssl_ctx_builder()`].
 
 A configuration object can be shared among multiple connections.
 
 The [`AppRecvBufMap`] should be instantiated passing info about the
-chosen max_streams_bidi and max_streams_uni_remote. Each of the stream
-buffers can also be configured with a max_buffers_data value. By
-default, this value matches DEFAULT_STREAM_WINDOW, but the value can be
-much higher. We advice chosing a value to the maximum length the
-Application is expected to consume at once, such that all this
-information can be buffered in zero-copy before being eventually
-consumed.
+recycling capacity as a number of stream buffers that we may recycle,
+chosen max_streams_bidi and max_streams_uni_remote. Importantly, the
+application should use [`set_expected_chunklen_to_consume()`] to set the
+typical length it expects to consume at once. This value influences the
+size of the chunks being returned by [`stream_recv_zc()`] while
+processing stream data. Setting a size below a typical QUIC Stream frame
+length may lower performance compared to QUIC v1 and is unadvised. The
+default is currently 32K bytes.
 
 ### Generating outgoing packets
 
@@ -334,8 +361,7 @@ the same.
 
 ### Limitations
 
-- FFIs for the VReverso are not (yet) implemented (please open an issue
-  if this is desired).
+- [`stream_recv_zc()`] remains to be tested in a concurrent setup.
 
 Building
 --------
@@ -415,7 +441,9 @@ See [COPYING] for the license.
 [`Config`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html
 [`AppRecvBufMap`]: https://docs.rs/quiceh/latest/quiceh/struct.AppRecvBufMap.html
 [`recv`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.recv
-[`stream_peek`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.stream_peek
+[`stream_peek()`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.stream_peek
+[`stream_recv_zc()`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.stream_recv_zc
+[`stream_consumed()`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.stream_consumed
 [`set_initial_max_streams_bidi()`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html#method.set_initial_max_streams_bidi
 [`set_initial_max_streams_uni()`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html#method.set_initial_max_streams_uni
 [`set_initial_max_data()`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html#method.set_initial_max_data
@@ -428,4 +456,5 @@ See [COPYING] for the license.
 [`on_timeout()`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.on_timeout
 [`SendInfo`]: https://docs.rs/quiceh/latest/quiceh/struct.SendInfo.html
 [`at`]: https://docs.rs/quiceh/latest/quiceh/struct.SendInfo.html#structfield.at
-[`stream_send`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.steam_send
+[`stream_send()`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.steam_send
+[`stream_send_zc()`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.steam_send_zc

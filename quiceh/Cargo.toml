@@ -106,11 +106,3 @@ harness = false
 [[bench]]
 name = "send_cwin_bench"
 harness = false
-
-[[bench]]
-name = "send_cwin_profile_bench"
-harness = false
-
-[[bench]]
-name = "profile_bench_send"
-harness = false

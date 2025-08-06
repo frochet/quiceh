@@ -464,7 +464,7 @@ Options:
   --qpack-blocked-streams STREAMS   Limit of streams that can be blocked while decoding. Any value other that 0 is currently unsupported.
   --disable-pacing            Disable pacing (linux only).
   --initial-cwnd-packets PACKETS      The initial congestion window size in terms of packet count [default: 10].
-  --enable-hidden-copy        Assemble a stream frame and control through encryption.
+  --enable-hidden-copy        [EXPERIMENTAL] Assemble a stream frame and control through encryption -- currently negatively impact performance with BoringSSL.
   -h --help                   Show this screen.
 ";
 
