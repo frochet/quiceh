@@ -61,8 +61,8 @@ pub trait BufFactory: Clone + Default + Debug {
     fn buf_from_slice(buf: &[u8]) -> Self::Buf;
 }
 
-/// A trait that enables zero-copy sends to quiche. When buffers produced
-/// by the `BufFactory` implement this trait, quiche and h3 can supply the
+/// A trait that enables zero-copy sends to quiceh. When buffers produced
+/// by the `BufFactory` implement this trait, quiceh and h3 can supply the
 /// raw buffers to be sent, instead of slices that must be copied first.
 pub trait BufSplit {
     /// Split the buffer at a given point, after the split the old buffer

@@ -328,14 +328,58 @@ timers).
 After some back and forth, the connection will complete its handshake and
 will be ready for sending or receiving application data.
 
-Data can be sent on a stream by using the [`stream_send()`] method:
+Data can be sent on a stream by using either the [`stream_send()`]
+method or the [`stream_send_zc()`] method for zero-copy:
 
 ```rust
 if conn.is_established() {
-    // Handshake completed, send some data on stream 0.
-    conn.stream_send(0, b"hello", true)?;
+    // Handshake completed, send some data on stream 4.
+    conn.stream_send(4, b"hello", true)?;
 }
 ```
+
+In the case of zero-copy, the application must use an object
+implementing the trait BufFactory provided by quiceh.
+
+```rust
+/// A trait for providing internal storage buffers for [`RangeBuf`].
+/// The associated type `Buf` can be any type that dereferences to
+/// a slice, but should be fast to clone, eg. by wrapping it with an
+/// [`Arc`].
+pub trait BufFactory: Clone + Default + Debug {
+    /// The type of the generated buffer.
+    type Buf: Clone + Debug + AsRef<[u8]>;
+
+    /// Generate a new buffer from a given slice, the buffer must contain the
+    /// same data as the original slice.
+    fn buf_from_slice(buf: &[u8]) -> Self::Buf;
+}
+```
+
+The generated buffer Buf must implement the trait BufSplit:
+
+```rust
+/// A trait that enables zero-copy sends to quiceh. When buffers produced
+/// by the `BufFactory` implement this trait, quiceh and h3 can supply the
+/// raw buffers to be sent, instead of slices that must be copied first.
+pub trait BufSplit {
+    /// Split the buffer at a given point, after the split the old buffer
+    /// must only contain the first `at` bytes, while the newly produced
+    /// buffer must containt the remaining bytes.
+    fn split_at(&mut self, at: usize) -> Self;
+}
+```
+
+Assuming MyBuf implements BufFactory, we can send in zero-copy:
+
+```rust
+if conn.is_established() {
+    // Handshake completed, send some data on stream 4.
+    conn.stream_send_zc(4, MyBuf::buf_from_slice(b"hello"), Some(5), true)?;
+}
+```
+
+An example is available in apps/src/common.rs
 
 ### HTTP/3
 
