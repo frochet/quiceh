@@ -228,7 +228,7 @@ pub extern "C" fn quiceh_config_enable_early_data(config: &mut Config) {
 #[no_mangle]
 /// Corresponds to the `Config::set_application_protos_wire_format` Rust
 /// function.
-pub extern "C" fn quiceh_config_set_application_protos_wire_format(
+pub extern fn quiceh_config_set_application_protos_wire_format(
     config: &mut Config, protos: *const u8, protos_len: size_t,
 ) -> c_int {
     let protos = unsafe { slice::from_raw_parts(protos, protos_len) };
@@ -251,8 +251,8 @@ pub extern "C" fn quiceh_config_set_application_protos_wire_format(
 ///     NULL
 /// };
 /// ```
-pub extern "C" fn quiceh_config_set_application_protos(
-    config: &mut Config, protos: *const *const c_char
+pub extern fn quiceh_config_set_application_protos(
+    config: &mut Config, protos: *const *const c_char,
 ) -> c_int {
     unsafe {
         if protos.is_null() {
@@ -285,7 +285,7 @@ pub extern "C" fn quiceh_config_set_application_protos(
 }
 
 #[no_mangle]
-pub extern "C" fn quiceh_config_set_max_amplification_factor(
+pub extern fn quiceh_config_set_max_amplification_factor(
     config: &mut Config, v: usize,
 ) {
     config.set_max_amplification_factor(v);
@@ -467,9 +467,8 @@ pub extern "C" fn quiceh_config_set_ticket_key(
 }
 
 #[no_mangle]
-pub extern "C" fn quiceh_config_free(config: *mut Config) {
-    if config.is_null()
-    {
+pub extern fn quiceh_config_free(config: *mut Config) {
+    if config.is_null() {
         return;
     }
     drop(unsafe { Box::from_raw(config) });
@@ -489,13 +488,11 @@ pub extern "C" fn quiceh_header_info(
     };
 
     unsafe {
-        if !version.is_null()
-        {
+        if !version.is_null() {
             *version = hdr.version;
         }
 
-        if !ty.is_null()
-        {
+        if !ty.is_null() {
             *ty = match hdr.ty {
                 Type::Initial => 1,
                 Type::Retry => 2,
@@ -506,8 +503,7 @@ pub extern "C" fn quiceh_header_info(
             };
         }
 
-        if !scid.is_null() && !scid_len.is_null()
-        {
+        if !scid.is_null() && !scid_len.is_null() {
             if *scid_len < hdr.scid.len() {
                 return -1;
             }
@@ -519,8 +515,7 @@ pub extern "C" fn quiceh_header_info(
             *scid_len = hdr.scid.len();
         }
 
-        if !dcid.is_null() && !dcid_len.is_null()
-        {
+        if !dcid.is_null() && !dcid_len.is_null() {
             if *dcid_len < hdr.dcid.len() {
                 return -1;
             }
@@ -532,8 +527,7 @@ pub extern "C" fn quiceh_header_info(
             *dcid_len = hdr.dcid.len();
         }
 
-        if !token.is_null() && !token_len.is_null()
-        {
+        if !token.is_null() && !token_len.is_null() {
             match hdr.token {
                 Some(tok) => {
                     if *token_len < tok.len() {
@@ -608,12 +602,12 @@ pub extern "C" fn quiceh_connect(
 }
 
 #[no_mangle]
-pub extern "C" fn quiceh_conn_version(conn: &Connection) -> u32 {
+pub extern fn quiceh_conn_version(conn: &Connection) -> u32 {
     conn.version()
 }
 
 #[no_mangle]
-pub extern "C" fn quiceh_negotiate_version(
+pub extern fn quiceh_negotiate_version(
     scid: *const u8, scid_len: size_t, dcid: *const u8, dcid_len: size_t,
     out: *mut u8, out_len: size_t,
 ) -> ssize_t {
@@ -794,24 +788,25 @@ pub extern "C" fn quiceh_conn_set_session(
 }
 
 #[no_mangle]
-pub extern "C" fn quiceh_app_recv_buf_map_new(
-    recycled_capacity: usize, max_buffer_data: u64,
-    max_streams_bidi: u64, max_streams_uni_remote: u64
+pub extern fn quiceh_app_recv_buf_map_new(
+    recycled_capacity: usize, max_streams_bidi: u64,
+    max_streams_uni_remote: u64,
 ) -> *mut AppRecvBufMap {
     Box::into_raw(Box::new(AppRecvBufMap::new(
-        recycled_capacity, max_buffer_data, max_streams_bidi, max_streams_uni_remote
+        recycled_capacity,
+        max_streams_bidi,
+        max_streams_uni_remote,
     )))
 }
 
 #[no_mangle]
-pub extern "C" fn quiceh_app_recv_buf_map_default() -> *mut AppRecvBufMap {
+pub extern fn quiceh_app_recv_buf_map_default() -> *mut AppRecvBufMap {
     Box::into_raw(Box::new(AppRecvBufMap::default()))
 }
 
 #[no_mangle]
-pub extern "C" fn quiceh_app_recv_buf_map_free(app_buffers: *mut AppRecvBufMap) {
-    if app_buffers.is_null()
-    {
+pub extern fn quiceh_app_recv_buf_map_free(app_buffers: *mut AppRecvBufMap) {
+    if app_buffers.is_null() {
         return;
     }
     drop(unsafe { Box::from_raw(app_buffers) });
@@ -836,8 +831,9 @@ impl<'a> From<&RecvInfo<'a>> for crate::RecvInfo {
 
 
 #[no_mangle]
-pub extern "C" fn quiceh_conn_recv(
-    conn: &mut Connection, buf: *mut u8, buf_len: size_t, app_buffers: &mut AppRecvBufMap, info: &RecvInfo,
+pub extern fn quiceh_conn_recv(
+    conn: &mut Connection, buf: *mut u8, buf_len: size_t,
+    app_buffers: &mut AppRecvBufMap, info: &RecvInfo,
 ) -> ssize_t {
     if buf_len > <ssize_t>::max_value() as usize {
         panic!("The provided buffer is too large");
@@ -946,11 +942,12 @@ pub extern "C" fn quiceh_conn_stream_recv(
 
 
 #[no_mangle]
-pub extern "C" fn quiceh_conn_stream_recv_v3<'a>(
+pub extern fn quiceh_conn_peek<'a>(
     conn: &mut Connection, stream_id: u64, app_buffers: &'a mut AppRecvBufMap,
     out: *mut *const u8, fin: &mut bool, out_error_code: &mut u64,
 ) -> ssize_t {
-    let (b, out_len, out_fin) = match conn.stream_recv_v3(stream_id, app_buffers) {
+    let (b, out_len, out_fin) = match conn.stream_peek(stream_id, app_buffers)
+    {
         Ok(v) => v,
 
         Err(e) => {
@@ -972,11 +969,10 @@ pub extern "C" fn quiceh_conn_stream_recv_v3<'a>(
     out_len as ssize_t
 }
 
-
 #[no_mangle]
-pub extern "C" fn quiceh_conn_stream_consumed(
+pub extern fn quiceh_conn_stream_consumed(
     conn: &mut Connection, stream_id: u64, consumed: size_t,
-    app_buffers: &mut AppRecvBufMap
+    app_buffers: &mut AppRecvBufMap,
 ) -> c_int {
     match conn.stream_consumed(stream_id, consumed as usize, app_buffers) {
         Ok(_) => 0,
@@ -985,9 +981,8 @@ pub extern "C" fn quiceh_conn_stream_consumed(
     }
 }
 
-
 #[no_mangle]
-pub extern "C" fn quiceh_conn_stream_send(
+pub extern fn quiceh_conn_stream_send(
     conn: &mut Connection, stream_id: u64, buf: *const u8, buf_len: size_t,
     fin: bool, out_error_code: &mut u64,
 ) -> ssize_t {
@@ -1116,7 +1111,7 @@ pub extern "C" fn quiceh_conn_close(
 }
 
 #[no_mangle]
-pub extern "C" fn quiceh_conn_timeout_as_nanos(conn: &Connection) -> i64 {
+pub extern fn quiceh_conn_timeout_as_nanos(conn: &Connection) -> i64 {
     match conn.timeout() {
         Some(timeout) => timeout.as_nanos() as i64,
 
@@ -1125,7 +1120,7 @@ pub extern "C" fn quiceh_conn_timeout_as_nanos(conn: &Connection) -> i64 {
 }
 
 #[no_mangle]
-pub extern "C" fn quiceh_conn_timeout_as_millis(conn: &Connection) -> i64 {
+pub extern fn quiceh_conn_timeout_as_millis(conn: &Connection) -> i64 {
     match conn.timeout() {
         Some(timeout) => timeout.as_millis() as i64,
 
@@ -1190,9 +1185,8 @@ pub extern "C" fn quiceh_connection_id_iter_next(
 }
 
 #[no_mangle]
-pub extern "C" fn quiceh_connection_id_iter_free(iter: *mut ConnectionIdIter) {
-    if iter.is_null()
-    {
+pub extern fn quiceh_connection_id_iter_free(iter: *mut ConnectionIdIter) {
+    if iter.is_null() {
         return;
     }
     drop(unsafe { Box::from_raw(iter) });
@@ -1338,9 +1332,8 @@ pub extern "C" fn quiceh_stream_iter_next(
 }
 
 #[no_mangle]
-pub extern "C" fn quiceh_stream_iter_free(iter: *mut StreamIter) {
-    if iter.is_null()
-    {
+pub extern fn quiceh_stream_iter_free(iter: *mut StreamIter) {
+    if iter.is_null() {
         return;
     }
     drop(unsafe { Box::from_raw(iter) });
@@ -1610,9 +1603,8 @@ pub extern "C" fn quiceh_conn_send_ack_eliciting_on_path(
 }
 
 #[no_mangle]
-pub extern "C" fn quiceh_conn_free(conn: *mut Connection) {
-    if conn.is_null()
-    {
+pub extern fn quiceh_conn_free(conn: *mut Connection) {
+    if conn.is_null() {
         return;
     }
     drop(unsafe { Box::from_raw(conn) });
@@ -1737,9 +1729,8 @@ pub extern "C" fn quiceh_socket_addr_iter_next(
 }
 
 #[no_mangle]
-pub extern "C" fn quiceh_socket_addr_iter_free(iter: *mut SocketAddrIter) {
-    if iter.is_null()
-    {
+pub extern fn quiceh_socket_addr_iter_free(iter: *mut SocketAddrIter) {
+    if iter.is_null() {
         return;
     }
     drop(unsafe { Box::from_raw(iter) });
@@ -1934,9 +1925,8 @@ pub extern "C" fn quiceh_path_event_peer_migrated(
 }
 
 #[no_mangle]
-pub extern "C" fn quiceh_path_event_free(ev: *mut PathEvent) {
-    if ev.is_null()
-    {
+pub extern fn quiceh_path_event_free(ev: *mut PathEvent) {
+    if ev.is_null() {
         return;
     }
     drop(unsafe { Box::from_raw(ev) });

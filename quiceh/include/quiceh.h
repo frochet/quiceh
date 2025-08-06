@@ -1155,7 +1155,7 @@ ssize_t quiceh_h3_send_body(quiceh_h3_conn *conn, quiceh_conn *quic_conn,
 ssize_t quiceh_h3_recv_body(quiceh_h3_conn *conn, quiceh_conn *quic_conn,
                             uint64_t stream_id, uint8_t *out, size_t out_len);
 
-ssize_t quiceh_h3_recv_body_v3(quiceh_h3_conn *conn, quiceh_conn *quic_conn,
+ssize_t quiceh_h3_body_peek(quiceh_h3_conn *conn, quiceh_conn *quic_conn,
                             uint64_t stream_id, quiceh_app_recv_buff_map* app_buffers,
                             const uint8_t **out, size_t* expected_bytes);
 

@@ -78,9 +78,8 @@ pub extern "C" fn quiceh_h3_config_enable_extended_connect(
 }
 
 #[no_mangle]
-pub extern "C" fn quiceh_h3_config_free(config: *mut h3::Config) {
-    if config.is_null()
-    {
+pub extern fn quiceh_h3_config_free(config: *mut h3::Config) {
+    if config.is_null() {
         return;
     }
     drop(unsafe { Box::from_raw(config) });
@@ -140,7 +139,7 @@ pub extern "C" fn quiceh_h3_conn_poll(
 
 
 #[no_mangle]
-pub extern "C" fn quiceh_h3_conn_poll_v3(
+pub extern fn quiceh_h3_conn_poll_v3(
     conn: &mut h3::Connection, quic_conn: &mut Connection,
     app_buffers: &mut AppRecvBufMap, ev: *mut *const h3::Event,
 ) -> i64 {
@@ -157,9 +156,8 @@ pub extern "C" fn quiceh_h3_conn_poll_v3(
     }
 }
 
-
 #[no_mangle]
-pub extern "C" fn quiceh_h3_event_type(ev: &h3::Event) -> u32 {
+pub extern fn quiceh_h3_event_type(ev: &h3::Event) -> u32 {
     match ev {
         h3::Event::Headers { .. } => 0,
 
@@ -228,9 +226,8 @@ pub extern "C" fn quiceh_h3_extended_connect_enabled_by_peer(
 }
 
 #[no_mangle]
-pub extern "C" fn quiceh_h3_event_free(ev: *mut h3::Event) {
-    if ev.is_null()
-    {
+pub extern fn quiceh_h3_event_free(ev: *mut h3::Event) {
+    if ev.is_null() {
         return;
     }
     drop(unsafe { Box::from_raw(ev) });
@@ -331,21 +328,21 @@ pub extern "C" fn quiceh_h3_recv_body(
 
 
 #[no_mangle]
-pub extern "C" fn quiceh_h3_recv_body_v3(
+pub extern fn quiceh_h3_body_peek(
     conn: &mut h3::Connection, quic_conn: &mut Connection, stream_id: u64,
-    app_buffers: &mut AppRecvBufMap, out: *mut *const u8, expected_bytes: *mut size_t
+    app_buffers: &mut AppRecvBufMap, out: *mut *const u8,
+    expected_bytes: *mut size_t,
 ) -> ssize_t {
-    let (b, expected_len) = match conn.recv_body_v3(quic_conn, stream_id, app_buffers) {
-        Ok(v) => v,
+    let (b, expected_len) =
+        match conn.body_peek(quic_conn, stream_id, app_buffers) {
+            Ok(v) => v,
 
-        Err(e) => return e.to_c() as ssize_t
-    };
-
+            Err(e) => return e.to_c() as ssize_t,
+        };
 
     unsafe {
         *out = b.as_ptr();
-        if !expected_bytes.is_null()
-        {
+        if !expected_bytes.is_null() {
             *expected_bytes = expected_len;
         }
     }
@@ -353,11 +350,10 @@ pub extern "C" fn quiceh_h3_recv_body_v3(
     b.len() as ssize_t
 }
 
-
 #[no_mangle]
-pub extern "C" fn quiceh_h3_body_consumed(
+pub extern fn quiceh_h3_body_consumed(
     conn: &mut h3::Connection, quic_conn: &mut Connection, stream_id: u64,
-    consumed: size_t, app_buffers: &mut AppRecvBufMap
+    consumed: size_t, app_buffers: &mut AppRecvBufMap,
 ) -> c_int {
     match conn.body_consumed(quic_conn, stream_id, consumed, app_buffers) {
         Ok(()) => 0,
@@ -365,10 +361,8 @@ pub extern "C" fn quiceh_h3_body_consumed(
         Err(e) => e.to_c() as c_int,
     }
 }
-
-
 #[no_mangle]
-pub extern "C" fn quiceh_h3_send_goaway(
+pub extern fn quiceh_h3_send_goaway(
     conn: &mut h3::Connection, quic_conn: &mut Connection, id: u64,
 ) -> c_int {
     match conn.send_goaway(quic_conn, id) {
@@ -441,9 +435,8 @@ pub extern "C" fn quiceh_h3_dgram_enabled_by_peer(
 }
 
 #[no_mangle]
-pub extern "C" fn quiceh_h3_conn_free(conn: *mut h3::Connection) {
-    if conn.is_null()
-    {
+pub extern fn quiceh_h3_conn_free(conn: *mut h3::Connection) {
+    if conn.is_null() {
         return;
     }
     drop(unsafe { Box::from_raw(conn) });

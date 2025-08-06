@@ -137,7 +137,7 @@ impl Args for CommonArgs {
 
         let early_data = args.get_bool("--early-data");
 
-        let dump_packet_path = if args.get_str("--dump-packets") != "" {
+        let dump_packet_path = if !args.get_str("--dump-packets").is_empty() {
             Some(args.get_str("--dump-packets").to_string())
         } else {
             None
@@ -155,7 +155,7 @@ impl Args for CommonArgs {
         let enable_active_migration = args.get_bool("--enable-active-migration");
 
         let max_field_section_size =
-            if args.get_str("--max-field-section-size") != "" {
+            if !args.get_str("--max-field-section-size").is_empty() {
                 Some(
                     args.get_str("--max-field-section-size")
                         .parse::<u64>()
@@ -166,7 +166,7 @@ impl Args for CommonArgs {
             };
 
         let qpack_max_table_capacity =
-            if args.get_str("--qpack-max-table-capacity") != "" {
+            if !args.get_str("--qpack-max-table-capacity").is_empty() {
                 Some(
                     args.get_str("--qpack-max-table-capacity")
                         .parse::<u64>()
@@ -177,7 +177,7 @@ impl Args for CommonArgs {
             };
 
         let qpack_blocked_streams =
-            if args.get_str("--qpack-blocked-streams") != "" {
+            if !args.get_str("--qpack-blocked-streams").is_empty() {
                 Some(
                     args.get_str("--qpack-blocked-streams")
                         .parse::<u64>()
@@ -319,7 +319,7 @@ impl Args for ClientArgs {
         let version = args.get_str("--wire-version");
         let version = u32::from_str_radix(version, 16).unwrap();
 
-        let dump_response_path = if args.get_str("--dump-responses") != "" {
+        let dump_response_path = if !args.get_str("--dump-responses").is_empty() {
             Some(args.get_str("--dump-responses").to_string())
         } else {
             None
@@ -464,6 +464,7 @@ Options:
   --qpack-blocked-streams STREAMS   Limit of streams that can be blocked while decoding. Any value other that 0 is currently unsupported.
   --disable-pacing            Disable pacing (linux only).
   --initial-cwnd-packets PACKETS      The initial congestion window size in terms of packet count [default: 10].
+  --enable-hidden-copy        Assemble a stream frame and control through encryption.
   -h --help                   Show this screen.
 ";
 
@@ -477,6 +478,7 @@ pub struct ServerArgs {
     pub key: String,
     pub disable_pacing: bool,
     pub enable_pmtud: bool,
+    pub enable_hidden_copy: bool,
 }
 
 impl Args for ServerArgs {
@@ -491,6 +493,7 @@ impl Args for ServerArgs {
         let key = args.get_str("--key").to_string();
         let disable_pacing = args.get_bool("--disable-pacing");
         let enable_pmtud = args.get_bool("--enable-pmtud");
+        let enable_hidden_copy = args.get_bool("--enable-hidden-copy");
 
         ServerArgs {
             listen,
@@ -501,6 +504,7 @@ impl Args for ServerArgs {
             key,
             disable_pacing,
             enable_pmtud,
+            enable_hidden_copy,
         }
     }
 }

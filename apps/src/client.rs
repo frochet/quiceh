@@ -27,6 +27,8 @@
 use crate::args::*;
 use crate::common::*;
 use quiceh::AppRecvBufMap;
+use quiceh::BufFactory;
+use quiceh::BufSplit;
 
 use std::cell::RefCell;
 use std::io::prelude::*;
@@ -43,7 +45,7 @@ use quinn_udp::BATCH_SIZE;
 use bytes::BytesMut;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
-pub const MAX_FLUSH_SIZE: usize = 256_000;
+pub const MAX_FLUSH_SIZE: usize = 1_048_576;
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -52,10 +54,13 @@ pub enum ClientError {
     Other(String),
 }
 
-pub fn connect(
+pub fn connect<F: BufFactory<Buf = BufResponse>>(
     args: ClientArgs, conn_args: CommonArgs,
     output_sink: impl FnMut(String) + 'static,
-) -> Result<(), ClientError> {
+) -> Result<(), ClientError>
+where
+    <F as BufFactory>::Buf: BufSplit,
+{
     let mut buf = [0; 65536 * BATCH_SIZE];
     let mut out = [0; MAX_DATAGRAM_SIZE];
 
@@ -176,7 +181,7 @@ pub fn connect(
         config.enable_dgram(true, 1000, 1000);
     }
 
-    let mut http_conn: Option<Box<dyn HttpConn>> = None;
+    let mut http_conn: Option<Box<dyn HttpConn<F>>> = None;
 
     let mut app_proto_selected = false;
 
@@ -199,16 +204,18 @@ pub fn connect(
 
     let mut app_buffers = AppRecvBufMap::new(
         3,
-        conn_args.max_stream_window,
         conn_args.max_streams_bidi,
         conn_args.max_streams_uni,
     );
+    // Chunks of 1MiB
     app_buffers
-        .set_expected_chunklen_to_consume(MAX_FLUSH_SIZE as u64)
+        .set_expected_chunklen_to_consume(
+            std::num::NonZero::new(MAX_FLUSH_SIZE).unwrap(),
+        )
         .unwrap();
 
     // Create a QUIC connection and initiate handshake.
-    let mut conn = quiceh::connect(
+    let mut conn = quiceh::connect_with_buffer_factory(
         connect_url.domain(),
         &scid,
         local_addr,

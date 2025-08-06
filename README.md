@@ -68,7 +68,7 @@ We have slight differences in processing packets and reading data
 from a stream. quiceh exposes a type `AppRecvBufMap` that aims to
 contain the decrypted stream(s) data. This object needs to be created by
 the Application, and a mutable reference is then passed to [`recv()`]
-and [`stream_recv_v3()`]. Server-side, we need one of these for each
+and [`stream_peek()`]. Server-side, we need one of these for each
 connection.
 
 ```rust
@@ -115,12 +115,12 @@ if conn.is_established() {
     for stream_id in conn.readable() {
         // Stream is readable, get a reference to the internal
         // contiguous stream data
-        let (streambuf, len, fin) = conn.stream_recv_v3(stream_id, &mut app_buffers).unwrap();
+        let (streambuf, len, fin) = conn.stream_peek(stream_id, &mut app_buffers).unwrap();
 
         // ... do something with streambuf
 
         // Optionally mark some data consumed to release it.
-        // If this function is not called, then the next stream_recv_v3
+        // If this function is not called, then the next stream_peek
         // Would point to the same bytes, + any new content appended up
         // to a configured max_buffers_data (see AppRecvBufMap's API).
 
@@ -323,10 +323,10 @@ client/server using the zero-copy HTTP/3 module.
 
 The main differences with
 [quiche](https://github.com/cloudflare/quiche)'s HTTP/3 module are the
-use of [`poll_v3()`] replacing [`poll()`], [`recv_body_v3()`] replacing
+use of [`poll_v3()`] replacing [`poll()`], [`body_peek()`] replacing
 [`recv_body()`] and the addition of [`body_consumed()`] to tell HTTP/3
 how much of the data frame has been consumed (up to the announced max
-value that [`recv_body_v3()`] announces.  Pretty much all the rest remains
+value that [`body_peek()`] announces.  Pretty much all the rest remains
 the same.
 
 [examples/]: quiceh/examples/
@@ -340,7 +340,7 @@ the same.
 Building
 --------
 
-quiceh requires Rust 1.66 or later to build. The latest stable Rust release can
+quiceh requires Rust 1.79 or later to build. The latest stable Rust release can
 be installed using [rustup](https://rustup.rs/).
 
 Once the Rust build environment is setup, the quiceh source code can be fetched
@@ -415,7 +415,7 @@ See [COPYING] for the license.
 [`Config`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html
 [`AppRecvBufMap`]: https://docs.rs/quiceh/latest/quiceh/struct.AppRecvBufMap.html
 [`recv`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.recv
-[`stream_recv_v3`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.stream_recv_v3
+[`stream_peek`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.stream_peek
 [`set_initial_max_streams_bidi()`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html#method.set_initial_max_streams_bidi
 [`set_initial_max_streams_uni()`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html#method.set_initial_max_streams_uni
 [`set_initial_max_data()`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html#method.set_initial_max_data

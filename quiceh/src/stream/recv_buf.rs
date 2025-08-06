@@ -35,9 +35,9 @@ use crate::Result;
 
 use crate::flowcontrol;
 
-use super::RangeBuf;
 use super::RecvBufInfo;
 use super::DEFAULT_STREAM_WINDOW;
+use crate::range_buf::RangeBuf;
 use std::collections::btree_map;
 
 use likely_stable::if_likely;
@@ -302,6 +302,7 @@ impl RecvBuf {
         Ok(())
     }
 
+
     /// Writes data from the receive buffer into the given output buffer.
     ///
     /// Only contiguous data is written to the output buffer, starting from
@@ -547,6 +548,7 @@ impl RecvBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::range_buf::DefaultBufFactory;
     use crate::stream::app_recv_buf::AppRecvBuf;
 
     #[test]
@@ -571,7 +573,7 @@ mod tests {
 
         let buf = RangeBuf::from(b"hello", 0, false);
         let bufinfo = RecvBufInfo::from(0, 5, false);
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert!(recv.write(buf).is_ok());
             assert_eq!(recv.data.len(), 1);
@@ -591,7 +593,7 @@ mod tests {
                 (app_buf.read_mut(&mut recv).unwrap().len(), recv.is_fin()),
                 (5, false)
             );
-            assert!(app_buf.has_consumed(None, 5).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 5).is_ok());
         }
 
         // Don't store non-fin empty buffer.
@@ -687,7 +689,7 @@ mod tests {
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
 
         let first = RangeBuf::from(b"hello", 0, false);
         let firstinfo = RecvBufInfo::from(0, 5, false);
@@ -796,7 +798,7 @@ mod tests {
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
 
         let first = RangeBuf::from(b"something", 0, false);
         let firstinfo = RecvBufInfo::from(0, 9, false);
@@ -844,7 +846,7 @@ mod tests {
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
 
         let first = RangeBuf::from(b"something", 0, false);
         let firstinfo = RecvBufInfo::from(0, 9, false);
@@ -895,7 +897,7 @@ mod tests {
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
 
         let first = RangeBuf::from(b"something", 0, false);
         let firstinfo = RecvBufInfo::from(0, 9, false);
@@ -921,7 +923,7 @@ mod tests {
             assert_eq!(recv.off, 0);
             assert_eq!(recv.heap.len(), 0);
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 9);
-            assert!(app_buf.has_consumed(None, 9).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 9).is_ok());
             assert_eq!(recv.is_fin(), false);
         }
 
@@ -966,7 +968,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1002,7 +1004,7 @@ mod tests {
             assert_eq!(recv.off, 0);
             assert_eq!(recv.heap.len(), 0);
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 9);
-            assert!(app_buf.has_consumed(None, 9).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 9).is_ok());
             assert_eq!(recv.heap.len(), 0);
         }
         assert_eq!(recv.len, 9);
@@ -1022,7 +1024,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1058,7 +1060,7 @@ mod tests {
             assert_eq!(recv.off, 0);
             assert!(app_buf.advance_if_possible(&mut recv).is_ok());
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 9);
-            assert!(app_buf.has_consumed(None, 9).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 9).is_ok());
             assert!(!recv.is_fin());
             assert_eq!(recv.heap.len(), 0);
         }
@@ -1079,7 +1081,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1117,7 +1119,7 @@ mod tests {
             assert_eq!(recv.heap.len(), 1);
             assert!(app_buf.advance_if_possible(&mut recv).is_ok());
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 9);
-            assert!(app_buf.has_consumed(None, 9).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 9).is_ok());
             assert_eq!(recv.heap.len(), 0);
         }
 
@@ -1138,7 +1140,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1188,7 +1190,7 @@ mod tests {
             assert_eq!(recv.heap.len(), 2);
             assert!(app_buf.advance_if_possible(&mut recv).is_ok());
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 18);
-            assert!(app_buf.has_consumed(None, 18).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 18).is_ok());
             assert_eq!(recv.heap.len(), 0);
         }
         assert_eq!(recv.len, 18);
@@ -1208,7 +1210,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1247,7 +1249,7 @@ mod tests {
             assert_eq!(recv.off, 0);
             assert_eq!(recv.heap.len(), 0);
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 9);
-            assert!(app_buf.has_consumed(None, 9).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 9).is_ok());
             assert!(!recv.is_fin());
             assert_eq!(recv.len, 9);
             assert_eq!(recv.off, 9);
@@ -1266,7 +1268,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1302,7 +1304,7 @@ mod tests {
             assert_eq!(recv.heap.len(), 1);
             assert!(app_buf.advance_if_possible(&mut recv).is_ok());
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 12);
-            assert!(app_buf.has_consumed(None, 12).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 12).is_ok());
             assert!(recv.is_fin());
         }
         assert_eq!(recv.len, 12);
@@ -1322,7 +1324,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1383,7 +1385,7 @@ mod tests {
             assert_eq!(recv.off, 0);
             assert_eq!(recv.heap.len(), 2);
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 2);
-            assert!(app_buf.has_consumed(None, 2).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 2).is_ok());
             assert!(!recv.is_fin());
         }
 
@@ -1401,7 +1403,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1462,7 +1464,7 @@ mod tests {
             assert_eq!(recv.off, 0);
             assert_eq!(recv.heap.len(), 2);
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 5);
-            assert!(app_buf.has_consumed(None, 5).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 5).is_ok());
             assert!(!recv.is_fin());
             assert_eq!(recv.len, 16);
             assert_eq!(recv.off, 5);
@@ -1482,7 +1484,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1531,7 +1533,7 @@ mod tests {
             assert_eq!(recv.heap.len(), 2);
             assert!(app_buf.advance_if_possible(&mut recv).is_ok());
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 15);
-            assert!(app_buf.has_consumed(None, 15).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 15).is_ok());
             assert!(recv.is_fin());
         }
         assert_eq!(recv.len, 15);
@@ -1551,7 +1553,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1636,7 +1638,7 @@ mod tests {
             assert_eq!(recv.heap.len(), 5);
             assert!(app_buf.advance_if_possible(&mut recv).is_ok());
             assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 14);
-            assert!(app_buf.has_consumed(None, 14).is_ok());
+            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 14).is_ok());
             assert!(!recv.is_fin());
             assert_eq!(recv.heap.len(), 0);
         }

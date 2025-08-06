@@ -129,6 +129,7 @@ pub static QUICHE_EX_DATA_INDEX: Lazy<c_int> = Lazy::new(|| unsafe {
     SSL_get_ex_new_index(0, ptr::null(), ptr::null(), ptr::null(), ptr::null())
 });
 
+#[derive(Clone)]
 pub struct Context(*mut SSL_CTX);
 
 impl Context {

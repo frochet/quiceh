@@ -30,6 +30,7 @@ use crate::Error;
 use crate::Result;
 
 use crate::packet;
+use crate::range_buf::RangeBuf;
 use crate::ranges;
 use crate::stream;
 use likely_stable::if_likely;
@@ -88,7 +89,13 @@ pub enum Frame {
     },
 
     Crypto {
-        data: stream::RangeBuf,
+        data: RangeBuf,
+    },
+
+    CryptoVec {
+        offset: u64,
+        length: usize,
+        rbvec: Vec<RangeBuf>,
     },
 
     CryptoHeader {
@@ -102,7 +109,7 @@ pub enum Frame {
 
     Stream {
         stream_id: u64,
-        data: stream::RangeBuf,
+        data: RangeBuf,
     },
 
     StreamV3 {
@@ -266,7 +273,7 @@ impl Frame {
                     b.get_bytes_with_varint_length()?)
                 }};
                 // TODO protocol reverso could get rid of RangeBuf.
-                let data = stream::RangeBuf::from(data.as_ref(), offset, false);
+                let data = <RangeBuf>::from(data.as_ref(), offset, false);
 
                 Frame::Crypto { data }
             },
@@ -679,6 +686,7 @@ impl Frame {
             },
 
             Frame::CryptoHeader { .. } => (),
+            Frame::CryptoVec { .. } => (),
 
             Frame::NewToken { token } => {
                 if_likely! {version == crate::PROTOCOL_VERSION_VREVERSO => {
@@ -1019,6 +1027,13 @@ impl Frame {
                 data.len() // data
             },
 
+            Frame::CryptoVec { offset, length, .. } => {
+                1 + // frame type
+                octets_rev::varint_len(*offset) +
+                2 +
+                length  // data
+            },
+
             Frame::CryptoHeader { offset, length, .. } => {
                 1 + // frame type
                 octets_rev::varint_len(*offset) + // offset
@@ -1264,7 +1279,8 @@ impl Frame {
                 length: data.len() as u64,
             },
 
-            Frame::CryptoHeader { offset, length } => QuicFrame::Crypto {
+            Frame::CryptoHeader { offset, length } |
+            Frame::CryptoVec { offset, length, .. } => QuicFrame::Crypto {
                 offset: *offset,
                 length: *length as u64,
             },
@@ -1455,6 +1471,10 @@ impl std::fmt::Debug for Frame {
             },
 
             Frame::CryptoHeader { offset, length } => {
+                write!(f, "CRYPTO off={offset} len={length}")?;
+            },
+
+            Frame::CryptoVec { offset, length, .. } => {
                 write!(f, "CRYPTO off={offset} len={length}")?;
             },
 
@@ -1824,7 +1844,7 @@ fn parse_stream_frame(
         let fin = first & 0x01 != 0;
 
         let data = b.get_bytes(len)?;
-        let data = stream::RangeBuf::from(data.as_ref(), offset, fin);
+        let data = <RangeBuf>::from(data.as_ref(), offset, fin);
 
         Ok(Frame::Stream { stream_id, data })
     }}
@@ -2267,7 +2287,7 @@ mod tests {
         let data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 
         let frame = Frame::Crypto {
-            data: stream::RangeBuf::from(&data, 1230976, false),
+            data: <RangeBuf>::from(&data, 1230976, false),
         };
 
         let wire_len = {
@@ -2398,7 +2418,7 @@ mod tests {
         };
         let frame = Frame::Stream {
             stream_id: 32,
-            data: stream::RangeBuf::from(&data, 1230976, true),
+            data: <RangeBuf>::from(&data, 1230976, true),
         };
 
         let wire_len = {
@@ -2472,7 +2492,7 @@ mod tests {
 
         let frame = Frame::Stream {
             stream_id: 32,
-            data: stream::RangeBuf::from(&data, MAX_STREAM_SIZE - 11, true),
+            data: <RangeBuf>::from(&data, MAX_STREAM_SIZE - 11, true),
         };
 
         let wire_len = {

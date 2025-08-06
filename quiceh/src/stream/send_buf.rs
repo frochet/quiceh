@@ -28,18 +28,56 @@ use std::cmp;
 
 use std::collections::VecDeque;
 
+use crate::range_buf::BufSplit;
+use crate::range_buf::RangeBuf;
+use crate::BufFactory;
 use crate::Error;
 use crate::Result;
 
+use crate::range_buf::DefaultBufFactory;
 use crate::ranges;
-
-use super::RangeBuf;
 
 #[cfg(test)]
 const SEND_BUFFER_SIZE: usize = 5;
 
 #[cfg(not(test))]
-const SEND_BUFFER_SIZE: usize = 4096;
+const SEND_BUFFER_SIZE: usize = 4096*4;
+
+struct SendReserve<'a, F: BufFactory> {
+    inner: &'a mut SendBuf<F>,
+    reserved: usize,
+    fin: bool,
+}
+
+impl<'a, F: BufFactory> SendReserve<'a, F> {
+    fn append_buf(&mut self, buf: F::Buf) -> Result<()> {
+        let len = buf.as_ref().len();
+        let inner = &mut self.inner;
+
+        if len > self.reserved {
+            return Err(Error::BufferTooShort);
+        }
+
+        let fin: bool = self.reserved == len && self.fin;
+
+        let buf = RangeBuf::from_raw(buf, inner.off, fin);
+
+        // The new data can simply be appended at the end of the send buffer.
+        inner.data.push_back(buf);
+
+        inner.off += len as u64;
+        inner.len += len as u64;
+        self.reserved -= len;
+
+        Ok(())
+    }
+}
+
+impl<'a, F: BufFactory> Drop for SendReserve<'a, F> {
+    fn drop(&mut self) {
+        assert_eq!(self.reserved, 0)
+    }
+}
 
 /// Send-side stream buffer.
 ///
@@ -51,9 +89,12 @@ const SEND_BUFFER_SIZE: usize = 4096;
 /// inserted at the start of the buffer (this is to allow data that needs to be
 /// retransmitted to be re-buffered).
 #[derive(Debug, Default)]
-pub struct SendBuf {
+pub struct SendBuf<F = DefaultBufFactory>
+where
+    F: BufFactory,
+{
     /// Chunks of data to be sent, ordered by offset.
-    data: VecDeque<RangeBuf>,
+    data: VecDeque<RangeBuf<F>>,
 
     /// The index of the buffer that needs to be sent next.
     pos: usize,
@@ -87,33 +128,25 @@ pub struct SendBuf {
     error: Option<u64>,
 }
 
-impl SendBuf {
+impl<F: BufFactory> SendBuf<F> {
     /// Creates a new send buffer.
-    pub fn new(max_data: u64) -> SendBuf {
+    pub fn new(max_data: u64) -> SendBuf<F> {
         SendBuf {
             max_data,
             ..SendBuf::default()
         }
     }
 
-    /// Inserts the given slice of data at the end of the buffer.
-    ///
-    /// The number of bytes that were actually stored in the buffer is returned
-    /// (this may be lower than the size of the input buffer, in case of partial
-    /// writes).
-    pub fn write(&mut self, mut data: &[u8], mut fin: bool) -> Result<usize> {
-        let max_off = self.off + data.len() as u64;
+    /// Try to reserve the required number of bytes to be sent
+    fn reserve_for_write(
+        &mut self, mut len: usize, mut fin: bool,
+    ) -> Result<SendReserve<'_, F>> {
+        let max_off = self.off + len as u64;
 
         // Get the stream send capacity. This will return an error if the stream
         // was stopped.
-        let capacity = self.cap()?;
-
-        if data.len() > capacity {
-            // Truncate the input buffer according to the stream's capacity.
-            let len = capacity;
-            data = &data[..len];
-
-            // We are not buffering the full input, so clear the fin flag.
+        if len > self.cap()? {
+            len = self.cap()?;
             fin = false;
         }
 
@@ -135,34 +168,175 @@ impl SendBuf {
 
         // Don't queue data that was already fully acked.
         if self.ack_off() >= max_off {
-            return Ok(data.len());
+            return Ok(SendReserve {
+                inner: self,
+                reserved: 0,
+                fin,
+            });
         }
 
-        // We already recorded the final offset, so we can just discard the
-        // empty buffer now.
-        if data.is_empty() {
-            return Ok(data.len());
+        Ok(SendReserve {
+            inner: self,
+            reserved: len,
+            fin,
+        })
+    }
+
+    /// Inserts the given slice of data at the end of the buffer.
+    ///
+    /// The number of bytes that were actually stored in the buffer is returned
+    /// (this may be lower than the size of the input buffer, in case of partial
+    /// writes).
+    pub fn write(&mut self, data: &[u8], fin: bool) -> Result<usize> {
+        let mut reserve = self.reserve_for_write(data.len(), fin)?;
+
+        if reserve.reserved == 0 {
+            return Ok(0);
         }
 
-        let mut len = 0;
+        let ret = reserve.reserved;
 
         // Split the remaining input data into consistently-sized buffers to
         // avoid fragmentation.
-        for chunk in data.chunks(SEND_BUFFER_SIZE) {
-            len += chunk.len();
-
-            let fin = len == data.len() && fin;
-
-            let buf = RangeBuf::from(chunk, self.off, fin);
-
-            // The new data can simply be appended at the end of the send buffer.
-            self.data.push_back(buf);
-
-            self.off += chunk.len() as u64;
-            self.len += chunk.len() as u64;
+        for chunk in data[..reserve.reserved].chunks(SEND_BUFFER_SIZE) {
+            reserve.append_buf(F::buf_from_slice(chunk))?;
         }
 
-        Ok(len)
+        Ok(ret)
+    }
+
+    /// Inserts the given buffer of data at the end of the buffer.
+    ///
+    /// The number of bytes that were actually stored in the buffer is returned
+    /// (this may be lower than the size of the input buffer, in case of partial
+    /// writes, in which case the unwritten buffer is also returned).
+    pub fn append_buf(
+        &mut self, mut data: F::Buf, cap: usize, fin: bool,
+    ) -> Result<(usize, Option<F::Buf>)>
+    where
+        F::Buf: BufSplit,
+    {
+        let len = data.as_ref().len();
+        let mut reserve = self.reserve_for_write(cap.min(len), fin)?;
+
+        if reserve.reserved == 0 {
+            return Ok((0, Some(data)));
+        }
+
+        let remainder =
+            (reserve.reserved < len).then(|| data.split_at(reserve.reserved));
+
+        let ret = reserve.reserved;
+
+        reserve.append_buf(data)?;
+
+        Ok((ret, remainder))
+    }
+
+    pub fn rangebuf_len(&mut self, cap: usize) -> Result<(usize, bool)> {
+
+        let next_off = self.off_front();
+        let mut fin = self.fin_off == Some(next_off);
+        let mut buf_len = 0;
+
+        while let Some(buf) = self.data.get(self.pos) {
+            let off_front = self.off_front();
+            if self.is_empty() ||
+                off_front >= self.off ||
+                off_front != next_off ||
+                off_front >= self.max_data
+            {
+                break;
+            }
+
+            if buf.is_empty() {
+                self.pos += 1;
+                continue;
+            }
+
+            buf_len = cmp::min(buf.len(), cap);
+
+            fin = self.fin_off == Some(buf.off() + buf_len as u64);
+            break;
+        }
+
+        Ok((buf_len, fin))
+    }
+
+    pub fn rangebuf_get(&self) -> Option<&RangeBuf<F>> {
+        self.data.get(self.pos)
+    }
+
+    pub fn rangebuf_consume(&mut self, consumed: usize) {
+
+        let buf = match self.data.get_mut(self.pos) {
+            Some(v) => v,
+            None => return,
+        };
+
+        if buf.is_empty() {
+            return;
+        }
+
+        self.len -= consumed as u64;
+
+        let next_off = buf.off() + consumed as u64;
+
+        if consumed == buf.len() {
+            self.pos += 1;
+        }
+
+        buf.consume(consumed);
+
+        self.emit_off = cmp::max(self.emit_off, next_off);
+    }
+
+    pub fn emit_rangebuf_vec(&mut self, max_len: usize) -> (Vec<RangeBuf<F>>, usize) {
+
+        let mut out_len = max_len;
+        let out_off = self.off_front();
+
+        let mut next_off = out_off;
+        let mut cryptovec: Vec<RangeBuf<F>> = Vec::new();
+
+        while out_len > 0 {
+            let off_front = self.off_front();
+
+            if self.is_empty() ||
+                off_front >= self.off ||
+                off_front != next_off ||
+                off_front >= self.max_data
+            {
+                    break;
+            }
+
+            let buf = match self.data.get_mut(self.pos) {
+                Some(v) => v,
+                None => break,
+            };
+
+            let buf_len =  cmp::min(buf.len(), out_len);
+            let partial = buf_len < buf.len();
+
+            self.len -= buf_len as u64;
+
+            out_len -= buf_len;
+
+            next_off = buf.off() + buf_len as u64;
+
+            let mut rbuf = buf.clone();
+
+            buf.consume(buf_len);
+
+            if partial {
+                rbuf.split_off(buf_len);
+            } else {
+                self.pos += 1;
+            }
+            cryptovec.push(rbuf);
+        }
+
+        (cryptovec, max_len - out_len)
     }
 
     /// Writes data from the send buffer into the given output buffer.
@@ -495,7 +669,7 @@ mod tests {
     fn empty_write() {
         let mut buf = [0; 5];
 
-        let mut send = SendBuf::new(u64::MAX);
+        let mut send = <SendBuf>::new(u64::MAX);
         assert_eq!(send.len, 0);
 
         let (written, fin) = send.emit(&mut buf).unwrap();
@@ -507,7 +681,7 @@ mod tests {
     fn multi_write() {
         let mut buf = [0; 128];
 
-        let mut send = SendBuf::new(u64::MAX);
+        let mut send = <SendBuf>::new(u64::MAX);
         assert_eq!(send.len, 0);
 
         let first = b"something";
@@ -530,7 +704,7 @@ mod tests {
     fn split_write() {
         let mut buf = [0; 10];
 
-        let mut send = SendBuf::new(u64::MAX);
+        let mut send = <SendBuf>::new(u64::MAX);
         assert_eq!(send.len, 0);
 
         let first = b"something";
@@ -573,7 +747,7 @@ mod tests {
     fn resend() {
         let mut buf = [0; 15];
 
-        let mut send = SendBuf::new(u64::MAX);
+        let mut send = <SendBuf>::new(u64::MAX);
         assert_eq!(send.len, 0);
         assert_eq!(send.off_front(), 0);
 
@@ -636,7 +810,7 @@ mod tests {
     fn write_blocked_by_off() {
         let mut buf = [0; 10];
 
-        let mut send = SendBuf::default();
+        let mut send = <SendBuf>::default();
         assert_eq!(send.len, 0);
 
         let first = b"something";
@@ -706,7 +880,7 @@ mod tests {
     fn zero_len_write() {
         let mut buf = [0; 10];
 
-        let mut send = SendBuf::new(u64::MAX);
+        let mut send = <SendBuf>::new(u64::MAX);
         assert_eq!(send.len, 0);
 
         let first = b"something";
@@ -731,7 +905,7 @@ mod tests {
     fn send_buf_len_on_retransmit() {
         let mut buf = [0; 15];
 
-        let mut send = SendBuf::new(u64::MAX);
+        let mut send = <SendBuf>::new(u64::MAX);
         assert_eq!(send.len, 0);
         assert_eq!(send.off_front(), 0);
 
@@ -757,7 +931,7 @@ mod tests {
     #[test]
     fn send_buf_final_size_retransmit() {
         let mut buf = [0; 50];
-        let mut send = SendBuf::new(u64::MAX);
+        let mut send = <SendBuf>::new(u64::MAX);
 
         send.write(&buf, false).unwrap();
         assert_eq!(send.off_front(), 0);

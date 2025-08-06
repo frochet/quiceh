@@ -2,12 +2,54 @@ use cpu_time::ProcessTime;
 use criterion::measurement::Measurement;
 use criterion::measurement::ValueFormatter;
 use criterion::Throughput;
+use quiceh::BufFactory;
+use quiceh::BufSplit;
 use std::time::Duration;
+use std::sync::Arc;
 
 const NANOS_PER_SEC: u64 = 1_000_000_000;
 
-/// Keeps track of QUIC streams and enforces stream limits.
+#[derive(Debug, Clone, Default)]
+pub struct BenchBufFactory;
 
+#[derive(Debug, Clone, Default)]
+pub struct BenchBuf(Arc<Box<[u8]>>);
+
+impl BufFactory for BenchBufFactory {
+    type Buf = BenchBuf;
+
+    fn buf_from_slice(buf: &[u8]) -> Self::Buf {
+        BenchBuf(Arc::new(buf.into()))
+    }
+}
+
+impl AsRef<[u8]> for BenchBuf {
+    fn as_ref(&self) -> &[u8] {
+        &self.0[..]
+    }
+}
+
+impl From<Vec<u8>> for BenchBuf {
+    fn from(value: Vec<u8>) -> Self {
+        BenchBuf(Arc::new(value.into_boxed_slice()))
+    }
+}
+
+impl BufSplit for BenchBuf {
+    fn split_at(&mut self, _at: usize) -> Self {
+        // There is enough capacity in the stream send buffer for the simple
+        // bench of 10 QUIC packets we run. This function is then never called
+        // internally in quiceh.
+        //
+        // Should we implement a bench test case that 1) send more than what the
+        // stream's capacity can do, 2) process ack packets from the peer,
+        // 3) send more. This would however capture some of the cost of
+        // the receive path as well.
+        unimplemented!();
+    }
+}
+
+/// Keeps track of QUIC streams and enforces stream limits.
 pub struct CPUTime;
 impl Measurement for CPUTime {
     type Intermediate = ProcessTime;

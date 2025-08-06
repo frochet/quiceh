@@ -156,7 +156,7 @@ fn main() {
 
     let mut req_sent = false;
 
-    let mut app_buffers = AppRecvBufMap::new(3, 10_000_000, 100, 100);
+    let mut app_buffers = AppRecvBufMap::new(3, 100, 100);
 
     loop {
         poll.poll(&mut events, conn.timeout()).unwrap();
@@ -319,7 +319,7 @@ fn main() {
                         },
 
                         Ok((stream_id, quiceh::h3::Event::Data)) => {
-                            match http3_conn.recv_body_v3(
+                            match http3_conn.body_peek(
                                 &mut conn,
                                 stream_id,
                                 &mut app_buffers,

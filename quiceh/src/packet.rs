@@ -833,8 +833,7 @@ pub fn decode_pkt_offset(
 
 pub fn decrypt_pkt_v3<'a>(
     b: &'a mut octets_rev::OctetsMut, pn: u64, hdr_enc_len: usize,
-    payload_len: usize, outbuf: Option<&'a mut octets_rev::OctetsMut>,
-    aead: &crypto::Open,
+    payload_len: usize, outbuf: Option<&'a mut [u8]>, aead: &crypto::Open,
 ) -> Result<(octets_rev::Octets<'a>, usize)> {
     // PROTOCOL_REVERSO: temporary for testing
     let payload_offset = b.off();
@@ -851,12 +850,15 @@ pub fn decrypt_pkt_v3<'a>(
             pn,
             header.as_ref(),
             ciphertext.as_ref(),
-            outbuf.as_mut(),
+            outbuf,
         )?;
         // Number of read bytes is computed from b's offset. We need skip since
         // we process the frame from another buffer in V3.
         b.skip(payload_len)?;
-        Ok((outbuf.get_bytes(payload_len)?, payload_len))
+        Ok((
+            octets_rev::Octets::with_slice(&outbuf[..payload_len]),
+            payload_len,
+        ))
     } else {
         let payload_len =
             aead.open_with_u64_counter(pn, header.as_ref(), ciphertext.as_mut())?;
@@ -884,18 +886,18 @@ pub fn decrypt_pkt<'a>(
     Ok((b.get_bytes(payload_len)?, payload_len))
 }
 
-pub fn encrypt_hdr(
-    b: &mut octets_rev::OctetsMut, enc_len: usize, payload: &[u8],
+#[inline]
+fn encrypt_hdr_inner(
+    first: &mut [u8], rest: &mut [u8], enc_len: usize, payload: &[u8],
     aead: &crypto::Seal, version: u32,
 ) -> Result<()> {
-    let sample;
-    let (mut first, mut rest) = b.split_at(1)?;
-    let first = first.as_mut();
-
+    if enc_len > rest.len() {
+        return Err(Error::BufferTooShort);
+    }
     if_likely! {version == crate::PROTOCOL_VERSION_VREVERSO => {
         // considering max 4 bytes for the streamid and 4 bytes for the buffer offset.
         // for which the encoding/decoding would work in a similar fashion than for the packet number.
-        sample = &payload
+        let sample = &payload
             [MAX_PKT_NUM_STREAMID_OFFSET_LEN - enc_len..SAMPLE_LEN + (MAX_PKT_NUM_STREAMID_OFFSET_LEN - enc_len)];
         let mask = aead.new_mask_13(sample)?;
         if Header::is_long(first[0]) {
@@ -903,13 +905,14 @@ pub fn encrypt_hdr(
         } else {
             first[0] ^= mask[0] & 0x1f;
         }
-        let buf = rest.slice_last(enc_len)?;
+        let len = rest.len();
+        let buf = &mut rest[len - enc_len..];
 
         for i in 0..enc_len {
             buf[i] ^= mask[i + 1];
         }
     } else {
-        sample = &payload
+        let sample = &payload
             [MAX_PKT_NUM_LEN - enc_len..SAMPLE_LEN + (MAX_PKT_NUM_LEN - enc_len)];
         let mask = aead.new_mask(sample)?;
         if Header::is_long(first[0]) {
@@ -917,7 +920,8 @@ pub fn encrypt_hdr(
         } else {
             first[0] ^= mask[0] & 0x1f;
         }
-        let buf = rest.slice_last(enc_len)?;
+        let len = rest.len();
+        let buf = &mut rest[len - enc_len..];
 
         for i in 0..enc_len {
             buf[i] ^= mask[i + 1];
@@ -927,22 +931,44 @@ pub fn encrypt_hdr(
     Ok(())
 }
 
-pub fn encrypt_pkt(
-    b: &mut octets_rev::OctetsMut, pn: u64, hdr_enc_len: usize,
-    payload_len: usize, payload_offset: usize, extra_in: Option<&[u8]>,
+
+pub unsafe fn encrypt_hdr_unchecked(
+    header: &mut [u8], enc_len: usize, payload: &[u8],
     aead: &crypto::Seal, version: u32,
+) -> Result<()> {
+
+    let (first, rest) = header.split_at_mut_unchecked(1);
+    encrypt_hdr_inner(first, rest, enc_len, payload, aead, version)
+}
+
+pub fn encrypt_hdr(
+    b: &mut octets_rev::OctetsMut, enc_len: usize, payload: &[u8],
+    aead: &crypto::Seal, version: u32,
+) -> Result<()> {
+    let (mut first, mut rest) = b.split_at(1)?;
+    let first = first.as_mut();
+    let rest =  rest.as_mut();
+    encrypt_hdr_inner(first, rest, enc_len, payload, aead, version)
+}
+
+pub fn encrypt_pkt(
+    b: &mut octets_rev::OctetsMut, inbuf: Option<&[u8]>,
+    pn: u64, payload_len: usize, payload_offset: usize, extra_in: Option<&[u8]>,
+    aead: &crypto::Seal, scatter_crypt: bool,
 ) -> Result<usize> {
-    let (mut header, mut payload) = b.split_at(payload_offset)?;
+    let (header, mut payload) = b.split_at(payload_offset)?;
 
     let ciphertext_len = aead.seal_with_u64_counter(
         pn,
         header.as_ref(),
         payload.as_mut(),
         payload_len,
+        inbuf,
         extra_in,
+        scatter_crypt,
     )?;
 
-    encrypt_hdr(&mut header, hdr_enc_len, payload.as_ref(), aead, version)?;
+    //encrypt_hdr(&mut header, hdr_enc_len, payload.as_ref(), aead, version)?;
 
     Ok(payload_offset + ciphertext_len)
 }
@@ -1197,7 +1223,7 @@ impl PktNumSpace {
 
             crypto_0rtt_open: None,
 
-            crypto_stream: stream::Stream::new(
+            crypto_stream: <stream::Stream>::new(
                 0, // dummy
                 u64::MAX,
                 u64::MAX,
@@ -1211,7 +1237,7 @@ impl PktNumSpace {
     }
 
     pub fn clear(&mut self) {
-        self.crypto_stream = stream::Stream::new(
+        self.crypto_stream = <stream::Stream>::new(
             0, // dummy
             u64::MAX,
             u64::MAX,
@@ -1920,15 +1946,18 @@ mod tests {
 
         let written = encrypt_pkt(
             &mut b,
+            None,
             pn,
-            pn_len,
             payload_len,
             payload_offset,
             None,
             &aead,
-            crate::PROTOCOL_VERSION_V1,
+            false,
         )
         .unwrap();
+        let (mut header, payload) = b.split_at(payload_offset).unwrap();
+        encrypt_hdr(&mut header, pn_len, payload.as_ref(), &aead, crate::PROTOCOL_VERSION_V1)
+            .expect("header encrypt");
 
         assert_eq!(written, expected_pkt.len());
         assert_eq!(&out[..written], expected_pkt);
@@ -2260,15 +2289,19 @@ mod tests {
 
         let written = encrypt_pkt(
             &mut b,
+            None,
             pn,
-            enc_len,
             payload_len,
             payload_offset,
             None,
             &aead,
-            crate::PROTOCOL_VERSION_V1,
+            false,
         )
         .unwrap();
+
+        let (mut header, payload) = b.split_at(payload_offset).unwrap();
+        encrypt_hdr(&mut header, enc_len, payload.as_ref(), &aead, crate::PROTOCOL_VERSION_V1)
+            .expect("header encrypt");
 
         assert_eq!(written, expected_pkt.len());
     }

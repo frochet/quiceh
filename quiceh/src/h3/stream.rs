@@ -24,6 +24,8 @@
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+use crate::range_buf::BufFactory;
+
 use super::Error;
 use super::Result;
 
@@ -397,17 +399,24 @@ impl Stream {
 
     /// Read the connection and acquire a reference to the data containing the
     /// state
-    pub fn try_acquire_state_buffer<'a>(
-        &mut self, conn: &mut crate::Connection, app_buf: &'a mut AppRecvBufMap,
+    pub fn try_acquire_state_buffer<'a, F: BufFactory>(
+        &mut self, conn: &mut crate::Connection<F>,
+        app_buf: &'a mut AppRecvBufMap,
     ) -> Result<&'a [u8]> {
         // In v3, the state is kept mixed with data. We eventually
         // give a slice to the upper layer containing the DATA from
         // the data frame.
         //
         // This gives everything readable until it is explicitely
-        // marrked as consumed.
-        let b = match conn.stream_recv_v3(self.id, app_buf) {
+        // marked as consumed.
+        let b = match conn.stream_peek(self.id, app_buf) {
             Ok((b, len, _)) => {
+                trace!(
+                    "{} Acquiring {} bytes of the HTTP/3 frame from Stream {} ",
+                    conn.trace_id(),
+                    len,
+                    self.id
+                );
                 // We read nothing form the QUIC stream
                 if len == 0 {
                     self.reset_data_event();
@@ -419,6 +428,12 @@ impl Stream {
             },
 
             Err(e) => {
+                trace!(
+                    "{} failed to recv bytes from Stream {}, error {:?}",
+                    conn.trace_id(),
+                    self.id,
+                    e
+                );
                 // The stream is not readable anymore, so re-arm the Data event.
                 if e == crate::Error::Done {
                     self.reset_data_event();
@@ -432,13 +447,15 @@ impl Stream {
     }
 
     /// Mark the data acquired from the state buffer as consumed.
-    pub fn mark_state_buffer_consumed(
-        &mut self, conn: &mut crate::Connection, consumed: usize,
+    pub fn mark_state_buffer_consumed<F: BufFactory>(
+        &mut self, conn: &mut crate::Connection<F>, consumed: usize,
         app_buf: &mut AppRecvBufMap,
     ) -> Result<()> {
         self.state_off += consumed;
 
         conn.stream_consumed(self.id, consumed, app_buf)?;
+
+        self.reset_data_event();
 
         trace!(
             "{} consumed {} bytes on stream {}",
@@ -455,8 +472,8 @@ impl Stream {
     ///
     /// When not enough data can be read to complete the state, this returns
     /// `Error::Done`.
-    pub fn try_fill_buffer(
-        &mut self, conn: &mut crate::Connection,
+    pub fn try_fill_buffer<F: BufFactory>(
+        &mut self, conn: &mut crate::Connection<F>,
     ) -> Result<()> {
         // If no bytes are required to be read, return early.
         if self.state_buffer_complete() {
@@ -563,6 +580,9 @@ impl Stream {
         self.state_off += consumed;
 
         stream.set_position(stream.position() + consumed as u64);
+
+        self.reset_data_event();
+
         Ok(())
     }
 
@@ -665,10 +685,11 @@ impl Stream {
 
     /// Tries to get a reference to the DATA payload for the  application to
     /// eventually consume.
-    pub fn try_acquire_data<'a>(
-        &mut self, conn: &mut crate::Connection, app_buf: &'a mut AppRecvBufMap,
+    pub fn try_acquire_data<'a, F: BufFactory>(
+        &mut self, conn: &mut crate::Connection<F>,
+        app_buf: &'a mut AppRecvBufMap,
     ) -> Result<(&'a [u8], usize, bool)> {
-        let (b, len, fin) = match conn.stream_recv_v3(self.id, app_buf) {
+        let (b, len, fin) = match conn.stream_peek(self.id, app_buf) {
             Ok(v) => v,
 
             Err(e) => {
@@ -691,8 +712,8 @@ impl Stream {
     }
 
     /// Tries to read DATA payload from the transport stream.
-    pub fn try_consume_data(
-        &mut self, conn: &mut crate::Connection, out: &mut [u8],
+    pub fn try_consume_data<F: BufFactory>(
+        &mut self, conn: &mut crate::Connection<F>, out: &mut [u8],
     ) -> Result<(usize, bool)> {
         let left = std::cmp::min(out.len(), self.state_len - self.state_off);
 
@@ -724,19 +745,25 @@ impl Stream {
     }
 
     /// Marks DATA payload read and consumed (up to `consumed`).
-    pub fn mark_data_consumed(
-        &mut self, conn: &mut crate::Connection, app_buf: &mut AppRecvBufMap,
+    pub fn mark_data_consumed<F: BufFactory>(
+        &mut self, conn: &mut crate::Connection<F>, app_buf: &mut AppRecvBufMap,
         consumed: usize,
     ) -> Result<()> {
         // Account for DATA consumed by the app
         self.state_off += consumed;
 
+        let (_, len, _) = conn.stream_peek(self.id, app_buf)?;
+
         // Tell the underlying QUIC stream that we consumed part of the data.
         conn.stream_consumed(self.id, consumed, app_buf)?;
 
-        // We can transition if we consumed the whole data frame.
         if self.state_buffer_complete() {
+            // We can transition if we consumed the whole data frame.
             self.state_transition(State::FrameType, 1, true)?;
+        } else if len == consumed {
+            // We have consumed all available data, let's rearm the Data event
+            trace!("Consumed the whole stream chunk. Rearming data event");
+            self.reset_data_event();
         }
 
         Ok(())
@@ -813,7 +840,7 @@ impl Stream {
 
     /// Returns true if the state buffer has enough data to complete the state.
     fn state_buffer_complete(&self) -> bool {
-        // with stream_recv_v3, we may read more than the state buffer
+        // with stream_peek, we may read more than the state buffer
         // although it is not an issue since everything is zero-copy
         self.state_off >= self.state_len
     }
@@ -839,6 +866,11 @@ impl Stream {
             }
         }
 
+        trace!("H3 connection moves to state {:?} with expected len {}",
+               new_state,
+               expected_len
+        );
+
         self.state = new_state;
         self.state_off = 0;
         self.state_len = expected_len;
@@ -854,7 +886,7 @@ mod tests {
     use super::*;
 
     fn open_uni(b: &mut octets_rev::OctetsMut, ty: u64) -> Result<Stream> {
-        let stream = Stream::new(2, false, crate::PROTOCOL_VERSION);
+        let stream = <Stream>::new(2, false, crate::PROTOCOL_VERSION);
         assert_eq!(stream.state, State::StreamType);
 
         b.put_varint(ty)?;
@@ -1445,7 +1477,7 @@ mod tests {
 
     #[test]
     fn request_no_data() {
-        let mut stream = Stream::new(0, false, crate::PROTOCOL_VERSION);
+        let mut stream = <Stream>::new(0, false, crate::PROTOCOL_VERSION);
 
         assert_eq!(stream.ty, Some(Type::Request));
         assert_eq!(stream.state, State::FrameType);
@@ -1455,7 +1487,7 @@ mod tests {
 
     #[test]
     fn request_good() {
-        let mut stream = Stream::new(0, false, crate::PROTOCOL_VERSION);
+        let mut stream = <Stream>::new(0, false, crate::PROTOCOL_VERSION);
 
         let mut d = vec![42; 128];
         let mut b = octets_rev::OctetsMut::with_slice(&mut d);
@@ -1842,7 +1874,7 @@ mod tests {
 
     #[test]
     fn data_before_headers() {
-        let mut stream = Stream::new(0, false, crate::PROTOCOL_VERSION);
+        let mut stream = <Stream>::new(0, false, crate::PROTOCOL_VERSION);
 
         let mut d = vec![42; 128];
         let mut b = octets_rev::OctetsMut::with_slice(&mut d);
@@ -1968,7 +2000,7 @@ mod tests {
         let mut d = vec![42; 128];
         let mut b = octets_rev::OctetsMut::with_slice(&mut d);
 
-        let mut stream = Stream::new(0, false, crate::PROTOCOL_VERSION);
+        let mut stream = <Stream>::new(0, false, crate::PROTOCOL_VERSION);
 
         assert_eq!(stream.ty, Some(Type::Request));
         assert_eq!(stream.state, State::FrameType);

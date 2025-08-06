@@ -125,7 +125,7 @@ fn bench_h3_quicv3(
                 .poll_v3(&mut s.pipe.client, &mut s.pipe.client_app_buffers)
             {
                 Ok((stream_id, quiceh::h3::Event::Data)) => {
-                    let (b, _) = s.recv_body_v3_client(stream_id).unwrap();
+                    let (b, _) = s.body_peek_client(stream_id).unwrap();
                     let len = b.len();
                     s.body_consumed_client(stream_id, len).unwrap();
                 },
