@@ -673,14 +673,6 @@ impl<F: BufFactory> StreamMap<F> {
     pub fn len(&self) -> usize {
         self.streams.len()
     }
-
-    // TODO PROTOCOL_REVERSO
-    /// Rewind the Stream_id's receive buffer of num bytes
-    pub fn rewind_recv_buf(
-        &mut self, _stream_id: u64, _num: usize,
-    ) -> Result<()> {
-        Ok(())
-    }
 }
 
 /// A QUIC stream.
@@ -1024,7 +1016,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = <AppRecvBuf>::new(1, Some(42), 100, 1000);
+        let mut app_buf = <AppRecvBuf>::new(1, 100, 1000);
         assert!(!stream.recv.almost_full());
 
         let mut buf = [0; 32];
@@ -1111,7 +1103,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert!(!stream.recv.almost_full());
 
         let first = RangeBuf::from(b"hello", 0, true);
@@ -1193,7 +1185,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert!(!stream.recv.almost_full());
 
         let mut buf = [0; 32];
@@ -1617,7 +1609,7 @@ mod tests {
             DEFAULT_STREAM_WINDOW,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, Some(42), 100, 1000);
+        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
 
         assert_eq!(stream.send.write(b"hello", false), Ok(5));
         assert_eq!(stream.send.write(b"world", false), Ok(5));

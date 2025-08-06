@@ -45,7 +45,7 @@ use quinn_udp::BATCH_SIZE;
 use bytes::BytesMut;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
-pub const MAX_FLUSH_SIZE: usize = 256_000;
+pub const MAX_FLUSH_SIZE: usize = 1_048_576;
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -204,12 +204,14 @@ where
 
     let mut app_buffers = AppRecvBufMap::new(
         3,
-        conn_args.max_stream_window,
         conn_args.max_streams_bidi,
         conn_args.max_streams_uni,
     );
+    // Chunks of 1MiB
     app_buffers
-        .set_expected_chunklen_to_consume(MAX_FLUSH_SIZE as u64)
+        .set_expected_chunklen_to_consume(
+            std::num::NonZero::new(MAX_FLUSH_SIZE).unwrap(),
+        )
         .unwrap();
 
     // Create a QUIC connection and initiate handshake.

@@ -116,7 +116,7 @@ fn main() {
 
     let local_addr = socket.local_addr().unwrap();
 
-    let mut app_buffers = AppRecvBufMap::new(3, 10_000_000, 1_000_000, 1_000_000);
+    let mut app_buffers = AppRecvBufMap::new(3, 1_000_000, 1_000_000);
 
     loop {
         // Find the shorter timeout from all the active connections.
@@ -341,7 +341,7 @@ fn main() {
                     }
                 } else {
                     for s in client.conn.readable() {
-                        match client.conn.stream_recv_v3(s, &mut app_buffers) {
+                        match client.conn.stream_peek(s, &mut app_buffers) {
                             Ok((stream_buf, len, fin)) => {
                                 debug!(
                                     "{} received {} bytes",

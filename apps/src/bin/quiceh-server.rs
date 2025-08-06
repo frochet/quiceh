@@ -51,7 +51,7 @@ use quinn_udp::Transmit;
 use quinn_udp::UdpSocketState;
 
 const MAX_BUF_SIZE: usize = 65507;
-const MAX_FLUSH_SIZE: usize = 256_000;
+const MAX_FLUSH_SIZE: usize = 1_048_576;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
@@ -400,7 +400,6 @@ fn main() {
                     max_send_burst: MAX_BUF_SIZE,
                     app_buffers: quiceh::AppRecvBufMap::new(
                         3,
-                        conn_args.max_stream_window,
                         conn_args.max_streams_bidi,
                         conn_args.max_streams_uni,
                     ),
@@ -408,7 +407,9 @@ fn main() {
 
                 client
                     .app_buffers
-                    .set_expected_chunklen_to_consume(MAX_FLUSH_SIZE as u64)
+                    .set_expected_chunklen_to_consume(
+                        std::num::NonZero::new(MAX_FLUSH_SIZE).unwrap(),
+                    )
                     .unwrap();
 
                 clients.insert(client_id, client);
