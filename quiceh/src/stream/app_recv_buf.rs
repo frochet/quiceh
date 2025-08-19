@@ -108,7 +108,7 @@ impl AppRecvBufMap {
     pub fn set_expected_chunklen_to_consume(
         &mut self, chunklen: std::num::NonZeroUsize,
     ) -> Result<()> {
-        let chunklen = chunklen.get().into();
+        let chunklen = chunklen.get();
         if chunklen < crate::PAYLOAD_MIN_LEN_WITH_TAG {
             return Err(Error::InvalidAPICall("chunklen cannot be smaller than {crate::PAYLOAD_MIN_LEN_WITH_TAG}"));
         }
@@ -312,7 +312,7 @@ pub struct StreamChunk {
 impl StreamChunk {
     fn new(capacity: std::num::NonZeroUsize, stream_offset_start: u64) -> Self {
         StreamChunk {
-            outbuf: vec![0; capacity.get().into()].into_boxed_slice(),
+            outbuf: vec![0; capacity.get()].into_boxed_slice(),
             stream_offset_start,
             ..Default::default()
         }
@@ -473,7 +473,7 @@ impl AppRecvBuf {
 
     pub fn advance_if_possible(&mut self, recv: &mut RecvBuf) -> Result<()> {
         let mut max_off = recv.off;
-        debug_assert!(self.chunks.len() > 0, "Should never be empty");
+        debug_assert!(!self.chunks.is_empty(), "Should never be empty");
         let mut chunks_iter = self.chunks.iter_mut();
         // Chunks should never be empty when this function is called
         let mut chunk = chunks_iter.next().unwrap();
@@ -501,7 +501,7 @@ impl AppRecvBuf {
             // happened to avoid data corruption.
             if let Some(buf) = recvbufinfo.data() {
                 trace!("Packet wasn't received in order; a copy is necessary");
-                let mut written = chunk.fill_from(&buf, this_offset);
+                let mut written = chunk.fill_from(buf, this_offset);
                 while written < recvbufinfo.len {
                     // we need to write into the next chunk
                     trace!("We need copying across chunks");
@@ -681,7 +681,7 @@ impl AppRecvBuf {
     /// Get a reference to the whole lowest chunk
     #[inline]
     pub fn get(&self) -> &[u8] {
-        self.chunks.get(0).unwrap().as_ref()
+        self.chunks.front().unwrap().as_ref()
     }
 
     /// Get a mutable reference to the whole lowest chunk
@@ -692,7 +692,7 @@ impl AppRecvBuf {
 
     #[inline]
     pub fn is_contiguous_bytes_consumed(&self) -> bool {
-        if let Some(chunk) = self.chunks.get(0) {
+        if let Some(chunk) = self.chunks.front() {
             // Should work if this is a recycled chunk too
             return chunk.contiguous_off == chunk.consumed
         }
@@ -870,12 +870,10 @@ impl AppRecvBuf {
                             relative_buf_offset as usize,
                     ))
                 }
+            } else if newly_alloc {
+                Ok(StreamChunkMem::NewlyAllocatedMayNeedCopyAcross(chunk))
             } else {
-                if newly_alloc {
-                    Ok(StreamChunkMem::NewlyAllocatedMayNeedCopyAcross(chunk))
-                } else {
-                    Ok(StreamChunkMem::NotNewlyAllocatedMayNeedCopyAcross(chunk))
-                }
+                Ok(StreamChunkMem::NotNewlyAllocatedMayNeedCopyAcross(chunk))
             }
         }
     }

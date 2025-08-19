@@ -2036,12 +2036,10 @@ impl Connection {
                     {
                         return Ok((finished, Event::Reset(e)));
                     }
-                } else {
-                    if let Err(crate::Error::StreamReset(e)) =
-                        conn.stream_recv(finished, &mut [])
-                    {
-                        return Ok((finished, Event::Reset(e)));
-                    }
+                } else if let Err(crate::Error::StreamReset(e)) =
+                    conn.stream_recv(finished, &mut [])
+                {
+                    return Ok((finished, Event::Reset(e)));
                 }
             }
             return Ok((finished, Event::Finished));

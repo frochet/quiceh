@@ -2692,7 +2692,7 @@ impl<F: BufFactory> Connection<F> {
 
             // Ignore version negotiation if the version already selected is
             // listed.
-            if versions.iter().any(|&v| v == self.version) {
+            if versions.contains(&self.version) {
                 return Err(Error::Done);
             }
 
@@ -2970,37 +2970,34 @@ impl<F: BufFactory> Connection<F> {
                                 //
                                 // We need to check for integrity of pn and header data before
                                 // acking it.
-                                match e {
-                                    Error::InvalidOffset => {
-                                        match packet::decrypt_pkt(
-                                            &mut b,
-                                            pn,
-                                            enc_hdr_len,
-                                            payload_len,
-                                            aead
-                                        ) {
-                                            Ok(_v) => {
-                                                // XXX Maybe we should process control frames --
-                                                // depends on ongoing discussion (i.e., resubmitted
-                                                // stream frame should fly alone.
-                                                trace!(
-                                                    "Dropping a legit packet due to incorrect decoded offset {}", offset,
-                                                );
-                                                self.pkt_num_spaces[epoch].recv_pkt_num.insert(pn);
-                                                self.pkt_num_spaces[epoch].recv_pkt_need_ack.push_item(pn);
-                                                self.pkt_num_spaces[epoch].ack_elicited = true;
-                                                self.pkt_num_spaces[epoch].largest_rx_pkt_num =
-                                                    cmp::max(self.pkt_num_spaces[epoch].largest_rx_pkt_num, pn);
+                                if e == Error::InvalidOffset {
+                                    match packet::decrypt_pkt(
+                                        &mut b,
+                                        pn,
+                                        enc_hdr_len,
+                                        payload_len,
+                                        aead
+                                    ) {
+                                        Ok(_v) => {
+                                            // XXX Maybe we should process control frames --
+                                            // depends on ongoing discussion (i.e., resubmitted
+                                            // stream frame should fly alone.
+                                            trace!(
+                                                "Dropping a legit packet due to incorrect decoded offset {}", offset,
+                                            );
+                                            self.pkt_num_spaces[epoch].recv_pkt_num.insert(pn);
+                                            self.pkt_num_spaces[epoch].recv_pkt_need_ack.push_item(pn);
+                                            self.pkt_num_spaces[epoch].ack_elicited = true;
+                                            self.pkt_num_spaces[epoch].largest_rx_pkt_num =
+                                                cmp::max(self.pkt_num_spaces[epoch].largest_rx_pkt_num, pn);
 
-                                            }
-                                            Err(_e) => {
-                                                trace!(
-                                                    "We failed to decrypt a packet for which an incorrect offset has been delivery_rate_check_if_app_limited"
-                                                );
-                                            }
                                         }
-                                    },
-                                    _ => (),
+                                        Err(_e) => {
+                                            trace!(
+                                                "We failed to decrypt a packet for which an incorrect offset has been delivery_rate_check_if_app_limited"
+                                            );
+                                        }
+                                    }
                                 }
 
                                 return Err(drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id))
@@ -3188,11 +3185,8 @@ impl<F: BufFactory> Connection<F> {
                             } else {
                                 // move the chunk back into the appbuffer.
                                 // This may only happens on a decryption error, so cloning is fine.
-                                match app_buffers.get_or_create_stream_buffer(hdr.expected_stream_id) {
-                                    Ok(appbuf) => {
-                                        appbuf.insert_stream_chunk(chunk.clone());
-                                    },
-                                    Err(_) => (),
+                                if let Ok(appbuf) = app_buffers.get_or_create_stream_buffer(hdr.expected_stream_id) {
+                                    appbuf.insert_stream_chunk(chunk.clone());
                                 }
                             }
                             drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
@@ -5100,12 +5094,10 @@ impl<F: BufFactory> Connection<F> {
                         ack_eliciting = true;
                         in_flight = true;
                         has_data = true;
-                    } else {
-                        if push_frame_to_vec!(frames, frame, left, cumul) {
-                            ack_eliciting = true;
-                            in_flight = true;
-                            has_data = true;
-                        }
+                    } else if push_frame_to_vec!(frames, frame, left, cumul) {
+                        ack_eliciting = true;
+                        in_flight = true;
+                        has_data = true;
                     }
                 }};
 
@@ -5120,7 +5112,8 @@ impl<F: BufFactory> Connection<F> {
                 break;
             }
 
-            let res = match maybe_frame {
+            
+            match maybe_frame {
                 frame::Frame::StreamHeader { length, .. } => {
                     if length > 0 {
                         Some(maybe_frame)
@@ -5129,8 +5122,7 @@ impl<F: BufFactory> Connection<F> {
                     }
                 },
                 _ => None,
-            };
-            res
+            }
         } else {None};
 
         // Alternate trying to send DATAGRAMs next time.
@@ -5333,7 +5325,7 @@ impl<F: BufFactory> Connection<F> {
 
             // If we're in VReverso, the frame should be first.
             let (b_start, mut b_ctrl, stream_len) = if self.version == crate::PROTOCOL_VERSION_VREVERSO {
-                let stream_len = if let Some(frame::Frame::StreamHeader { length, ..}) = frames.get(0) {
+                let stream_len = if let Some(frame::Frame::StreamHeader { length, ..}) = frames.first() {
                     *length
                 } else {
                     0_usize
@@ -5459,7 +5451,7 @@ impl<F: BufFactory> Connection<F> {
         let written = if self.use_hidden_crypt_copy_for_zc {
 
             let sentry = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
-                if let Some(frame::Frame::StreamHeader { stream_id, ..}) = frames.get(0) {
+                if let Some(frame::Frame::StreamHeader { stream_id, ..}) = frames.first() {
                     Some(self.streams.entry(*stream_id))
                 } else {
                     None
@@ -5477,17 +5469,15 @@ impl<F: BufFactory> Connection<F> {
                 // with the reversed stream frame
                 let rangebuf = sentry
                     .as_ref()
-                    .map(|v| {
+                    .and_then(|v| {
                         match v {
                             std::collections::hash_map::Entry::Occupied(v) =>
                                 v.get()
                                  .send
-                                 .rangebuf_get()
-                                 .and_then(|rb| Some(&rb[..b_len])),
+                                 .rangebuf_get().map(|rb| &rb[..b_len]),
                             _ => None,
                         }
-                    })
-                    .flatten();
+                    });
 
                 if let Some(ctrl) = ctrl {
                     packet::encrypt_pkt(
@@ -5515,23 +5505,21 @@ impl<F: BufFactory> Connection<F> {
             } else {
                 let rangebuf = sentry
                     .as_ref()
-                    .map(|v| {
+                    .and_then(|v| {
                         match v {
                             std::collections::hash_map::Entry::Occupied(v) =>
                                 v.get()
                                  .send
-                                 .rangebuf_get()
-                                 .and_then(|rb| Some(&rb[..b_len])),
+                                 .rangebuf_get().map(|rb| &rb[..b_len]),
                             _ => None,
                         }
-                    })
-                    .flatten();
+                    });
                 // We encrypt with the data in extra_in and the ctrl in inbuf, with 
                 // the stream header at the end of the ctrl.
                 if let Some(ctrl) = ctrl {
                     packet::encrypt_pkt(
                         &mut b_start,
-                        Some(&ctrl.as_ref()),
+                        Some(ctrl.as_ref()),
                         pn,
                         b_ctrl_len,
                         payload_offset,
