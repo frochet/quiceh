@@ -48,9 +48,10 @@ sending HTTP/3 responses.
 
 Experimental:
 
-- [`stream_recv_zc()`] supports the Application to receive contiguous
-  chunks of memory from underlying quiceh buffers in zero-copy in
-expectation. This is designed for concurrent processing of stream data.
+- [`stream_recv_zc()`] only available for VReverso supports the
+  Application to receive contiguous chunks of memory from underlying
+quiceh buffers in zero-copy in expectation. This is designed for
+concurrent processing of stream data.
 
 - QUIC connection [`Config`] may set a flag using
   [`enable_hidden_copy_for_zc_sender()`] to make any data buffered
