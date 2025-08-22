@@ -19676,6 +19676,8 @@ mod tests {
                 client_addr,
                 &mut server_config,
             )?,
+            client_app_buffers: AppRecvBufMap::default(),
+            server_app_buffers: AppRecvBufMap::default(),
         };
 
         assert_eq!(pipe.handshake(), Ok(()));
@@ -19738,7 +19740,7 @@ mod tests {
         pipe.server.on_timeout();
 
         // Server sends PTO probe (not limited to cwnd),
-        // to update last_tx_data.
+        // to update la"C"st_tx_data.
         let (len, _) = pipe.server.send(&mut buf).unwrap();
 
         assert_eq!(len, 1200);
