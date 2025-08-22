@@ -866,9 +866,10 @@ impl Stream {
             }
         }
 
-        trace!("H3 connection moves to state {:?} with expected len {}",
-               new_state,
-               expected_len
+        trace!(
+            "H3 connection moves to state {:?} with expected len {}",
+            new_state,
+            expected_len
         );
 
         self.state = new_state;

@@ -931,12 +931,10 @@ fn encrypt_hdr_inner(
     Ok(())
 }
 
-
 pub unsafe fn encrypt_hdr_unchecked(
-    header: &mut [u8], enc_len: usize, payload: &[u8],
-    aead: &crypto::Seal, version: u32,
+    header: &mut [u8], enc_len: usize, payload: &[u8], aead: &crypto::Seal,
+    version: u32,
 ) -> Result<()> {
-
     let (first, rest) = header.split_at_mut_unchecked(1);
     encrypt_hdr_inner(first, rest, enc_len, payload, aead, version)
 }
@@ -947,13 +945,13 @@ pub fn encrypt_hdr(
 ) -> Result<()> {
     let (mut first, mut rest) = b.split_at(1)?;
     let first = first.as_mut();
-    let rest =  rest.as_mut();
+    let rest = rest.as_mut();
     encrypt_hdr_inner(first, rest, enc_len, payload, aead, version)
 }
 
 pub fn encrypt_pkt(
-    b: &mut octets_rev::OctetsMut, inbuf: Option<&[u8]>,
-    pn: u64, payload_len: usize, payload_offset: usize, extra_in: Option<&[u8]>,
+    b: &mut octets_rev::OctetsMut, inbuf: Option<&[u8]>, pn: u64,
+    payload_len: usize, payload_offset: usize, extra_in: Option<&[u8]>,
     aead: &crypto::Seal, scatter_crypt: bool,
 ) -> Result<usize> {
     let (header, mut payload) = b.split_at(payload_offset)?;
@@ -968,7 +966,7 @@ pub fn encrypt_pkt(
         scatter_crypt,
     )?;
 
-    //encrypt_hdr(&mut header, hdr_enc_len, payload.as_ref(), aead, version)?;
+    // encrypt_hdr(&mut header, hdr_enc_len, payload.as_ref(), aead, version)?;
 
     Ok(payload_offset + ciphertext_len)
 }
@@ -1956,8 +1954,14 @@ mod tests {
         )
         .unwrap();
         let (mut header, payload) = b.split_at(payload_offset).unwrap();
-        encrypt_hdr(&mut header, pn_len, payload.as_ref(), &aead, crate::PROTOCOL_VERSION_V1)
-            .expect("header encrypt");
+        encrypt_hdr(
+            &mut header,
+            pn_len,
+            payload.as_ref(),
+            &aead,
+            crate::PROTOCOL_VERSION_V1,
+        )
+        .expect("header encrypt");
 
         assert_eq!(written, expected_pkt.len());
         assert_eq!(&out[..written], expected_pkt);
@@ -2300,8 +2304,14 @@ mod tests {
         .unwrap();
 
         let (mut header, payload) = b.split_at(payload_offset).unwrap();
-        encrypt_hdr(&mut header, enc_len, payload.as_ref(), &aead, crate::PROTOCOL_VERSION_V1)
-            .expect("header encrypt");
+        encrypt_hdr(
+            &mut header,
+            enc_len,
+            payload.as_ref(),
+            &aead,
+            crate::PROTOCOL_VERSION_V1,
+        )
+        .expect("header encrypt");
 
         assert_eq!(written, expected_pkt.len());
     }

@@ -440,7 +440,7 @@ impl PacketKey {
 unsafe impl std::marker::Send for PacketKey {}
 unsafe impl std::marker::Sync for PacketKey {}
 
-extern {
+extern "C" {
     // EVP
     fn EVP_aes_128_gcm() -> *const EVP_AEAD;
 

@@ -1569,9 +1569,10 @@ impl Connection {
         let stream = self.streams.get_mut(&stream_id).ok_or(Error::Done)?;
 
         if stream.state() != stream::State::Data {
-            trace!("{} Stream id {} is not into a State::Data",
-               conn.trace_id(),
-               stream_id,
+            trace!(
+                "{} Stream id {} is not into a State::Data",
+                conn.trace_id(),
+                stream_id,
             );
             return Err(Error::Done);
         }
@@ -1603,8 +1604,8 @@ impl Connection {
     ///
     /// [`body_peek()`]: struct.Connection.html#method.body_peek
     pub fn body_consumed<F: BufFactory>(
-        &mut self, conn: &mut super::Connection<F>, stream_id: u64, consumed: usize,
-        app_buf: &mut crate::AppRecvBufMap,
+        &mut self, conn: &mut super::Connection<F>, stream_id: u64,
+        consumed: usize, app_buf: &mut crate::AppRecvBufMap,
     ) -> Result<()> {
         if conn.version != crate::PROTOCOL_VERSION_VREVERSO {
             return Err(Error::InvalidAPICall(
@@ -3382,8 +3383,8 @@ pub fn grease_value() -> u64 {
 pub mod testing {
     use super::*;
 
-    use crate::testing;
     use crate::range_buf::DefaultBufFactory;
+    use crate::testing;
 
     /// Session is an HTTP/3 test helper structure. It holds a client, server
     /// and pipe that allows them to communicate.
@@ -3655,14 +3656,18 @@ pub mod testing {
         }
 
         pub fn send_body_server_zc(
-            &mut self, stream: u64, body: F::Buf, fin: bool
+            &mut self, stream: u64, body: F::Buf, fin: bool,
         ) -> Result<(usize, Option<F::Buf>)>
         where
             F: BufFactory,
             F::Buf: BufSplit,
         {
-            let ret = self.server
-                          .send_body_zc(&mut self.pipe.server, stream, body, fin)?;
+            let ret = self.server.send_body_zc(
+                &mut self.pipe.server,
+                stream,
+                body,
+                fin,
+            )?;
 
             self.advance().ok();
             Ok(ret)
@@ -3833,9 +3838,9 @@ mod tests {
     use super::*;
 
     use super::testing::*;
-    use crate::testing::Pipe;
     use crate::range_buf::BufFactory;
     use crate::testing::BufTestFactory;
+    use crate::testing::Pipe;
 
     #[test]
     /// Make sure that random GREASE values is within the specified limit.
@@ -4020,10 +4025,9 @@ mod tests {
         assert_eq!(s.poll_client(), Err(Error::Done));
     }
 
-
     #[test]
-    /// Send a request with no body, and get a response with multiple DATA frames
-    /// on server using hidden copy encryption
+    /// Send a request with no body, and get a response with multiple DATA
+    /// frames on server using hidden copy encryption
     fn request_no_body_response_many_chunks_sent_without_copy() {
         let mut config = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
         config
@@ -4042,7 +4046,9 @@ mod tests {
         config.enable_hidden_copy_for_zc_sender(true);
 
         let h3_config = Config::new().unwrap();
-        let mut s = Session::<BufTestFactory>::with_configs(&mut config, &h3_config).unwrap();
+        let mut s =
+            Session::<BufTestFactory>::with_configs(&mut config, &h3_config)
+                .unwrap();
 
         s.handshake().unwrap();
 
@@ -4062,14 +4068,19 @@ mod tests {
 
         for i in 0..bodies.len() - 1 {
             s.send_body_server_zc(
-                stream, BufTestFactory::buf_from_slice(&bodies[i]), false,
-            ).unwrap();
+                stream,
+                BufTestFactory::buf_from_slice(&bodies[i]),
+                false,
+            )
+            .unwrap();
         }
 
         s.send_body_server_zc(
-            stream, BufTestFactory::buf_from_slice(&bodies[bodies.len() - 1]), true,
-        ).unwrap();
-
+            stream,
+            BufTestFactory::buf_from_slice(&bodies[bodies.len() - 1]),
+            true,
+        )
+        .unwrap();
 
         let ev_headers = Event::Headers {
             list: resp,
@@ -4468,10 +4479,7 @@ mod tests {
 
         assert_eq!(s.poll_client(), Ok((stream, Event::Data)));
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(
-                s.body_peek_client(stream).unwrap().0.len(),
-                body.len()
-            );
+            assert_eq!(s.body_peek_client(stream).unwrap().0.len(), body.len());
             assert!(s.body_consumed_client(stream, body.len()).is_ok());
         } else {
             assert_eq!(s.recv_body_client(stream, &mut recv_buf), Ok(body.len()));
@@ -7157,10 +7165,7 @@ mod tests {
         assert_eq!(s.poll_server(), Err(Error::Done));
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(
-                s.body_peek_server(stream).unwrap().0.len(),
-                body.len()
-            );
+            assert_eq!(s.body_peek_server(stream).unwrap().0.len(), body.len());
             assert!(s.body_consumed_server(stream, body.len()).is_ok());
         } else {
             assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
@@ -7192,10 +7197,7 @@ mod tests {
         assert_eq!(s.poll_client(), Err(Error::Done));
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(
-                s.body_peek_client(stream).unwrap().0.len(),
-                body.len()
-            );
+            assert_eq!(s.body_peek_client(stream).unwrap().0.len(), body.len());
             assert!(s.body_consumed_client(stream, body.len()).is_ok());
         } else {
             assert_eq!(s.recv_body_client(stream, &mut recv_buf), Ok(body.len()));
@@ -7278,10 +7280,7 @@ mod tests {
         assert_eq!(s.poll_server(), Err(Error::Done));
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(
-                s.body_peek_server(stream).unwrap().0.len(),
-                body.len()
-            );
+            assert_eq!(s.body_peek_server(stream).unwrap().0.len(), body.len());
             assert!(s.body_consumed_server(stream, body.len()).is_ok());
         } else {
             assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
@@ -7343,10 +7342,7 @@ mod tests {
         assert_eq!(s.poll_client(), Err(Error::Done));
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(
-                s.body_peek_client(stream).unwrap().0.len(),
-                body.len()
-            );
+            assert_eq!(s.body_peek_client(stream).unwrap().0.len(), body.len());
             assert!(s.body_consumed_client(stream, body.len()).is_ok());
         } else {
             assert_eq!(s.recv_body_client(stream, &mut recv_buf), Ok(body.len()));
@@ -7409,10 +7405,7 @@ mod tests {
         assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(
-                s.body_peek_server(stream).unwrap().0.len(),
-                body.len()
-            );
+            assert_eq!(s.body_peek_server(stream).unwrap().0.len(), body.len());
             assert!(s.body_consumed_server(stream, body.len()).is_ok());
         } else {
             assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
@@ -7505,10 +7498,7 @@ mod tests {
         assert_eq!(s.poll_server(), Err(Error::Done));
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(
-                s.body_peek_server(stream).unwrap().0.len(),
-                body.len()
-            );
+            assert_eq!(s.body_peek_server(stream).unwrap().0.len(), body.len());
             assert!(s.body_consumed_server(stream, body.len()).is_ok());
         } else {
             assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
@@ -7534,10 +7524,7 @@ mod tests {
 
         assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(
-                s.body_peek_server(stream).unwrap().0.len(),
-                body.len()
-            );
+            assert_eq!(s.body_peek_server(stream).unwrap().0.len(), body.len());
             assert!(s.body_consumed_server(stream, body.len()).is_ok());
         } else {
             assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
@@ -7547,10 +7534,7 @@ mod tests {
 
         assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(
-                s.body_peek_server(stream).unwrap().0.len(),
-                body.len()
-            );
+            assert_eq!(s.body_peek_server(stream).unwrap().0.len(), body.len());
             assert!(s.body_consumed_server(stream, body.len()).is_ok());
         } else {
             assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
@@ -7741,10 +7725,7 @@ mod tests {
         assert_eq!(s.poll_server(), Err(Error::Done));
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(
-                s.body_peek_server(stream).unwrap().0.len(),
-                body.len()
-            );
+            assert_eq!(s.body_peek_server(stream).unwrap().0.len(), body.len());
             assert!(s.body_consumed_server(stream, body.len()).is_ok());
         } else {
             assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));

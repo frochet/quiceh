@@ -1,19 +1,22 @@
 //! An internal zero-copy (in expectation) QUIC buffering for QUIC VReverso
 //!
-//! A [`AppRecvBufMap`] is an object holding all receiving stream buffers for the current QUIC VReverso
-//! connection. One must be created per QUIC connection.
+//! A [`AppRecvBufMap`] is an object holding all receiving stream buffers for
+//! the current QUIC VReverso connection. One must be created per QUIC
+//! connection.
 //!
-//! Each buffer is cut into chunks of `chunklen` length and can be set by the caller using
-//! [`set_expected_chunklen_to_consume()`]. The caller would chose a length (in bytes) linked to
-//! how much it would expect to consume data at once. If this length is larger than a Stream Frame,
-//! data will be moved in zero-copy. Copies happen at the boundary of a chunk. The larger are the
+//! Each buffer is cut into chunks of `chunklen` length and can be set by the
+//! caller using [`set_expected_chunklen_to_consume()`]. The caller would chose
+//! a length (in bytes) linked to how much it would expect to consume data at
+//! once. If this length is larger than a Stream Frame, data will be moved in
+//! zero-copy. Copies happen at the boundary of a chunk. The larger are the
 //! chunks, the less likely a copy could be needed while received Stream data.
 //!
-//! The maximum memory that could be consumed would depends on [`set_max_chunks_buffered()`] that
-//! limits the maximum number of chunks that could be created.
+//! The maximum memory that could be consumed would depends on
+//! [`set_max_chunks_buffered()`] that limits the maximum number of chunks that
+//! could be created.
 //!
-//! This object's data in manipulated through [`stream_peek()`], [`stream_consumed()`] and
-//! [`stream_recv_zc()`]
+//! This object's data in manipulated through [`stream_peek()`],
+//! [`stream_consumed()`] and [`stream_recv_zc()`]
 //!
 //!
 //! [`AppRecvBufMap`]: struct.AppRecvBufMap
@@ -40,7 +43,6 @@ use std::ops::RangeTo;
 
 use crate::Error;
 use crate::Result;
-
 
 /// Buffer map containing the stream buffers
 pub struct AppRecvBufMap {
@@ -492,7 +494,10 @@ impl AppRecvBuf {
             max_off = recvbufinfo.max_off();
             let mut this_len = recvbufinfo.len as u64;
             let this_offset = recvbufinfo.start_off;
-            debug_assert!(this_offset > chunk.stream_offset_start, "Current chunk's starting offest is smaller than expected");
+            debug_assert!(
+                this_offset > chunk.stream_offset_start,
+                "Current chunk's starting offest is smaller than expected"
+            );
 
             while chunk.max_off() < this_offset {
                 chunk = chunks_iter.next().unwrap();
@@ -619,14 +624,20 @@ impl AppRecvBuf {
         &mut self, stream: Option<&Stream<F>>, consumed: usize,
     ) -> Result<(bool, usize)> {
         let chunk = self.chunks.get_mut(0).unwrap();
-        if chunk.stream_offset_start == u64::MAX  || chunk.consumed + consumed > chunk.capacity() as usize {
+        if chunk.stream_offset_start == u64::MAX ||
+            chunk.consumed + consumed > chunk.capacity() as usize
+        {
             return Err(Error::InvalidAPICall(
                 "You may consuming more than what is available to read",
             ));
         }
 
         chunk.consumed += consumed;
-        trace!("Consuming {} bytes, we have {} bytes left in chunk", consumed, chunk.len());
+        trace!(
+            "Consuming {} bytes, we have {} bytes left in chunk",
+            consumed,
+            chunk.len()
+        );
 
         if let Some(stream) = stream {
             if stream.recv.heap.is_empty() &&
@@ -694,7 +705,7 @@ impl AppRecvBuf {
     pub fn is_contiguous_bytes_consumed(&self) -> bool {
         if let Some(chunk) = self.chunks.front() {
             // Should work if this is a recycled chunk too
-            return chunk.contiguous_off == chunk.consumed
+            return chunk.contiguous_off == chunk.consumed;
         }
         // No more chunks; we delivered all of them.
         true
@@ -735,20 +746,20 @@ impl AppRecvBuf {
                             NonZero::new(self.max_chunklen).unwrap(),
                             toffset,
                         );
-                        written += chunk
-                            .fill_from(&buf[written..], toffset);
+                        written += chunk.fill_from(&buf[written..], toffset);
                         toffset += chunk.capacity();
                         self.chunks.insert(idx, chunk);
                     } else {
-
                         debug_assert!(
                             toffset == chunk.stream_offset_start,
                             "toffset: {}, stream_offset_start: {}",
                             toffset,
                             chunk.stream_offset_start
                         );
-                        written += chunk
-                            .fill_from(&buf[written..], chunk.stream_offset_start);
+                        written += chunk.fill_from(
+                            &buf[written..],
+                            chunk.stream_offset_start,
+                        );
                         toffset += chunk.capacity();
                     }
                     idx += 1;
@@ -850,11 +861,13 @@ impl AppRecvBuf {
                         return Err(Error::TooManyChunksBuffered);
                     }
                     trace!("Creating missing memory chunk");
-                    (StreamChunk::new(
-                        NonZero::new(self.max_chunklen).unwrap(),
-                        stream_offset_start,
-                    ),
-                    true)
+                    (
+                        StreamChunk::new(
+                            NonZero::new(self.max_chunklen).unwrap(),
+                            stream_offset_start,
+                        ),
+                        true,
+                    )
                 }
             };
 
@@ -866,8 +879,8 @@ impl AppRecvBuf {
                     ))
                 } else {
                     Ok(StreamChunkMem::NotNewlyAllocated(
-                            chunk,
-                            relative_buf_offset as usize,
+                        chunk,
+                        relative_buf_offset as usize,
                     ))
                 }
             } else if newly_alloc {

@@ -27,8 +27,8 @@
 use likely_stable::if_unlikely;
 /// Zero-copy abstraction for parsing and constructing network packets.
 use std::mem;
-use std::ptr;
 use std::ops::Deref;
+use std::ptr;
 
 /// A specialized [`Result`] type for [`OctetsMut`] operations.
 ///
@@ -796,7 +796,9 @@ impl<'a> OctetsMut<'a> {
     }
 
     /// Splits the buffer in two at the given absolute offset.
-    pub fn split_at(&mut self, off: usize) -> Result<(OctetsMut<'_>, OctetsMut<'_>)> {
+    pub fn split_at(
+        &mut self, off: usize,
+    ) -> Result<(OctetsMut<'_>, OctetsMut<'_>)> {
         if self.len() < off {
             return Err(BufferError::BufferTooShortError);
         }

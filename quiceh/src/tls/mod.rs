@@ -855,7 +855,9 @@ extern "C" fn flush_flight(_ssl: *mut SSL) -> c_int {
     1
 }
 
-extern "C" fn send_alert(ssl: *mut SSL, level: crypto::Level, alert: u8) -> c_int {
+extern "C" fn send_alert(
+    ssl: *mut SSL, level: crypto::Level, alert: u8,
+) -> c_int {
     let ex_data = match get_ex_data_from_ptr::<ExData>(ssl, *QUICHE_EX_DATA_INDEX)
     {
         Some(v) => v,
@@ -1076,7 +1078,10 @@ extern "C" {
     fn SSL_CTX_set_verify(
         ctx: *mut SSL_CTX, mode: c_int,
         cb: Option<
-            unsafe extern "C" fn(ok: c_int, store_ctx: *mut X509_STORE_CTX) -> c_int,
+            unsafe extern "C" fn(
+                ok: c_int,
+                store_ctx: *mut X509_STORE_CTX,
+            ) -> c_int,
         >,
     );
 
@@ -1107,7 +1112,10 @@ extern "C" {
     fn SSL_CTX_sess_set_new_cb(
         ctx: *mut SSL_CTX,
         cb: Option<
-            unsafe extern "C" fn(ssl: *mut SSL, session: *mut SSL_SESSION) -> c_int,
+            unsafe extern "C" fn(
+                ssl: *mut SSL,
+                session: *mut SSL_SESSION,
+            ) -> c_int,
         >,
     );
 

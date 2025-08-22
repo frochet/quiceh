@@ -41,7 +41,7 @@ use crate::ranges;
 const SEND_BUFFER_SIZE: usize = 5;
 
 #[cfg(not(test))]
-const SEND_BUFFER_SIZE: usize = 4096*4;
+const SEND_BUFFER_SIZE: usize = 4096 * 4;
 
 struct SendReserve<'a, F: BufFactory> {
     inner: &'a mut SendBuf<F>,
@@ -234,7 +234,6 @@ impl<F: BufFactory> SendBuf<F> {
     }
 
     pub fn rangebuf_len(&mut self, cap: usize) -> Result<(usize, bool)> {
-
         let next_off = self.off_front();
         let mut fin = self.fin_off == Some(next_off);
         let mut buf_len = 0;
@@ -268,7 +267,6 @@ impl<F: BufFactory> SendBuf<F> {
     }
 
     pub fn rangebuf_consume(&mut self, consumed: usize) {
-
         let buf = match self.data.get_mut(self.pos) {
             Some(v) => v,
             None => return,
@@ -291,8 +289,9 @@ impl<F: BufFactory> SendBuf<F> {
         self.emit_off = cmp::max(self.emit_off, next_off);
     }
 
-    pub fn emit_rangebuf_vec(&mut self, max_len: usize) -> (Vec<RangeBuf<F>>, usize) {
-
+    pub fn emit_rangebuf_vec(
+        &mut self, max_len: usize,
+    ) -> (Vec<RangeBuf<F>>, usize) {
         let mut out_len = max_len;
         let out_off = self.off_front();
 
@@ -307,7 +306,7 @@ impl<F: BufFactory> SendBuf<F> {
                 off_front != next_off ||
                 off_front >= self.max_data
             {
-                    break;
+                break;
             }
 
             let buf = match self.data.get_mut(self.pos) {
@@ -315,7 +314,7 @@ impl<F: BufFactory> SendBuf<F> {
                 None => break,
             };
 
-            let buf_len =  cmp::min(buf.len(), out_len);
+            let buf_len = cmp::min(buf.len(), out_len);
             let partial = buf_len < buf.len();
 
             self.len -= buf_len as u64;

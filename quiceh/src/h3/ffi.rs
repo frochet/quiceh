@@ -78,7 +78,7 @@ pub extern "C" fn quiceh_h3_config_enable_extended_connect(
 }
 
 #[no_mangle]
-pub extern fn quiceh_h3_config_free(config: *mut h3::Config) {
+pub extern "C" fn quiceh_h3_config_free(config: *mut h3::Config) {
     if config.is_null() {
         return;
     }
@@ -137,9 +137,8 @@ pub extern "C" fn quiceh_h3_conn_poll(
     }
 }
 
-
 #[no_mangle]
-pub extern fn quiceh_h3_conn_poll_v3(
+pub extern "C" fn quiceh_h3_conn_poll_v3(
     conn: &mut h3::Connection, quic_conn: &mut Connection,
     app_buffers: &mut AppRecvBufMap, ev: *mut *const h3::Event,
 ) -> i64 {
@@ -157,7 +156,7 @@ pub extern fn quiceh_h3_conn_poll_v3(
 }
 
 #[no_mangle]
-pub extern fn quiceh_h3_event_type(ev: &h3::Event) -> u32 {
+pub extern "C" fn quiceh_h3_event_type(ev: &h3::Event) -> u32 {
     match ev {
         h3::Event::Headers { .. } => 0,
 
@@ -226,7 +225,7 @@ pub extern "C" fn quiceh_h3_extended_connect_enabled_by_peer(
 }
 
 #[no_mangle]
-pub extern fn quiceh_h3_event_free(ev: *mut h3::Event) {
+pub extern "C" fn quiceh_h3_event_free(ev: *mut h3::Event) {
     if ev.is_null() {
         return;
     }
@@ -326,9 +325,8 @@ pub extern "C" fn quiceh_h3_recv_body(
     }
 }
 
-
 #[no_mangle]
-pub extern fn quiceh_h3_body_peek(
+pub extern "C" fn quiceh_h3_body_peek(
     conn: &mut h3::Connection, quic_conn: &mut Connection, stream_id: u64,
     app_buffers: &mut AppRecvBufMap, out: *mut *const u8,
     expected_bytes: *mut size_t,
@@ -351,7 +349,7 @@ pub extern fn quiceh_h3_body_peek(
 }
 
 #[no_mangle]
-pub extern fn quiceh_h3_body_consumed(
+pub extern "C" fn quiceh_h3_body_consumed(
     conn: &mut h3::Connection, quic_conn: &mut Connection, stream_id: u64,
     consumed: size_t, app_buffers: &mut AppRecvBufMap,
 ) -> c_int {
@@ -362,7 +360,7 @@ pub extern fn quiceh_h3_body_consumed(
     }
 }
 #[no_mangle]
-pub extern fn quiceh_h3_send_goaway(
+pub extern "C" fn quiceh_h3_send_goaway(
     conn: &mut h3::Connection, quic_conn: &mut Connection, id: u64,
 ) -> c_int {
     match conn.send_goaway(quic_conn, id) {
@@ -435,7 +433,7 @@ pub extern "C" fn quiceh_h3_dgram_enabled_by_peer(
 }
 
 #[no_mangle]
-pub extern fn quiceh_h3_conn_free(conn: *mut h3::Connection) {
+pub extern "C" fn quiceh_h3_conn_free(conn: *mut h3::Connection) {
     if conn.is_null() {
         return;
     }

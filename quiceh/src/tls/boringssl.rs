@@ -52,7 +52,7 @@ pub(super) struct SSL_QUIC_METHOD {
 #[allow(non_camel_case_types)]
 struct SSL_PRIVATE_KEY_METHOD {
     sign: Option<
-        unsafe extern fn(
+        unsafe extern "C" fn(
             ssl: *mut SSL,
             out: *mut u8,
             out_len: *mut usize,
@@ -64,7 +64,7 @@ struct SSL_PRIVATE_KEY_METHOD {
     >,
 
     decrypt: Option<
-        unsafe extern fn(
+        unsafe extern "C" fn(
             ssl: *mut SSL,
             out: *mut u8,
             out_len: *mut usize,
@@ -75,7 +75,7 @@ struct SSL_PRIVATE_KEY_METHOD {
     >,
 
     complete: Option<
-        unsafe extern fn(
+        unsafe extern "C" fn(
             ssl: *mut SSL,
             out: *mut u8,
             out_len: *mut usize,
@@ -236,21 +236,21 @@ impl Handshake {
     // Only used for testing handling of failure during key signing.
     #[cfg(test)]
     pub fn set_failing_private_key_method(&mut self) {
-        extern fn failing_sign(
+        extern "C" fn failing_sign(
             _ssl: *mut SSL, _out: *mut u8, _out_len: *mut usize, _max_out: usize,
             _signature_algorithm: u16, _in: *const u8, _in_len: usize,
         ) -> ssl_private_key_result_t {
             ssl_private_key_result_t::ssl_private_key_failure
         }
 
-        extern fn failing_decrypt(
+        extern "C" fn failing_decrypt(
             _ssl: *mut SSL, _out: *mut u8, _out_len: *mut usize, _max_out: usize,
             _in: *const u8, _in_len: usize,
         ) -> ssl_private_key_result_t {
             ssl_private_key_result_t::ssl_private_key_failure
         }
 
-        extern fn failing_complete(
+        extern "C" fn failing_complete(
             _ssl: *mut SSL, _out: *mut u8, _out_len: *mut usize, _max_out: usize,
         ) -> ssl_private_key_result_t {
             ssl_private_key_result_t::ssl_private_key_failure

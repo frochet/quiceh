@@ -133,14 +133,15 @@ impl Seal {
         //  remaining length should hold extra_in_len + tag_len
         //
         // if V1:
-        //  in_buf is the ctrl data which is contained inside buf at position payload_offset
-        //  this is expected to be written in buf at the same position.
-        //  the length of in_buf should be able to hold ctrl_len, stream_len and tag_len
-        //  extra_in contains the stream_frame of stream_len bytes.
+        //  in_buf is the ctrl data which is contained inside buf at position
+        // payload_offset  this is expected to be written in buf at the
+        // same position.  the length of in_buf should be able to hold
+        // ctrl_len, stream_len and tag_len  extra_in contains the
+        // stream_frame of stream_len bytes.
         //
         let (extra_in_ptr, extra_in_len) = match extra_in {
             Some(v) => (v.as_ptr(), v.len()),
-            None =>  (std::ptr::null(), 0),
+            None => (std::ptr::null(), 0),
         };
 
         let mut out_tag_len = tag_len + extra_in_len;
@@ -158,23 +159,22 @@ impl Seal {
             buf.as_ptr()
         };
 
-
         let rc = unsafe {
             let out_tag_mut_ptr = buf.as_mut_ptr().add(in_len);
             EVP_AEAD_CTX_seal_scatter(
-                &self.packet.ctx,           // ctx
-                buf.as_mut_ptr(),           // out
-                out_tag_mut_ptr,            // out_tag
-                &mut out_tag_len,           // out_tag_len
-                tag_len + extra_in_len,     // max_out_tag_len
-                nonce[..].as_ptr(),         // nonce
-                nonce.len(),                // nonce_len
-                in_ptr,                     // inp
-                in_len,                     // in_len
-                extra_in_ptr,               // extra_in
-                extra_in_len,               // extra_in_len
-                ad.as_ptr(),                // ad
-                ad.len(),                   // ad_len
+                &self.packet.ctx,       // ctx
+                buf.as_mut_ptr(),       // out
+                out_tag_mut_ptr,        // out_tag
+                &mut out_tag_len,       // out_tag_len
+                tag_len + extra_in_len, // max_out_tag_len
+                nonce[..].as_ptr(),     // nonce
+                nonce.len(),            // nonce_len
+                in_ptr,                 // inp
+                in_len,                 // in_len
+                extra_in_ptr,           // extra_in
+                extra_in_len,           // extra_in_len
+                ad.as_ptr(),            // ad
+                ad.len(),               // ad_len
             )
         };
         if rc != 1 {

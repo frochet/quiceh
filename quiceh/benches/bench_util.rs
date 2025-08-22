@@ -4,8 +4,8 @@ use criterion::measurement::ValueFormatter;
 use criterion::Throughput;
 use quiceh::BufFactory;
 use quiceh::BufSplit;
-use std::time::Duration;
 use std::sync::Arc;
+use std::time::Duration;
 
 const NANOS_PER_SEC: u64 = 1_000_000_000;
 

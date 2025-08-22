@@ -1537,8 +1537,9 @@ where
 
                             b
                         },
-                        // This may happen if we get QUIC packet with the HTTP Frame hdr only
-                        // It trigers an Event::Data, but there is nothing to read (yet).
+                        // This may happen if we get QUIC packet with the HTTP
+                        // Frame hdr only It trigers an
+                        // Event::Data, but there is nothing to read (yet).
                         Err(quiceh::h3::Error::Done) => break,
 
                         Err(e) => panic!("Error reading conn: {:?}", e),
@@ -1913,7 +1914,8 @@ where
 
                     #[cfg(feature = "sfv")]
                     let priority =
-                        quiceh::h3::Priority::try_from(priority.as_slice()).unwrap_or_default();
+                        quiceh::h3::Priority::try_from(priority.as_slice())
+                            .unwrap_or_default();
 
                     #[cfg(not(feature = "sfv"))]
                     let priority = quiceh::h3::Priority::default();

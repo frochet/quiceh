@@ -7,9 +7,9 @@ use criterion::BatchSize;
 use criterion::BenchmarkId;
 use criterion::Criterion;
 use criterion::Throughput;
+use criterion_cycles_per_byte::CyclesPerByte;
 use quiceh::testing::Pipe;
 use quiceh::BufFactory;
-use criterion_cycles_per_byte::CyclesPerByte;
 
 use quiceh::BufSplit;
 
@@ -19,18 +19,19 @@ fn bench_stream_send(pipe: &mut Pipe, outbuf: &mut [u8], sendbuf: &[u8]) {
     pipe.client.stream_send(4, sendbuf, true).unwrap();
 
     loop {
-        let (write, send_info) = match pipe.client.send_on_path(outbuf, None, None) {
-            Ok(v) => v,
+        let (write, send_info) =
+            match pipe.client.send_on_path(outbuf, None, None) {
+                Ok(v) => v,
 
-            Err(quiceh::Error::Done) => {
-                // we sent everything
-                break;
-            },
+                Err(quiceh::Error::Done) => {
+                    // we sent everything
+                    break;
+                },
 
-            Err(e) => {
-                panic!("An error occured {:?}", e);
-            }
-        };
+                Err(e) => {
+                    panic!("An error occured {:?}", e);
+                },
+            };
         black_box(write);
         black_box(send_info);
     }
@@ -43,32 +44,30 @@ fn bench_stream_send_zc<F: BufFactory<Buf = BenchBuf>>(
     <F as BufFactory>::Buf: BufSplit,
 {
     pipe.client
-        .stream_send_zc(
-            4,
-            benchbuf.clone(),
-            Some(10000),
-            true,
-        )
+        .stream_send_zc(4, benchbuf.clone(), Some(10000), true)
         .unwrap();
     loop {
-        let (write, send_info) = match pipe.client.send_on_path(outbuf, None, None) {
-            Ok(v) => v,
+        let (write, send_info) =
+            match pipe.client.send_on_path(outbuf, None, None) {
+                Ok(v) => v,
 
-            Err(quiceh::Error::Done) => {
-                break;
-            },
+                Err(quiceh::Error::Done) => {
+                    break;
+                },
 
-            Err(e) => {
-                panic!("An error occured {:?}", e);
-            }
-        };
+                Err(e) => {
+                    panic!("An error occured {:?}", e);
+                },
+            };
         black_box(write);
         black_box(send_info);
     }
     black_box(outbuf);
 }
 
-fn bench_sender(c: &mut Criterion<CyclesPerByte>, config: &mut quiceh::Config, name: &str) {
+fn bench_sender(
+    c: &mut Criterion<CyclesPerByte>, config: &mut quiceh::Config, name: &str,
+) {
     let mut group = c.benchmark_group(name);
     group.throughput(Throughput::Bytes(10000));
 
@@ -79,18 +78,21 @@ fn bench_sender(c: &mut Criterion<CyclesPerByte>, config: &mut quiceh::Config, n
         BenchmarkId::new("zerocopy_send_path", 10000),
         &benchbuf,
         |b, benchbuf| {
-        b.iter_batched_ref(
-            || {
-                let mut pipe =
-                    Pipe::<BenchBufFactory>::with_config(config).unwrap();
-                pipe.handshake().unwrap();
-                let outbuf = vec![0; 65535];
-                (pipe, outbuf)
-            },
-            |(ref mut pipe, ref mut outbuf)| bench_stream_send_zc(pipe, outbuf, benchbuf),
-            BatchSize::SmallInput,
-        )
-    });
+            b.iter_batched_ref(
+                || {
+                    let mut pipe =
+                        Pipe::<BenchBufFactory>::with_config(config).unwrap();
+                    pipe.handshake().unwrap();
+                    let outbuf = vec![0; 65535];
+                    (pipe, outbuf)
+                },
+                |(ref mut pipe, ref mut outbuf)| {
+                    bench_stream_send_zc(pipe, outbuf, benchbuf)
+                },
+                BatchSize::SmallInput,
+            )
+        },
+    );
 
     group.bench_with_input(
         BenchmarkId::new("send_path", 10000),
@@ -110,7 +112,6 @@ fn bench_sender(c: &mut Criterion<CyclesPerByte>, config: &mut quiceh::Config, n
             );
         },
     );
-
 
     group.finish();
 }
@@ -144,7 +145,6 @@ fn send_bench_hidden_copy(c: &mut Criterion<CyclesPerByte>) {
     config.enable_hidden_copy_for_zc_sender(true);
 
     bench_sender(c, &mut config, "send_path_with_hidden_copy");
-
 }
 
 fn send_bench_no_hidden_copy(c: &mut Criterion<CyclesPerByte>) {
@@ -176,7 +176,6 @@ fn send_bench_no_hidden_copy(c: &mut Criterion<CyclesPerByte>) {
     config.enable_hidden_copy_for_zc_sender(false);
 
     bench_sender(c, &mut config, "send_path_no_hidden_copy");
-
 }
 
 criterion_group! {

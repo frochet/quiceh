@@ -1031,7 +1031,7 @@ impl Frame {
                 1 + // frame type
                 octets_rev::varint_len(*offset) +
                 2 +
-                length  // data
+                length // data
             },
 
             Frame::CryptoHeader { offset, length, .. } => {
