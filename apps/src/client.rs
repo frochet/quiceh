@@ -93,6 +93,9 @@ where
     // wrapper & recvmmsg() / sendmmsg() implementations
     let socket_std = std::net::UdpSocket::bind(&bind_addr).unwrap();
     let recv_state = UdpSocketState::new((&socket_std).into()).unwrap();
+    recv_state
+        .set_recv_buffer_size((&socket_std).into(), 2097152)
+        .unwrap();
     let mut metainfos = [RecvMeta::default(); BATCH_SIZE];
     // Create the UDP socket backing the QUIC connection, and register it with
     // the event loop.
