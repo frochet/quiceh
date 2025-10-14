@@ -313,7 +313,7 @@ impl BTreeRangeSet {
         let ranges: Vec<Range<u64>> = self
             .inner
             .range((Bound::Unbounded, Bound::Included(&largest)))
-            .map(|(&s, &e)| (s..e))
+            .map(|(&s, &e)| s..e)
             .collect();
 
         for r in ranges {
@@ -329,14 +329,14 @@ impl BTreeRangeSet {
     fn prev_to(&self, item: u64) -> Option<Range<u64>> {
         self.inner
             .range((Bound::Unbounded, Bound::Included(item)))
-            .map(|(&s, &e)| (s..e))
+            .map(|(&s, &e)| s..e)
             .next_back()
     }
 
     fn next_to(&self, item: u64) -> Option<Range<u64>> {
         self.inner
             .range((Bound::Included(item), Bound::Unbounded))
-            .map(|(&s, &e)| (s..e))
+            .map(|(&s, &e)| s..e)
             .next()
     }
 }
