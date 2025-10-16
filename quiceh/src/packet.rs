@@ -595,8 +595,8 @@ pub fn truncated_offset_len(offset: u64, largest_offset_acked: u64) -> usize {
 #[inline]
 pub fn pkt_num_len(pn: u64, largest_acked: u64) -> usize {
     let num_unacked: u64 = pn.saturating_sub(largest_acked) + 1;
-    // computes ceil of num_unacked.log2()
-    let min_bits = u64::BITS - num_unacked.leading_zeros();
+    // computes ceil of num_unacked.log2() + 1
+    let min_bits = u64::BITS - num_unacked.leading_zeros() + 1;
     // get the num len in bytes
     ((min_bits + 7) / 8) as usize
 }
@@ -605,9 +605,9 @@ pub fn pkt_num_len(pn: u64, largest_acked: u64) -> usize {
 /// id.
 #[inline]
 pub fn pkt_num_len_v3(pn: u64, largest_acked: u64) -> usize {
-    let num_unacked: u64 = pn.saturating_sub(largest_acked);
-    // computes ceil of num_unacked.log2()
-    let min_bits = u64::BITS - num_unacked.leading_zeros() + 2;
+    let num_unacked: u64 = pn.saturating_sub(largest_acked) + 1;
+    // computes ceil of num_unacked.log2() + 1
+    let min_bits = u64::BITS - num_unacked.leading_zeros() + 3;
     // get the num len in bytes
     ((min_bits + 7) / 8) as usize
 }
@@ -1496,7 +1496,35 @@ mod tests {
             let hdr_num = u64::from(b.get_u24().unwrap());
             let pn = decode_pkt_num(0xace9fa, hdr_num, num_len);
             assert_eq!(pn, 0xace9fe);
+            // roundtrip
+            let base = 0xdeadbeef;
+            for i in 1..255 {
+                let pn = base + i;
+                let num_len = pkt_num_len(pn, base);
+                if num_len == 1 {
+                    let decoded = decode_pkt_num(base, pn & 0xff, num_len);
+                    assert_eq!(decoded, pn);
+                } else {
+                    assert_eq!(num_len, 2);
+                    let decoded = decode_pkt_num(base, pn & 0xffff, num_len);
+                    assert_eq!(decoded, pn);
+                }
+            }
         } else {
+            // roundtrip
+            let base = 0xdeadbeef;
+            for i in 1..255 {
+                let pn = base + i;
+                let num_len = pkt_num_len_v3(pn, base);
+                if num_len == 1 {
+                    let decoded = decode_pkt_num_v3(base, pn & 0xff, num_len);
+                    assert_eq!(decoded, pn);
+                } else {
+                    assert_eq!(num_len, 2);
+                    let decoded = decode_pkt_num_v3(base, pn & 0xffff, num_len);
+                    assert_eq!(decoded, pn);
+                }
+            }
             // V3
             // We would need 4x4x4  (pn x stream_id x offset) tests to cover
             // all encode/code code paths.
