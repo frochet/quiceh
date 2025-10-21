@@ -8,9 +8,9 @@ use std::sync::Arc;
 use ring::rand::*;
 
 use quiceh::AppRecvBufMap;
-use tokio::sync::mpsc;
 use quinn_udp::Transmit;
 use quinn_udp::UdpSocketState;
+use tokio::sync::mpsc;
 
 use clap::Parser;
 
@@ -28,8 +28,10 @@ struct Args {
     with_retry: bool,
 }
 
-type ClientMap =
-    HashMap<quiceh::ConnectionId<'static>, mpsc::Sender<(Vec<u8>, net::SocketAddr)>>;
+type ClientMap = HashMap<
+    quiceh::ConnectionId<'static>,
+    mpsc::Sender<(Vec<u8>, net::SocketAddr)>,
+>;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -37,10 +39,8 @@ async fn main() {
 
     let args = Args::parse();
 
-    let socket = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:4433")
-            .await
-            .unwrap()
-    );
+    let socket =
+        Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:4433").await.unwrap());
     let mut pacing = false;
     match set_txtime_sockopt(&socket) {
         Ok(_) => {
@@ -51,7 +51,8 @@ async fn main() {
     };
 
     // Create the configuration for the QUIC connections.
-    let mut config = quiceh::Config::new(quiceh::PROTOCOL_VERSION_VREVERSO).unwrap();
+    let mut config =
+        quiceh::Config::new(quiceh::PROTOCOL_VERSION_VREVERSO).unwrap();
     config
         .load_cert_chain_from_pem_file("quiceh/examples/cert.crt")
         .unwrap();
@@ -240,11 +241,9 @@ async fn main() {
 }
 
 async fn handle_client(
-    socket: Arc<tokio::net::UdpSocket>,
-    mut conn: quiceh::Connection,
+    socket: Arc<tokio::net::UdpSocket>, mut conn: quiceh::Connection,
     mut rx: mpsc::Receiver<(Vec<u8>, net::SocketAddr)>,
-    tx_garbage_conn: mpsc::Sender<Vec<u8>>,
-    local_addr: net::SocketAddr,
+    tx_garbage_conn: mpsc::Sender<Vec<u8>>, local_addr: net::SocketAddr,
 ) {
     let mut app_buffers = AppRecvBufMap::new(3, 1_000_000, 1_000_000);
     let mut partial_responses: HashMap<u64, PartialResponse> = HashMap::new();
@@ -258,7 +257,6 @@ async fn handle_client(
 
     let mut continue_write = false;
     loop {
-
         let timeout = {
             if continue_write {
                 Some(std::time::Duration::from_secs(0))
@@ -355,15 +353,13 @@ async fn handle_client(
                 loss_rate = new_loss_rate;
             }
 
-            let new_max_send_burst =
-                conn.send_quantum().min(max_send_burst) /
+            let new_max_send_burst = conn.send_quantum().min(max_send_burst) /
                 MAX_DATAGRAM_SIZE *
                 MAX_DATAGRAM_SIZE;
 
             'send: while total_write < new_max_send_burst {
-
-                let (write, send_info) = match conn
-                    .send(&mut out[total_write..new_max_send_burst]) {
+                let (write, send_info) =
+                    match conn.send(&mut out[total_write..new_max_send_burst]) {
                         Ok(v) => v,
 
                         Err(quiceh::Error::Done) => {
@@ -406,7 +402,6 @@ async fn handle_client(
 
                 panic!("send_to() failed: {:?}", e);
             }
-
         }
 
         if total_write >= new_max_send_burst {
@@ -422,7 +417,15 @@ async fn handle_client(
         };
 
         if is_closed {
-            debug!("Conn closed: sending {}",  scid.clone().unwrap().iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(""));
+            debug!(
+                "Conn closed: sending {}",
+                scid.clone()
+                    .unwrap()
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<Vec<_>>()
+                    .join("")
+            );
             tx_garbage_conn.send(scid.unwrap()).await.unwrap();
             break;
         }
@@ -484,7 +487,8 @@ async fn handle_stream(buf: &[u8], root: &str) -> Response {
         );
 
         if uri.starts_with("/download/") {
-            let size = uri.components()
+            let size = uri
+                .components()
                 .nth(2)
                 .and_then(|c| c.as_os_str().to_str())
                 .and_then(|s| s.parse::<usize>().ok());
@@ -508,14 +512,10 @@ async fn handle_stream(buf: &[u8], root: &str) -> Response {
                 }
             }
         } else {
-
             let body = tokio::fs::read(path.as_path())
                 .await
                 .unwrap_or_else(|_| b"Not Found!\r\n".to_vec());
-            info!(
-                "sending response of size {} on stream",
-                body.len(),
-            );
+            info!("sending response of size {} on stream", body.len(),);
             let len = body.len();
             Response {
                 body,
@@ -559,13 +559,16 @@ fn handle_writable(
             return;
         },
     };
-    debug!("{} written partially on stream {} bytes", conn.trace_id(), written);
+    debug!(
+        "{} written partially on stream {} bytes",
+        conn.trace_id(),
+        written
+    );
     resp.written += written;
     if resp.written == resp.tot_size {
         partial_responses.remove(&stream_id);
     }
 }
-
 
 /// Set SO_TXTIME socket option.
 ///
