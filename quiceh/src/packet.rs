@@ -594,7 +594,7 @@ pub fn truncated_offset_len(offset: u64, largest_offset_acked: u64) -> usize {
 
 #[inline]
 pub fn pkt_num_len(pn: u64, largest_acked: u64) -> usize {
-    let num_unacked: u64 = pn.saturating_sub(largest_acked) + 1;
+    let num_unacked: u64 = pn.saturating_sub(largest_acked);
     // computes ceil of num_unacked.log2() + 1
     let min_bits = u64::BITS - num_unacked.leading_zeros() + 1;
     // get the num len in bytes
@@ -605,7 +605,7 @@ pub fn pkt_num_len(pn: u64, largest_acked: u64) -> usize {
 /// id.
 #[inline]
 pub fn pkt_num_len_v3(pn: u64, largest_acked: u64) -> usize {
-    let num_unacked: u64 = pn.saturating_sub(largest_acked) + 1;
+    let num_unacked: u64 = pn.saturating_sub(largest_acked);
     // computes ceil of num_unacked.log2() + 1
     let min_bits = u64::BITS - num_unacked.leading_zeros() + 3;
     // get the num len in bytes
@@ -1487,15 +1487,15 @@ mod tests {
             let pn = decode_pkt_num(0xac5c01, hdr_num, num_len);
             assert_eq!(pn, 0xac5c02);
             // sending 0xace8fe while having 0xabe8b3 acked
-            let num_len = pkt_num_len(0xace9fe, 0xabe8b3);
+            let num_len = pkt_num_len(0xace8fe, 0xabe8b3);
             assert_eq!(num_len, 3);
             let mut b = octets_rev::OctetsMut::with_slice(&mut d);
-            encode_pkt_num(0xace9fe, num_len, &mut b).unwrap();
+            encode_pkt_num(0xace8fe, num_len, &mut b).unwrap();
             // reading
             let mut b = octets_rev::OctetsMut::with_slice(&mut d);
             let hdr_num = u64::from(b.get_u24().unwrap());
-            let pn = decode_pkt_num(0xace9fa, hdr_num, num_len);
-            assert_eq!(pn, 0xace9fe);
+            let pn = decode_pkt_num(0xace8fa, hdr_num, num_len);
+            assert_eq!(pn, 0xace8fe);
             // roundtrip
             let base = 0xdeadbeef;
             for i in 1..255 {
