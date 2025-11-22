@@ -96,83 +96,50 @@ async fn main() {
 
     let mut buf = vec![0; 65535];
 
-    loop {
-        tokio::select! {
-            Some(scid) = rx_garbage_conn.recv() => {
-                let scid = quiceh::ConnectionId::from_vec(scid);
-                clients.remove(&scid);
-            }
+    let handle = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                Some(scid) = rx_garbage_conn.recv() => {
+                    let scid = quiceh::ConnectionId::from_vec(scid);
+                    clients.remove(&scid);
+                }
 
-            result = socket.recv_from(&mut buf) => {
-                let (len, from) = result.unwrap();
-                let pkt_buf = &mut buf[..len];
+                result = socket.recv_from(&mut buf) => {
+                    let (len, from) = result.unwrap();
+                    let pkt_buf = &mut buf[..len];
 
-                let hdr = match quiceh::Header::from_slice(
-                    pkt_buf,
-                    quiceh::MAX_CONN_ID_LEN,
-                ) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        error!("Parsing packet header failed: {:?}", e);
-                        continue;
-                    },
-                };
+                    let hdr = match quiceh::Header::from_slice(
+                        pkt_buf,
+                        quiceh::MAX_CONN_ID_LEN,
+                    ) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            error!("Parsing packet header failed: {:?}", e);
+                            continue;
+                        },
+                    };
 
-                trace!("got packet {:?}", hdr);
+                    trace!("got packet {:?}", hdr);
 
-                let conn_id = ring::hmac::sign(&conn_id_seed, &hdr.dcid);
-                let conn_id = &conn_id.as_ref()[..quiceh::MAX_CONN_ID_LEN];
-                let conn_id = conn_id.to_vec().into();
+                    let conn_id = ring::hmac::sign(&conn_id_seed, &hdr.dcid);
+                    let conn_id = &conn_id.as_ref()[..quiceh::MAX_CONN_ID_LEN];
+                    let conn_id = conn_id.to_vec().into();
 
-                let client_sender = if !clients.contains_key(&hdr.dcid) &&
-                    !clients.contains_key(&conn_id)
-                {
-                    if hdr.ty != quiceh::Type::Initial {
-                        error!("Packet is not Initial");
-                        continue;
-                    }
-
-                    if !quiceh::version_is_supported(hdr.version) {
-                        warn!("Doing version negotiation");
-
-                        let mut out = [0; MAX_DATAGRAM_SIZE];
-                        let len =
-                            quiceh::negotiate_version(&hdr.scid, &hdr.dcid, &mut out)
-                                .unwrap();
-                        let out = &out[..len];
-                        if let Err(e) = socket.send_to(out, from).await {
-                            if e.kind() == std::io::ErrorKind::WouldBlock {
-                                debug!("send() would block");
-                                break;
-                            }
-                            panic!("send() failed: {:?}", e);
+                    let client_sender = if !clients.contains_key(&hdr.dcid) &&
+                        !clients.contains_key(&conn_id)
+                    {
+                        if hdr.ty != quiceh::Type::Initial {
+                            error!("Packet is not Initial");
+                            continue;
                         }
-                        continue;
-                    }
 
-                    let mut scid = [0; quiceh::MAX_CONN_ID_LEN];
-                    scid.copy_from_slice(&conn_id);
+                        if !quiceh::version_is_supported(hdr.version) {
+                            warn!("Doing version negotiation");
 
-                    let mut odcid = None;
-
-                    // TODO add CLAP and CLAP param
-                    if args.with_retry {
-                        let token = hdr.token.as_ref().unwrap();
-
-                        if token.is_empty() {
-                            warn!("Doing stateless retry");
-                            let scid = quiceh::ConnectionId::from_ref(&scid);
-                            let new_token = mint_token(&hdr, &from);
                             let mut out = [0; MAX_DATAGRAM_SIZE];
-                            let len = quiceh::retry(
-                                &hdr.scid,
-                                &hdr.dcid,
-                                &scid,
-                                &new_token,
-                                hdr.version,
-                                &mut out,
-                            )
-                            .unwrap();
+                            let len =
+                                quiceh::negotiate_version(&hdr.scid, &hdr.dcid, &mut out)
+                                    .unwrap();
                             let out = &out[..len];
                             if let Err(e) = socket.send_to(out, from).await {
                                 if e.kind() == std::io::ErrorKind::WouldBlock {
@@ -183,61 +150,97 @@ async fn main() {
                             }
                             continue;
                         }
-                        odcid = validate_token(&from, token);
-                        if odcid.is_none() {
-                            error!("Invalid address validation token");
-                            continue;
+
+                        let mut scid = [0; quiceh::MAX_CONN_ID_LEN];
+                        scid.copy_from_slice(&conn_id);
+
+                        let mut odcid = None;
+
+                        // TODO add CLAP and CLAP param
+                        if args.with_retry {
+                            let token = hdr.token.as_ref().unwrap();
+
+                            if token.is_empty() {
+                                warn!("Doing stateless retry");
+                                let scid = quiceh::ConnectionId::from_ref(&scid);
+                                let new_token = mint_token(&hdr, &from);
+                                let mut out = [0; MAX_DATAGRAM_SIZE];
+                                let len = quiceh::retry(
+                                    &hdr.scid,
+                                    &hdr.dcid,
+                                    &scid,
+                                    &new_token,
+                                    hdr.version,
+                                    &mut out,
+                                )
+                                .unwrap();
+                                let out = &out[..len];
+                                if let Err(e) = socket.send_to(out, from).await {
+                                    if e.kind() == std::io::ErrorKind::WouldBlock {
+                                        debug!("send() would block");
+                                        break;
+                                    }
+                                    panic!("send() failed: {:?}", e);
+                                }
+                                continue;
+                            }
+                            odcid = validate_token(&from, token);
+                            if odcid.is_none() {
+                                error!("Invalid address validation token");
+                                continue;
+                            }
+
+                            if scid.len() != hdr.dcid.len() {
+                                error!("Invalid destination connection ID");
+                                continue;
+                            }
+
+                            // Reuse the source connection ID we sent in the Retry
+                            // packet, instead of changing it again.
+                            scid.copy_from_slice(&hdr.dcid);
+
                         }
 
-                        if scid.len() != hdr.dcid.len() {
-                            error!("Invalid destination connection ID");
-                            continue;
+
+                        let scid = quiceh::ConnectionId::from_vec(scid.to_vec());
+
+                        debug!("New connection: dcid={:?} scid={:?}", hdr.dcid, scid);
+
+                        let conn = quiceh::accept(
+                            &scid,
+                            odcid.as_ref(),
+                            socket.local_addr().unwrap(),
+                            from,
+                            &mut config,
+                        )
+                        .unwrap();
+
+                        let (tx, rx) = mpsc::channel(128);
+
+                        tokio::spawn(handle_client(
+                            socket.clone(),
+                            conn,
+                            rx,
+                            tx_garbage_conn.clone(),
+                            socket.local_addr().unwrap(),
+                        ));
+
+                        clients.insert(scid.clone(), tx.clone());
+                        Some(tx)
+                    } else {
+                        clients.get(&hdr.dcid).or_else(|| clients.get(&conn_id)).cloned()
+                    };
+
+                    if let Some(client_sender) = client_sender {
+                        if let Err(e) = client_sender.send((pkt_buf.to_vec(), from)).await {
+                            error!("Failed to send packet to client handler: {}", e);
                         }
-
-                        // Reuse the source connection ID we sent in the Retry
-                        // packet, instead of changing it again.
-                        scid.copy_from_slice(&hdr.dcid);
-
-                    }
-
-
-                    let scid = quiceh::ConnectionId::from_vec(scid.to_vec());
-
-                    debug!("New connection: dcid={:?} scid={:?}", hdr.dcid, scid);
-
-                    let conn = quiceh::accept(
-                        &scid,
-                        odcid.as_ref(),
-                        socket.local_addr().unwrap(),
-                        from,
-                        &mut config,
-                    )
-                    .unwrap();
-
-                    let (tx, rx) = mpsc::channel(128);
-
-                    tokio::spawn(handle_client(
-                        socket.clone(),
-                        conn,
-                        rx,
-                        tx_garbage_conn.clone(),
-                        socket.local_addr().unwrap(),
-                    ));
-
-                    clients.insert(scid.clone(), tx.clone());
-                    Some(tx)
-                } else {
-                    clients.get(&hdr.dcid).or_else(|| clients.get(&conn_id)).cloned()
-                };
-
-                if let Some(client_sender) = client_sender {
-                    if let Err(e) = client_sender.send((pkt_buf.to_vec(), from)).await {
-                        error!("Failed to send packet to client handler: {}", e);
                     }
                 }
             }
         }
-    }
+    });
+    handle.await.unwrap();
 }
 
 async fn handle_client(
@@ -353,9 +356,9 @@ async fn handle_client(
                 loss_rate = new_loss_rate;
             }
 
-            let new_max_send_burst = conn.send_quantum().min(max_send_burst) /
-                MAX_DATAGRAM_SIZE *
-                MAX_DATAGRAM_SIZE;
+            let new_max_send_burst = conn.send_quantum().min(max_send_burst)
+                / MAX_DATAGRAM_SIZE
+                * MAX_DATAGRAM_SIZE;
 
             'send: while total_write < new_max_send_burst {
                 let (write, send_info) =

@@ -667,32 +667,32 @@ pub enum Error {
 pub enum WireErrorCode {
     /// An endpoint uses this with CONNECTION_CLOSE to signal that the
     /// connection is being closed abruptly in the absence of any error.
-    NoError              = 0x0,
+    NoError = 0x0,
     /// The endpoint encountered an internal error and cannot continue with the
     /// connection.
-    InternalError        = 0x1,
+    InternalError = 0x1,
     /// The server refused to accept a new connection.
-    ConnectionRefused    = 0x2,
+    ConnectionRefused = 0x2,
     /// An endpoint received more data than it permitted in its advertised data
     /// limits; see Section 4.
-    FlowControlError     = 0x3,
+    FlowControlError = 0x3,
     /// An endpoint received a frame for a stream identifier that exceeded its
     /// advertised stream limit for the corresponding stream type.
-    StreamLimitError     = 0x4,
+    StreamLimitError = 0x4,
     /// An endpoint received a frame for a stream that was not in a state that
     /// permitted that frame.
-    StreamStateError     = 0x5,
+    StreamStateError = 0x5,
     /// (1) An endpoint received a STREAM frame containing data that exceeded
     /// the previously established final size, (2) an endpoint received a
     /// STREAM frame or a RESET_STREAM frame containing a final size that
     /// was lower than the size of stream data that was already received, or
     /// (3) an endpoint received a STREAM frame or a RESET_STREAM frame
     /// containing a different final size to the one already established.
-    FinalSizeError       = 0x6,
+    FinalSizeError = 0x6,
     /// An endpoint received a frame that was badly formatted -- for instance, a
     /// frame of an unknown type or an ACK frame that has more
     /// acknowledgment ranges than the remainder of the packet could carry.
-    FrameEncodingError   = 0x7,
+    FrameEncodingError = 0x7,
     /// An endpoint received transport parameters that were badly formatted,
     /// included an invalid value, omitted a mandatory transport parameter,
     /// included a forbidden transport parameter, or were otherwise in
@@ -705,25 +705,25 @@ pub enum WireErrorCode {
     ConnectionIdLimitError = 0x9,
     /// An endpoint detected an error with protocol compliance that was not
     /// covered by more specific error codes.
-    ProtocolViolation    = 0xa,
+    ProtocolViolation = 0xa,
     /// A server received a client Initial that contained an invalid Token
     /// field.
-    InvalidToken         = 0xb,
+    InvalidToken = 0xb,
     /// The application or application protocol caused the connection to be
     /// closed.
-    ApplicationError     = 0xc,
+    ApplicationError = 0xc,
     /// An endpoint has received more data in CRYPTO frames than it can buffer.
     CryptoBufferExceeded = 0xd,
     /// An endpoint detected errors in performing key updates.
-    KeyUpdateError       = 0xe,
+    KeyUpdateError = 0xe,
     /// An endpoint has reached the confidentiality or integrity limit for the
     /// AEAD algorithm used by the given connection.
-    AeadLimitReached     = 0xf,
+    AeadLimitReached = 0xf,
     /// An endpoint has determined that the network path is incapable of
     /// supporting QUIC. An endpoint is unlikely to receive a
     /// CONNECTION_CLOSE frame carrying this code except when the path does
     /// not support a large enough MTU.
-    NoViablePath         = 0x10,
+    NoViablePath = 0x10,
 }
 
 impl Error {
@@ -731,16 +731,19 @@ impl Error {
         match self {
             Error::Done => WireErrorCode::NoError as u64,
             Error::InvalidFrame => WireErrorCode::FrameEncodingError as u64,
-            Error::InvalidStreamState(..) =>
-                WireErrorCode::StreamStateError as u64,
-            Error::InvalidTransportParam =>
-                WireErrorCode::TransportParameterError as u64,
+            Error::InvalidStreamState(..) => {
+                WireErrorCode::StreamStateError as u64
+            },
+            Error::InvalidTransportParam => {
+                WireErrorCode::TransportParameterError as u64
+            },
             Error::FlowControl => WireErrorCode::FlowControlError as u64,
             Error::StreamLimit => WireErrorCode::StreamLimitError as u64,
             Error::IdLimit => WireErrorCode::ConnectionIdLimitError as u64,
             Error::FinalSize => WireErrorCode::FinalSizeError as u64,
-            Error::CryptoBufferExceeded =>
-                WireErrorCode::CryptoBufferExceeded as u64,
+            Error::CryptoBufferExceeded => {
+                WireErrorCode::CryptoBufferExceeded as u64
+            },
             Error::KeyUpdate => WireErrorCode::KeyUpdateError as u64,
             _ => WireErrorCode::ProtocolViolation as u64,
         }
@@ -793,8 +796,9 @@ impl std::convert::From<octets_rev::BufferError> for Error {
     fn from(_err: octets_rev::BufferError) -> Self {
         match _err {
             octets_rev::BufferError::BufferTooShortError => Error::BufferTooShort,
-            octets_rev::BufferError::BufferProtocolError =>
-                Error::BufferProtocolError,
+            octets_rev::BufferError::BufferProtocolError => {
+                Error::BufferProtocolError
+            },
         }
     }
 }
@@ -848,7 +852,7 @@ pub struct ConnectionError {
 #[derive(PartialEq, Eq)]
 pub enum Shutdown {
     /// Stop receiving stream data.
-    Read  = 0,
+    Read = 0,
 
     /// Stop sending stream data.
     Write = 1,
@@ -860,10 +864,10 @@ pub enum Shutdown {
 #[cfg_attr(docsrs, doc(cfg(feature = "qlog")))]
 pub enum QlogLevel {
     /// Logs any events of Core importance.
-    Core  = 0,
+    Core = 0,
 
     /// Logs any events of Core and Base importance.
-    Base  = 1,
+    Base = 1,
 
     /// Logs any events of Core, Base and Extra importance
     Extra = 2,
@@ -2893,9 +2897,9 @@ impl<F: BufFactory> Connection<F> {
             Some(v) => v,
 
             None => {
-                if hdr.ty == packet::Type::ZeroRTT &&
-                    self.undecryptable_pkts.len() < MAX_UNDECRYPTABLE_PACKETS &&
-                    !self.is_established()
+                if hdr.ty == packet::Type::ZeroRTT
+                    && self.undecryptable_pkts.len() < MAX_UNDECRYPTABLE_PACKETS
+                    && !self.is_established()
                 {
                     // Buffer 0-RTT packets when the required read key is not
                     // available yet, and process them later.
@@ -3078,9 +3082,9 @@ impl<F: BufFactory> Connection<F> {
         // Check for key update.
         let mut aead_next = None;
 
-        if self.handshake_confirmed &&
-            hdr.ty != Type::ZeroRTT &&
-            hdr.key_phase != self.key_phase
+        if self.handshake_confirmed
+            && hdr.ty != Type::ZeroRTT
+            && hdr.key_phase != self.key_phase
         {
             // Check if this packet arrived before key update.
             if let Some(key_update) = self.pkt_num_spaces[epoch]
@@ -3228,8 +3232,8 @@ impl<F: BufFactory> Connection<F> {
         if payload.cap() == 0 {
             if let Some(chunk_enum) = maybe_chunk_enum {
                 match chunk_enum {
-                    StreamChunkMem::NotNewlyAllocatedMayNeedCopyAcross(chunk) |
-                    StreamChunkMem::NotNewlyAllocated(chunk, _) => {
+                    StreamChunkMem::NotNewlyAllocatedMayNeedCopyAcross(chunk)
+                    | StreamChunkMem::NotNewlyAllocated(chunk, _) => {
                         let appbuf = app_buffers.get_or_create_stream_buffer(
                             hdr.expected_stream_id,
                         )?;
@@ -3717,9 +3721,9 @@ impl<F: BufFactory> Connection<F> {
             // Did the peer migrated to another path?
             let active_path_id = self.paths.get_active_path_id()?;
 
-            if self.is_server &&
-                recv_pid != active_path_id &&
-                self.pkt_num_spaces[epoch].largest_rx_non_probing_pkt_num == pn
+            if self.is_server
+                && recv_pid != active_path_id
+                && self.pkt_num_spaces[epoch].largest_rx_non_probing_pkt_num == pn
             {
                 self.on_peer_migrated(recv_pid, self.disable_dcid_reuse, now)?;
             }
@@ -4014,8 +4018,8 @@ impl<F: BufFactory> Connection<F> {
             }
 
             // Don't coalesce packets that must go on different paths.
-            if !(from.is_some() && to.is_some()) &&
-                self.get_send_path_id(from, to)? != send_pid
+            if !(from.is_some() && to.is_some())
+                && self.get_send_path_id(from, to)? != send_pid
             {
                 break;
             }
@@ -4145,11 +4149,12 @@ impl<F: BufFactory> Connection<F> {
                         stream_id,
                         error_code,
                         final_size,
-                    } =>
+                    } => {
                         if self.streams.get(stream_id).is_some() {
                             self.streams
                                 .insert_reset(stream_id, error_code, final_size);
-                        },
+                        }
+                    },
 
                     // Retransmit HANDSHAKE_DONE only if it hasn't been acked at
                     // least once already.
@@ -4357,19 +4362,17 @@ impl<F: BufFactory> Connection<F> {
         // generate an ACK (if there's anything to ACK) since we're going to
         // send a packet with PING anyways, even if we haven't received anything
         // ACK eliciting.
-        if pkt_space.recv_pkt_need_ack.len() > 0 &&
-            (pkt_space.ack_elicited || ack_elicit_required) &&
-            (!is_closing ||
-                (pkt_type == Type::Handshake &&
-                    self.local_error
-                        .as_ref()
-                        .map_or(false, |le| le.is_app))) &&
-            path.active()
+        if pkt_space.recv_pkt_need_ack.len() > 0
+            && (pkt_space.ack_elicited || ack_elicit_required)
+            && (!is_closing
+                || (pkt_type == Type::Handshake
+                    && self.local_error.as_ref().map_or(false, |le| le.is_app)))
+            && path.active()
         {
             let ack_delay = pkt_space.largest_rx_pkt_time.elapsed();
 
-            let ack_delay = ack_delay.as_micros() as u64 /
-                2_u64
+            let ack_delay = ack_delay.as_micros() as u64
+                / 2_u64
                     .pow(self.local_transport_params.ack_delay_exponent as u32);
 
             let frame = frame::Frame::ACK {
@@ -4531,9 +4534,9 @@ impl<F: BufFactory> Connection<F> {
         if pkt_type == packet::Type::Short && !is_closing && path.active() {
             // Create HANDSHAKE_DONE frame.
             // self.should_send_handshake_done() but without the need to borrow
-            if self.handshake_completed &&
-                !self.handshake_done_sent &&
-                self.is_server
+            if self.handshake_completed
+                && !self.handshake_done_sent
+                && self.is_server
             {
                 let frame = frame::Frame::HandshakeDone;
 
@@ -4629,8 +4632,8 @@ impl<F: BufFactory> Connection<F> {
             }
 
             // Create MAX_DATA frame as needed.
-            if self.almost_full &&
-                flow_control.max_data() < flow_control.max_data_next()
+            if self.almost_full
+                && flow_control.max_data() < flow_control.max_data_next()
             {
                 // Autotune the connection window size.
                 flow_control.autotune_window(now, path.recovery.rtt());
@@ -4788,11 +4791,11 @@ impl<F: BufFactory> Connection<F> {
             do_dgram = true;
         }
         // Create DATAGRAM frame.
-        if (pkt_type == packet::Type::Short || pkt_type == packet::Type::ZeroRTT) &&
-            left > frame::MAX_DGRAM_OVERHEAD &&
-            !is_closing &&
-            path.active() &&
-            do_dgram
+        if (pkt_type == packet::Type::Short || pkt_type == packet::Type::ZeroRTT)
+            && left > frame::MAX_DGRAM_OVERHEAD
+            && !is_closing
+            && path.active()
+            && do_dgram
         {
             if let Some(max_dgram_payload) = max_dgram_len {
                 // Datagrames frames are pop'ed from the queue to be pushed into
@@ -4802,9 +4805,9 @@ impl<F: BufFactory> Connection<F> {
                 let mut tmp_frames: Vec<frame::Frame> = Vec::new();
                 // We use tmp_left to keep track of left while poping datagrams.
                 // left will be update while pushing into the control buffer.
-                if self.version == PROTOCOL_VERSION_VREVERSO &&
-                    !has_fixed_overhead &&
-                    self.dgram_send_queue.peek_front_len().is_some()
+                if self.version == PROTOCOL_VERSION_VREVERSO
+                    && !has_fixed_overhead
+                    && self.dgram_send_queue.peek_front_len().is_some()
                 {
                     left += 6;
                     has_fixed_overhead = true;
@@ -4819,54 +4822,50 @@ impl<F: BufFactory> Connection<F> {
                         // Front of the queue fits this packet, send it.
                         match self.dgram_send_queue.pop() {
                             Some(data) => {
-
-                                    // Will be written as extra_in
-                                let frame = frame::Frame::Datagram {
-                                    data,
-                                };
+                                // Will be written as extra_in
+                                let frame = frame::Frame::Datagram { data };
 
                                 tmp_left -= frame.wire_len();
                                 tmp_frames.push(frame);
                                 //} else {
-                                    //// Encode the frame.
-                                    ////
-                                    //// Instead of creating a `frame::Frame` object,
-                                    //// encode the frame directly into the packet
-                                    //// buffer.
-                                    ////
-                                    //// First we reserve some space in the output
-                                    //// buffer for writing the frame header (we
-                                    //// assume the length field is always a 2-byte
-                                    //// varint as we don't know the value yedgram_send_max_sizet).
-                                    ////
-                                    //// Then we emit the data from the DATAGRAM's
-                                    //// buffer.
-                                    ////
-                                    //// Finally we go back and encode the frame
-                                    //// header with the now available information.
-                                    //let (mut dgram_hdr, mut dgram_payload) =
-                                        //b.split_at(hdr_off + hdr_len)?;
+                                //// Encode the frame.
+                                ////
+                                //// Instead of creating a `frame::Frame` object,
+                                //// encode the frame directly into the packet
+                                //// buffer.
+                                ////
+                                //// First we reserve some space in the output
+                                //// buffer for writing the frame header (we
+                                //// assume the length field is always a 2-byte
+                                //// varint as we don't know the value yedgram_send_max_sizet).
+                                ////
+                                //// Then we emit the data from the DATAGRAM's
+                                //// buffer.
+                                ////
+                                //// Finally we go back and encode the frame
+                                //// header with the now available information.
+                                //let (mut dgram_hdr, mut dgram_payload) =
+                                //b.split_at(hdr_off + hdr_len)?;
 
-                                    //dgram_payload.as_mut()[..len]
-                                        //.copy_from_slice(&data);
+                                //dgram_payload.as_mut()[..len]
+                                //.copy_from_slice(&data);
 
-                                    //// Encode the frame's header.
-                                    ////
-                                    //// Due to how `OctetsMut::split_at()` works,
-                                    //// `dgram_hdr` starts from the initial offset
-                                    //// of `b` (rather than the current offset), so
-                                    //// it needs to be advanced to the initial frame
-                                    //// offset.
-                                    //dgram_hdr.skip(hdr_off)?;
+                                //// Encode the frame's header.
+                                ////
+                                //// Due to how `OctetsMut::split_at()` works,
+                                //// `dgram_hdr` starts from the initial offset
+                                //// of `b` (rather than the current offset), so
+                                //// it needs to be advanced to the initial frame
+                                //// offset.
+                                //dgram_hdr.skip(hdr_off)?;
 
-                                    //frame::encode_dgram_header(
-                                        //len as u64,
-                                        //&mut dgram_hdr,
-                                    //)?;
+                                //frame::encode_dgram_header(
+                                //len as u64,
+                                //&mut dgram_hdr,
+                                //)?;
 
-                                    //frame::Frame::DatagramHeader { length: len }
+                                //frame::Frame::DatagramHeader { length: len }
                                 //}};
-
                             },
 
                             None => continue,
@@ -4906,12 +4905,12 @@ impl<F: BufFactory> Connection<F> {
         }
 
         // Create a single STREAM frame for the first stream that is flushable.
-        let maybe_stream_header = if (pkt_type == packet::Type::Short ||
-            pkt_type == packet::Type::ZeroRTT) &&
-            left > frame::MAX_STREAM_OVERHEAD &&
-            !is_closing &&
-            path.active() &&
-            !dgram_emitted
+        let maybe_stream_header = if (pkt_type == packet::Type::Short
+            || pkt_type == packet::Type::ZeroRTT)
+            && left > frame::MAX_STREAM_OVERHEAD
+            && !is_closing
+            && path.active()
+            && !dgram_emitted
         {
             let mut maybe_frame = frame::Frame::StreamHeader {
                 stream_id: 0,
@@ -5115,8 +5114,8 @@ impl<F: BufFactory> Connection<F> {
 
                 #[cfg(feature = "fuzzing")]
                 // Coalesce STREAM frames when fuzzing
-                if left > frame::MAX_STREAM_OVERHEAD &&
-                    self.version == crate::PROTOCOL_VERSION_V1
+                if left > frame::MAX_STREAM_OVERHEAD
+                    && self.version == crate::PROTOCOL_VERSION_V1
                 {
                     continue;
                     // XXX support this with VReverso
@@ -5126,12 +5125,13 @@ impl<F: BufFactory> Connection<F> {
             }
 
             match maybe_frame {
-                frame::Frame::StreamHeader { length, .. } =>
+                frame::Frame::StreamHeader { length, .. } => {
                     if length > 0 {
                         Some(maybe_frame)
                     } else {
                         None
-                    },
+                    }
+                },
                 _ => None,
             }
         } else {
@@ -5142,10 +5142,10 @@ impl<F: BufFactory> Connection<F> {
         self.emit_dgram = !dgram_emitted;
 
         // Create CRYPTO frame.
-        if pkt_space.crypto_stream.is_flushable() &&
-            left > frame::MAX_CRYPTO_OVERHEAD &&
-            !is_closing &&
-            path.active()
+        if pkt_space.crypto_stream.is_flushable()
+            && left > frame::MAX_CRYPTO_OVERHEAD
+            && !is_closing
+            && path.active()
         {
             let crypto_off = pkt_space.crypto_stream.send.off_front();
 
@@ -5259,10 +5259,10 @@ impl<F: BufFactory> Connection<F> {
         // - if we've sent too many non ack-eliciting packets without having
         // sent an ACK eliciting one; OR
         // - the application requested an ack-eliciting frame be sent.
-        if (ack_elicit_required || path.needs_ack_eliciting) &&
-            !ack_eliciting &&
-            left >= 1 &&
-            !is_closing
+        if (ack_elicit_required || path.needs_ack_eliciting)
+            && !ack_eliciting
+            && left >= 1
+            && !is_closing
         {
             let frame = frame::Frame::Ping { mtu_probe: None };
 
@@ -5292,9 +5292,9 @@ impl<F: BufFactory> Connection<F> {
         // as Initial always requires padding.
         //
         // 2) this is a probing packet towards an unvalidated peer address.
-        if (has_initial || !path.validated()) &&
-            pkt_type == packet::Type::Short &&
-            left >= 1
+        if (has_initial || !path.validated())
+            && pkt_type == packet::Type::Short
+            && left >= 1
         {
             let frame = frame::Frame::Padding { len: left };
 
@@ -5332,8 +5332,8 @@ impl<F: BufFactory> Connection<F> {
             .use_hidden_crypt_copy_for_zc
         {
             // If we're in VReverso, the frame should be first.
-            let (b_start, mut b_ctrl, stream_len) = if self.version ==
-                crate::PROTOCOL_VERSION_VREVERSO
+            let (b_start, mut b_ctrl, stream_len) = if self.version
+                == crate::PROTOCOL_VERSION_VREVERSO
             {
                 let stream_len =
                     if let Some(frame::Frame::StreamHeader { length, .. }) =
@@ -5773,8 +5773,8 @@ impl<F: BufFactory> Connection<F> {
         }
 
         // We can't read on our own unidirectional streams.
-        if !stream::is_bidi(stream_id) &&
-            stream::is_local(stream_id, self.is_server)
+        if !stream::is_bidi(stream_id)
+            && stream::is_local(stream_id, self.is_server)
         {
             return Err(Error::InvalidStreamState(stream_id));
         }
@@ -6076,8 +6076,8 @@ impl<F: BufFactory> Connection<F> {
         ) -> Result<(Option<StreamChunk>, Option<usize>, bool)>,
     {
         // We can't read on our own unidirectional streams.
-        if !stream::is_bidi(stream_id) &&
-            stream::is_local(stream_id, self.is_server)
+        if !stream::is_bidi(stream_id)
+            && stream::is_local(stream_id, self.is_server)
         {
             return Err(Error::InvalidStreamState(stream_id));
         }
@@ -6241,8 +6241,8 @@ impl<F: BufFactory> Connection<F> {
         SND: FnOnce(&mut stream::Stream<F>, B, usize, bool) -> Result<(usize, R)>,
     {
         // We can't write on the peer's unidirectional streams.
-        if !stream::is_bidi(stream_id) &&
-            !stream::is_local(stream_id, self.is_server)
+        if !stream::is_bidi(stream_id)
+            && !stream::is_local(stream_id, self.is_server)
         {
             return Err(Error::InvalidStreamState(stream_id));
         }
@@ -6454,17 +6454,17 @@ impl<F: BufFactory> Connection<F> {
         &mut self, stream_id: u64, direction: Shutdown, err: u64,
     ) -> Result<()> {
         // Don't try to stop a local unidirectional stream.
-        if direction == Shutdown::Read &&
-            stream::is_local(stream_id, self.is_server) &&
-            !stream::is_bidi(stream_id)
+        if direction == Shutdown::Read
+            && stream::is_local(stream_id, self.is_server)
+            && !stream::is_bidi(stream_id)
         {
             return Err(Error::InvalidStreamState(stream_id));
         }
 
         // Dont' try to reset a remote unidirectional stream.
-        if direction == Shutdown::Write &&
-            !stream::is_local(stream_id, self.is_server) &&
-            !stream::is_bidi(stream_id)
+        if direction == Shutdown::Write
+            && !stream::is_local(stream_id, self.is_server)
+            && !stream::is_bidi(stream_id)
         {
             return Err(Error::InvalidStreamState(stream_id));
         }
@@ -6604,12 +6604,13 @@ impl<F: BufFactory> Connection<F> {
 
                     // Return the stream to the application immediately if it's
                     // stopped.
-                    Err(_) =>
+                    Err(_) => {
                         return {
                             self.streams.remove_writable(&priority_key);
 
                             Some(priority_key.id)
-                        },
+                        }
+                    },
                 };
 
                 if cmp::min(self.tx_cap, cap) >= stream.send_lowat {
@@ -7070,8 +7071,8 @@ impl<F: BufFactory> Connection<F> {
 
         let active_path = self.paths.get_active_mut()?;
 
-        if self.dgram_send_queue.byte_size() >
-            active_path.recovery.cwnd_available()
+        if self.dgram_send_queue.byte_size()
+            > active_path.recovery.cwnd_available()
         {
             active_path.recovery.update_app_limited(false);
         }
@@ -7100,8 +7101,8 @@ impl<F: BufFactory> Connection<F> {
 
         let active_path = self.paths.get_active_mut()?;
 
-        if self.dgram_send_queue.byte_size() >
-            active_path.recovery.cwnd_available()
+        if self.dgram_send_queue.byte_size()
+            > active_path.recovery.cwnd_available()
         {
             active_path.recovery.update_app_limited(false);
         }
@@ -7432,9 +7433,9 @@ impl<F: BufFactory> Connection<F> {
             // Ensures that a Source Connection ID has been dedicated to this
             // path, or a free one is available. This is only required if the
             // host uses non-zero length Source Connection IDs.
-            if !self.ids.zero_length_scid() &&
-                path.active_scid_seq.is_none() &&
-                self.ids.available_scids() == 0
+            if !self.ids.zero_length_scid()
+                && path.active_scid_seq.is_none()
+                && self.ids.available_scids() == 0
             {
                 return Err(Error::OutOfIdentifiers);
             }
@@ -7576,9 +7577,9 @@ impl<F: BufFactory> Connection<F> {
 
         let active_path_id = self.paths.get_active_path_id()?;
 
-        if active_path_dcid_seq == dcid_seq &&
-            self.ids.lowest_available_dcid_seq().is_none() &&
-            !self
+        if active_path_dcid_seq == dcid_seq
+            && self.ids.lowest_available_dcid_seq().is_none()
+            && !self
                 .paths
                 .iter()
                 .any(|(pid, p)| pid != active_path_id && p.usable())
@@ -8029,8 +8030,9 @@ impl<F: BufFactory> Connection<F> {
     ) -> Result<()> {
         // Validate initial_source_connection_id.
         match &peer_params.initial_source_connection_id {
-            Some(v) if v != &self.destination_id() =>
-                return Err(Error::InvalidTransportParam),
+            Some(v) if v != &self.destination_id() => {
+                return Err(Error::InvalidTransportParam)
+            },
 
             Some(_) => (),
 
@@ -8042,15 +8044,17 @@ impl<F: BufFactory> Connection<F> {
         // Validate original_destination_connection_id.
         if let Some(odcid) = &self.odcid {
             match &peer_params.original_destination_connection_id {
-                Some(v) if v != odcid =>
-                    return Err(Error::InvalidTransportParam),
+                Some(v) if v != odcid => {
+                    return Err(Error::InvalidTransportParam)
+                },
 
                 Some(_) => (),
 
                 // original_destination_connection_id must be
                 // sent by the server.
-                None if !self.is_server =>
-                    return Err(Error::InvalidTransportParam),
+                None if !self.is_server => {
+                    return Err(Error::InvalidTransportParam)
+                },
 
                 None => (),
             }
@@ -8059,8 +8063,9 @@ impl<F: BufFactory> Connection<F> {
         // Validate retry_source_connection_id.
         if let Some(rscid) = &self.rscid {
             match &peer_params.retry_source_connection_id {
-                Some(v) if v != rscid =>
-                    return Err(Error::InvalidTransportParam),
+                Some(v) if v != rscid => {
+                    return Err(Error::InvalidTransportParam)
+                },
 
                 Some(_) => (),
 
@@ -8228,15 +8233,18 @@ impl<F: BufFactory> Connection<F> {
                 match epoch {
                     // Downgrade the epoch to Handshake as the handshake is not
                     // completed yet.
-                    packet::Epoch::Application =>
-                        return Ok(packet::Type::Handshake),
+                    packet::Epoch::Application => {
+                        return Ok(packet::Type::Handshake)
+                    },
 
                     // Downgrade the epoch to Initial as the remote peer might
                     // not be able to decrypt handshake packets yet.
                     packet::Epoch::Handshake
                         if self.pkt_num_spaces[packet::Epoch::Initial]
                             .has_keys() =>
-                        return Ok(packet::Type::Initial),
+                    {
+                        return Ok(packet::Type::Initial)
+                    },
 
                     _ => (),
                 };
@@ -8274,26 +8282,27 @@ impl<F: BufFactory> Connection<F> {
         // If there are flushable, almost full or blocked streams, use the
         // Application epoch.
         let send_path = self.paths.get(send_pid)?;
-        if (self.is_established() || self.is_in_early_data()) &&
-            (self.should_send_handshake_done() ||
-                self.streams.has_flushable() ||
-                self.streams.has_almost_full() ||
-                self.streams.has_blocked() ||
-                self.streams.has_reset() ||
-                self.streams.has_stopped() ||
-                self.ids.has_new_scids() ||
-                self.ids.has_retire_dcids() ||
-                self.almost_full ||
-                self.blocked_limit.is_some() ||
-                self.dgram_send_queue.has_pending() ||
-                self.local_error
+        if (self.is_established() || self.is_in_early_data())
+            && (self.should_send_handshake_done()
+                || self.streams.has_flushable()
+                || self.streams.has_almost_full()
+                || self.streams.has_blocked()
+                || self.streams.has_reset()
+                || self.streams.has_stopped()
+                || self.ids.has_new_scids()
+                || self.ids.has_retire_dcids()
+                || self.almost_full
+                || self.blocked_limit.is_some()
+                || self.dgram_send_queue.has_pending()
+                || self
+                    .local_error
                     .as_ref()
-                    .map_or(false, |conn_err| conn_err.is_app) ||
-                self.streams.should_update_max_streams_bidi() ||
-                self.streams.should_update_max_streams_uni() ||
-                send_path.pmtud.get_probe_status() ||
-                send_path.needs_ack_eliciting ||
-                send_path.probing_required())
+                    .map_or(false, |conn_err| conn_err.is_app)
+                || self.streams.should_update_max_streams_bidi()
+                || self.streams.should_update_max_streams_uni()
+                || send_path.pmtud.get_probe_status()
+                || send_path.needs_ack_eliciting
+                || send_path.probing_required())
         {
             // Only clients can send 0-RTT packets.
             if !self.is_server && self.is_in_early_data() {
@@ -8343,9 +8352,9 @@ impl<F: BufFactory> Connection<F> {
                     ))
                     .ok_or(Error::InvalidFrame)?;
 
-                if epoch == packet::Epoch::Handshake ||
-                    (epoch == packet::Epoch::Application &&
-                        self.is_established())
+                if epoch == packet::Epoch::Handshake
+                    || (epoch == packet::Epoch::Application
+                        && self.is_established())
                 {
                     self.peer_verified_initial_address = true;
                 }
@@ -8382,8 +8391,8 @@ impl<F: BufFactory> Connection<F> {
                 final_size,
             } => {
                 // Peer can't send on our unidirectional streams.
-                if !stream::is_bidi(stream_id) &&
-                    stream::is_local(stream_id, self.is_server)
+                if !stream::is_bidi(stream_id)
+                    && stream::is_local(stream_id, self.is_server)
                 {
                     return Err(Error::InvalidStreamState(stream_id));
                 }
@@ -8433,8 +8442,8 @@ impl<F: BufFactory> Connection<F> {
                 error_code,
             } => {
                 // STOP_SENDING on a receive-only stream is a fatal error.
-                if !stream::is_local(stream_id, self.is_server) &&
-                    !stream::is_bidi(stream_id)
+                if !stream::is_local(stream_id, self.is_server)
+                    && !stream::is_bidi(stream_id)
                 {
                     return Err(Error::InvalidStreamState(stream_id));
                 }
@@ -8516,10 +8525,11 @@ impl<F: BufFactory> Connection<F> {
             frame::Frame::CryptoHeader { .. } => unreachable!(),
             frame::Frame::CryptoVec { .. } => unreachable!(),
             // TODO: implement stateless retry
-            frame::Frame::NewToken { .. } =>
+            frame::Frame::NewToken { .. } => {
                 if self.is_server {
                     return Err(Error::InvalidPacket);
-                },
+                }
+            },
 
             // TODO Fix code duplication between Stream and StreamV3
             frame::Frame::StreamV3 {
@@ -8527,8 +8537,8 @@ impl<F: BufFactory> Connection<F> {
                 mut metadata,
             } => {
                 // Peer can't send on our unidirectional streams.
-                if !stream::is_bidi(stream_id) &&
-                    stream::is_local(stream_id, self.is_server)
+                if !stream::is_bidi(stream_id)
+                    && stream::is_local(stream_id, self.is_server)
                 {
                     return Err(Error::InvalidStreamState(stream_id));
                 }
@@ -8635,8 +8645,8 @@ impl<F: BufFactory> Connection<F> {
 
             frame::Frame::Stream { stream_id, data } => {
                 // Peer can't send on our unidirectional streams.
-                if !stream::is_bidi(stream_id) &&
-                    stream::is_local(stream_id, self.is_server)
+                if !stream::is_bidi(stream_id)
+                    && stream::is_local(stream_id, self.is_server)
                 {
                     return Err(Error::InvalidStreamState(stream_id));
                 }
@@ -8703,8 +8713,8 @@ impl<F: BufFactory> Connection<F> {
 
             frame::Frame::MaxStreamData { stream_id, max } => {
                 // Peer can't receive on its own unidirectional streams.
-                if !stream::is_bidi(stream_id) &&
-                    !stream::is_local(stream_id, self.is_server)
+                if !stream::is_bidi(stream_id)
+                    && !stream::is_local(stream_id, self.is_server)
                 {
                     return Err(Error::InvalidStreamState(stream_id));
                 }
@@ -8969,8 +8979,8 @@ impl<F: BufFactory> Connection<F> {
         // If the transport parameter is set to 0, then the respective endpoint
         // decided to disable the idle timeout. If both are disabled we should
         // not set any timeout.
-        if self.local_transport_params.max_idle_timeout == 0 &&
-            self.peer_transport_params.max_idle_timeout == 0
+        if self.local_transport_params.max_idle_timeout == 0
+            && self.peer_transport_params.max_idle_timeout == 0
         {
             return None;
         }
@@ -9045,10 +9055,10 @@ impl<F: BufFactory> Connection<F> {
             .map(|(_, p)| p.recovery.cwnd_available())
             .sum();
 
-        ((self.tx_buffered + self.dgram_send_queue_byte_size()) < cwin_available) &&
-            (self.tx_data.saturating_sub(self.last_tx_data)) <
-                cwin_available as u64 &&
-            cwin_available > 0
+        ((self.tx_buffered + self.dgram_send_queue_byte_size()) < cwin_available)
+            && (self.tx_data.saturating_sub(self.last_tx_data))
+                < cwin_available as u64
+            && cwin_available > 0
     }
 
     fn set_initial_dcid(
@@ -10517,8 +10527,9 @@ pub mod testing {
                 .iter()
                 .find(|frame| matches!(frame, frame::Frame::Stream { .. }))
             {
-                Some(frame::Frame::Stream { stream_id, data }) =>
-                    (*stream_id, data.off()),
+                Some(frame::Frame::Stream { stream_id, data }) => {
+                    (*stream_id, data.off())
+                },
                 _ => (0, 0),
             };
             // 4 bytes pn, 4 bytes streamid and 4 bytes offset to not be bothered
@@ -15858,8 +15869,8 @@ mod tests {
         assert_eq!(r.next(), Some(0 + off_by));
         assert_eq!(r.next(), None);
 
-        while pipe.server.stream_send(0 + off_by, b"world", false) !=
-            Err(Error::Done)
+        while pipe.server.stream_send(0 + off_by, b"world", false)
+            != Err(Error::Done)
         {}
 
         let mut r = pipe.server.writable();
@@ -16485,7 +16496,7 @@ mod tests {
         assert_eq!(pipe.handshake(), Ok(()));
 
         match pipe.client.peer_cert() {
-            Some(c) => assert_eq!(c.len(), 753),
+            Some(c) => assert_eq!(c.len(), 755),
 
             None => panic!("missing server certificate"),
         }
@@ -17752,15 +17763,25 @@ mod tests {
             let stream = frames.first().unwrap();
 
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                assert_eq!(stream, &frame::Frame::StreamV3 {
-                    stream_id: 12,
-                    metadata: stream::RecvBufInfo::from(off, out.len(), false),
-                });
+                assert_eq!(
+                    stream,
+                    &frame::Frame::StreamV3 {
+                        stream_id: 12,
+                        metadata: stream::RecvBufInfo::from(
+                            off,
+                            out.len(),
+                            false
+                        ),
+                    }
+                );
             } else {
-                assert_eq!(stream, &frame::Frame::Stream {
-                    stream_id: 8,
-                    data: <RangeBuf>::from(&out, off, false),
-                });
+                assert_eq!(
+                    stream,
+                    &frame::Frame::Stream {
+                        stream_id: 8,
+                        data: <RangeBuf>::from(&out, off, false),
+                    }
+                );
             }
 
             off = match stream {
@@ -17787,15 +17808,25 @@ mod tests {
             let stream = frames.first().unwrap();
 
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                assert_eq!(stream, &frame::Frame::StreamV3 {
-                    stream_id: 20,
-                    metadata: stream::RecvBufInfo::from(off, out.len(), false),
-                });
+                assert_eq!(
+                    stream,
+                    &frame::Frame::StreamV3 {
+                        stream_id: 20,
+                        metadata: stream::RecvBufInfo::from(
+                            off,
+                            out.len(),
+                            false
+                        ),
+                    }
+                );
             } else {
-                assert_eq!(stream, &frame::Frame::Stream {
-                    stream_id: 16,
-                    data: <RangeBuf>::from(&out, off, false),
-                });
+                assert_eq!(
+                    stream,
+                    &frame::Frame::Stream {
+                        stream_id: 16,
+                        data: <RangeBuf>::from(&out, off, false),
+                    }
+                );
             }
 
             off = match stream {
@@ -17822,15 +17853,25 @@ mod tests {
             let stream = frames.first().unwrap();
 
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                assert_eq!(stream, &frame::Frame::StreamV3 {
-                    stream_id: 24,
-                    metadata: stream::RecvBufInfo::from(off, out.len(), false),
-                });
+                assert_eq!(
+                    stream,
+                    &frame::Frame::StreamV3 {
+                        stream_id: 24,
+                        metadata: stream::RecvBufInfo::from(
+                            off,
+                            out.len(),
+                            false
+                        ),
+                    }
+                );
             } else {
-                assert_eq!(stream, &frame::Frame::Stream {
-                    stream_id: 20,
-                    data: <RangeBuf>::from(&out, off, false),
-                });
+                assert_eq!(
+                    stream,
+                    &frame::Frame::Stream {
+                        stream_id: 20,
+                        data: <RangeBuf>::from(&out, off, false),
+                    }
+                );
             }
 
             off = match stream {
@@ -17890,15 +17931,25 @@ mod tests {
             let stream = frames.first().unwrap();
 
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                assert_eq!(stream, &frame::Frame::StreamV3 {
-                    stream_id: 8,
-                    metadata: stream::RecvBufInfo::from(off, out.len(), false),
-                });
+                assert_eq!(
+                    stream,
+                    &frame::Frame::StreamV3 {
+                        stream_id: 8,
+                        metadata: stream::RecvBufInfo::from(
+                            off,
+                            out.len(),
+                            false
+                        ),
+                    }
+                );
             } else {
-                assert_eq!(stream, &frame::Frame::Stream {
-                    stream_id: 4,
-                    data: <RangeBuf>::from(&out, off, false),
-                });
+                assert_eq!(
+                    stream,
+                    &frame::Frame::Stream {
+                        stream_id: 4,
+                        data: <RangeBuf>::from(&out, off, false),
+                    }
+                );
             }
 
             off = match stream {
@@ -17925,15 +17976,25 @@ mod tests {
             let stream = frames.first().unwrap();
 
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                assert_eq!(stream, &frame::Frame::StreamV3 {
-                    stream_id: 4,
-                    metadata: stream::RecvBufInfo::from(off, out.len(), false),
-                });
+                assert_eq!(
+                    stream,
+                    &frame::Frame::StreamV3 {
+                        stream_id: 4,
+                        metadata: stream::RecvBufInfo::from(
+                            off,
+                            out.len(),
+                            false
+                        ),
+                    }
+                );
             } else {
-                assert_eq!(stream, &frame::Frame::Stream {
-                    stream_id: 0,
-                    data: <RangeBuf>::from(&out, off, false),
-                });
+                assert_eq!(
+                    stream,
+                    &frame::Frame::Stream {
+                        stream_id: 0,
+                        data: <RangeBuf>::from(&out, off, false),
+                    }
+                );
             }
 
             off = match stream {
@@ -18259,9 +18320,10 @@ mod tests {
             .unwrap();
             let mut frame_iter = frames.iter();
 
-            assert_eq!(frame_iter.next().unwrap(), &frame::Frame::Datagram {
-                data: out.into()
-            });
+            assert_eq!(
+                frame_iter.next().unwrap(),
+                &frame::Frame::Datagram { data: out.into() }
+            );
             assert_eq!(frame_iter.next(), None);
 
             // STREAM 4
@@ -18278,15 +18340,25 @@ mod tests {
             let stream = frame_iter.next().unwrap();
 
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                assert_eq!(stream, &frame::Frame::StreamV3 {
-                    stream_id: 4,
-                    metadata: stream::RecvBufInfo::from(off_0, out.len(), false),
-                });
+                assert_eq!(
+                    stream,
+                    &frame::Frame::StreamV3 {
+                        stream_id: 4,
+                        metadata: stream::RecvBufInfo::from(
+                            off_0,
+                            out.len(),
+                            false
+                        ),
+                    }
+                );
             } else {
-                assert_eq!(stream, &frame::Frame::Stream {
-                    stream_id: 4,
-                    data: <RangeBuf>::from(&out, off_0, false),
-                });
+                assert_eq!(
+                    stream,
+                    &frame::Frame::Stream {
+                        stream_id: 4,
+                        data: <RangeBuf>::from(&out, off_0, false),
+                    }
+                );
             }
 
             off_0 = match stream {
@@ -18309,9 +18381,10 @@ mod tests {
             .unwrap();
             let mut frame_iter = frames.iter();
 
-            assert_eq!(frame_iter.next().unwrap(), &frame::Frame::Datagram {
-                data: out.into()
-            });
+            assert_eq!(
+                frame_iter.next().unwrap(),
+                &frame::Frame::Datagram { data: out.into() }
+            );
             assert_eq!(frame_iter.next(), None);
 
             // STREAM 8
@@ -18328,15 +18401,25 @@ mod tests {
             let stream = frame_iter.next().unwrap();
 
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                assert_eq!(stream, &frame::Frame::StreamV3 {
-                    stream_id: 8,
-                    metadata: stream::RecvBufInfo::from(off_4, out.len(), false),
-                });
+                assert_eq!(
+                    stream,
+                    &frame::Frame::StreamV3 {
+                        stream_id: 8,
+                        metadata: stream::RecvBufInfo::from(
+                            off_4,
+                            out.len(),
+                            false
+                        ),
+                    }
+                );
             } else {
-                assert_eq!(stream, &frame::Frame::Stream {
-                    stream_id: 8,
-                    data: <RangeBuf>::from(&out, off_4, false),
-                });
+                assert_eq!(
+                    stream,
+                    &frame::Frame::Stream {
+                        stream_id: 8,
+                        data: <RangeBuf>::from(&out, off_4, false),
+                    }
+                );
             }
 
             off_4 = match stream {
@@ -19125,11 +19208,14 @@ mod tests {
             // Since we need 12 bytes min on V3 payload,
             // this test generates 2 padding bytes on V3.
             assert_eq!(frames[0], frame::Frame::Padding { len: 1 });
-            assert_eq!(frames[1], frame::Frame::ConnectionClose {
-                error_code: 0x1234,
-                frame_type: 0,
-                reason: b"hello?".to_vec(),
-            });
+            assert_eq!(
+                frames[1],
+                frame::Frame::ConnectionClose {
+                    error_code: 0x1234,
+                    frame_type: 0,
+                    reason: b"hello?".to_vec(),
+                }
+            );
         } else {
             assert_eq!(
                 frames.first(),
@@ -19166,10 +19252,13 @@ mod tests {
             // Since we need 12 bytes min on V3 payload,
             // this test generates 2 padding bytes on V3.
             assert_eq!(frames[0], frame::Frame::Padding { len: 2 });
-            assert_eq!(frames[1], frame::Frame::ApplicationClose {
-                error_code: 0x1234,
-                reason: b"hello!".to_vec(),
-            });
+            assert_eq!(
+                frames[1],
+                frame::Frame::ApplicationClose {
+                    error_code: 0x1234,
+                    reason: b"hello!".to_vec(),
+                }
+            );
         } else {
             assert_eq!(
                 frames.first(),
@@ -21507,11 +21596,10 @@ mod tests {
         )
         .unwrap();
         assert!(
-            frames
-                .iter()
-                .any(|frame| matches!(frame, frame::Frame::Ping {
-                    mtu_probe: None
-                })),
+            frames.iter().any(|frame| matches!(
+                frame,
+                frame::Frame::Ping { mtu_probe: None }
+            )),
             "found a PING"
         );
     }
@@ -22013,8 +22101,8 @@ mod tests {
         assert!(pmtu_param.get_probe_status());
         assert_eq!(pmtu_param.get_probe_size(), 1350);
         std::thread::sleep(
-            pipe.server.paths.get_mut(pid_1).unwrap().recovery.rtt() +
-                time::Duration::from_millis(1),
+            pipe.server.paths.get_mut(pid_1).unwrap().recovery.rtt()
+                + time::Duration::from_millis(1),
         );
 
         let active_server_path = pipe.server.paths.get_active_mut().unwrap();
