@@ -14,6 +14,10 @@ use tokio::sync::mpsc;
 
 use clap::Parser;
 
+use buffer_pool::ConsumeBuffer;
+use buffer_pool::Pool;
+use buffer_pool::Pooled;
+
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
 struct PartialResponse {
@@ -30,8 +34,16 @@ struct Args {
 
 type ClientMap = HashMap<
     quiceh::ConnectionId<'static>,
-    mpsc::Sender<(Vec<u8>, net::SocketAddr)>,
+    mpsc::Sender<(Pooled<ConsumeBuffer>, net::SocketAddr)>,
 >;
+
+const POOL_SHARDS: usize = 8;
+const MAX_POOL_BUF_SIZE: usize = 64 * 1024;
+const SMALL_POOL_BUF_SIZE: usize = 4096;
+
+type BufPool = Pool<POOL_SHARDS, ConsumeBuffer>;
+
+static SMALL_POOL: BufPool = BufPool::new(128, SMALL_POOL_BUF_SIZE);
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -94,10 +106,10 @@ async fn main() {
     let mut clients = ClientMap::new();
     let (tx_garbage_conn, mut rx_garbage_conn) = mpsc::channel(128);
 
-    let mut buf = vec![0; 65535];
-
     let handle = tokio::spawn(async move {
         loop {
+            let mut buf = SMALL_POOL.get_with(|d| d.expand(SMALL_POOL_BUF_SIZE));
+
             tokio::select! {
                 Some(scid) = rx_garbage_conn.recv() => {
                     let scid = quiceh::ConnectionId::from_vec(scid);
@@ -106,10 +118,10 @@ async fn main() {
 
                 result = socket.recv_from(&mut buf) => {
                     let (len, from) = result.unwrap();
-                    let pkt_buf = &mut buf[..len];
+                    buf.truncate(len);
 
                     let hdr = match quiceh::Header::from_slice(
-                        pkt_buf,
+                        &mut buf,
                         quiceh::MAX_CONN_ID_LEN,
                     ) {
                         Ok(v) => v,
@@ -232,7 +244,7 @@ async fn main() {
                     };
 
                     if let Some(client_sender) = client_sender {
-                        if let Err(e) = client_sender.send((pkt_buf.to_vec(), from)).await {
+                        if let Err(e) = client_sender.send((buf, from)).await {
                             error!("Failed to send packet to client handler: {}", e);
                         }
                     }
@@ -245,7 +257,7 @@ async fn main() {
 
 async fn handle_client(
     socket: Arc<tokio::net::UdpSocket>, mut conn: quiceh::Connection,
-    mut rx: mpsc::Receiver<(Vec<u8>, net::SocketAddr)>,
+    mut rx: mpsc::Receiver<(Pooled<ConsumeBuffer>, net::SocketAddr)>,
     tx_garbage_conn: mpsc::Sender<Vec<u8>>, local_addr: net::SocketAddr,
 ) {
     let mut app_buffers = AppRecvBufMap::new(3, 1_000_000, 1_000_000);
