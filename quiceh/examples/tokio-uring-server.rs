@@ -1,3 +1,7 @@
+/// Tokio-uring example using quiceh.
+///
+/// This example is _NOT_ a performance optimal approach.
+
 #[macro_use]
 extern crate log;
 
@@ -116,7 +120,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         loop {
             let buf = pool.next(MAX_MESSAGE_SIZE).await;
-
             tokio::select! {
                 Some(scid) = rx_garbage_conn.recv() => {
                     let scid = quiceh::ConnectionId::from_vec(scid);
@@ -240,7 +243,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             rx,
                             tx_garbage_conn.clone(),
                             pool.clone(),
-                            from,
                         ));
 
                         clients.insert(scid.clone(), tx.clone());
@@ -265,7 +267,6 @@ async fn handle_client<T: tokio_uring::buf::IoBufMut>(
     socket: Arc<tokio_uring::net::UdpSocket>, mut conn: Box<quiceh::Connection>,
     mut rx: mpsc::Receiver<(FixedBuf, usize, net::SocketAddr)>,
     tx_garbage_conn: mpsc::Sender<Vec<u8>>, pool: FixedBufPool<T>,
-    from: net::SocketAddr,
 ) {
     let mut app_buffers = AppRecvBufMap::new(3, 1_000_000, 1_000_000);
     let mut partial_responses: HashMap<u64, PartialResponse> = HashMap::new();
@@ -274,8 +275,6 @@ async fn handle_client<T: tokio_uring::buf::IoBufMut>(
     let mut max_send_burst = 65535;
 
     let mut continue_write = false;
-    socket.connect(from).await.expect("Connect back error");
-
     // TODO: NO GSO support and TxTime support; (should use sendmsg_zc with appropriate message
     // control)
 
@@ -366,7 +365,7 @@ async fn handle_client<T: tokio_uring::buf::IoBufMut>(
         }
         continue_write = false;
         let mut total_write = 0;
-        let mut _dst_info = None;
+        let mut dst_info = None;
         let mut out = pool.next(MAX_MESSAGE_SIZE).await;
         let new_max_send_burst = {
             // Reduce max_send_burst by 25% if loss is increasing more than 0.1%.
@@ -401,7 +400,7 @@ async fn handle_client<T: tokio_uring::buf::IoBufMut>(
 
                 total_write += write;
 
-                let _ = _dst_info.get_or_insert(send_info);
+                let _ = dst_info.get_or_insert(send_info);
 
                 if write < MAX_DATAGRAM_SIZE {
                     continue_write = true;
@@ -411,9 +410,11 @@ async fn handle_client<T: tokio_uring::buf::IoBufMut>(
             new_max_send_burst
         };
 
-        if total_write != 0 && _dst_info.is_some() {
+        if total_write != 0 && dst_info.is_some() {
             debug!("Sending {} bytes in socket", total_write);
-            let (res, ..) = socket.send_zc(out.slice(0..total_write)).await;
+            let (res, ..) = socket
+                .send_to(out.slice(0..total_write), dst_info.unwrap().to)
+                .await;
 
             match res {
                 Ok(v) => {
