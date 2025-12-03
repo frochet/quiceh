@@ -9,6 +9,10 @@ use criterion::Criterion;
 use criterion::Throughput;
 use quiceh::testing::Pipe;
 
+use tikv_jemallocator::Jemalloc;
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
 fn bench_v1_receive(

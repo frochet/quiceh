@@ -8,7 +8,11 @@ use criterion::BenchmarkId;
 use criterion::Criterion;
 use criterion::Throughput;
 use quiceh::testing::Pipe;
+use quiceh::StreamChunk;
 use std::env;
+use std::sync::mpsc;
+use std::sync::mpsc::{Receiver, Sender};
+use std::thread;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
@@ -17,6 +21,7 @@ const MAX_DATAGRAM_SIZE: usize = 1350;
 /// Reallocation may happen within recv()
 fn bench_stream_recv_zc(
     pipe: &mut Pipe, flight: &mut Vec<(Vec<u8>, quiceh::SendInfo)>,
+    tx: &mut Sender<StreamChunk>,
 ) {
     let mut flight_iter_mut = flight.iter_mut();
     while let Some(&mut (ref mut pkt, ref mut si)) = flight_iter_mut.next() {
@@ -30,8 +35,8 @@ fn bench_stream_recv_zc(
         if let Ok((chunk, _)) =
             pipe.client.stream_recv_zc(1, &mut pipe.client_app_buffers)
         {
-            black_box(chunk);
-            // drop the chunk
+            // Chunk is handled and dropped through another thread.
+            tx.send(chunk).unwrap();
         }
     }
 }
@@ -85,14 +90,23 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
             b.iter_batched_ref(
                 || {
                     let mut pipe = Pipe::with_config(&mut config).unwrap();
+                    let (tx, rx): (Sender<StreamChunk>, Receiver<StreamChunk>) =
+                        mpsc::channel();
+                    let handle = thread::spawn(move || {
+                        while let Ok(chunk) = rx.recv() {
+                            black_box(chunk);
+                        }
+                    });
                     pipe.handshake().unwrap();
                     pipe.set_client_expected_chunklen_to_consume(chunklen);
                     pipe.server.stream_send(1, sendbuf, true).unwrap();
                     let flights =
                         quiceh::testing::emit_flight(&mut pipe.server).unwrap();
-                    (pipe, flights)
+                    (pipe, flights, handle, tx)
                 },
-                |(ref mut pipe, flight)| bench_stream_recv_zc(pipe, flight),
+                |(ref mut pipe, flight, _handle, tx)| {
+                    bench_stream_recv_zc(pipe, flight, tx)
+                },
                 BatchSize::SmallInput,
             )
         },
