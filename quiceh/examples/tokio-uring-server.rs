@@ -1,3 +1,7 @@
+/// Tokio-uring example using quiceh.
+///
+/// This example is _NOT_ a performance optimal approach.
+
 #[macro_use]
 extern crate log;
 
@@ -8,17 +12,14 @@ use std::sync::Arc;
 use ring::rand::*;
 
 use quiceh::AppRecvBufMap;
-use quinn_udp::Transmit;
-use quinn_udp::UdpSocketState;
 use tokio::sync::mpsc;
+use tokio_uring::buf::fixed::{FixedBuf, FixedBufPool};
+use tokio_uring::buf::BoundedBuf;
 
 use clap::Parser;
 
-use buffer_pool::ConsumeBuffer;
-use buffer_pool::Pool;
-use buffer_pool::Pooled;
-
 const MAX_DATAGRAM_SIZE: usize = 1350;
+const MAX_MESSAGE_SIZE: usize = 65535;
 
 struct PartialResponse {
     body: Vec<u8>,
@@ -34,95 +35,104 @@ struct Args {
 
 type ClientMap = HashMap<
     quiceh::ConnectionId<'static>,
-    mpsc::Sender<(Pooled<ConsumeBuffer>, net::SocketAddr)>,
+    mpsc::Sender<(FixedBuf, usize, net::SocketAddr)>,
 >;
 
-const POOL_SHARDS: usize = 8;
-const _MAX_POOL_BUF_SIZE: usize = 64 * 1024;
-const SMALL_POOL_BUF_SIZE: usize = 4096;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tokio_uring::start(async {
+        env_logger::builder().format_timestamp_nanos().init();
 
-type BufPool = Pool<POOL_SHARDS, ConsumeBuffer>;
+        let args = Args::parse();
 
-static SMALL_POOL: BufPool = BufPool::new(128, SMALL_POOL_BUF_SIZE);
+        let socket = Arc::new(
+            tokio_uring::net::UdpSocket::bind("127.0.0.1:4433".parse().unwrap())
+                .await
+                .unwrap(),
+        );
+        let mut pacing = false;
+        match set_txtime_sockopt(&socket) {
+            Ok(_) => {
+                pacing = true;
+                debug!("successfully set SO_TXTIME socket option");
+            },
+            Err(e) => debug!("setsockopt failed {:?}", e),
+        };
 
-#[cfg_attr(feature = "current_thread", tokio::main(flavor = "current_thread"))]
-#[cfg_attr(not(feature = "current_thread"), tokio::main)]
-async fn main() {
-    env_logger::builder().format_timestamp_nanos().init();
+        if !set_gso(&socket, MAX_DATAGRAM_SIZE) {
+            debug!("Could not set GSO's max segment size");
+        }
 
-    let args = Args::parse();
+        // Create the configuration for the QUIC connections.
+        let mut config =
+            quiceh::Config::new(quiceh::PROTOCOL_VERSION_VREVERSO).unwrap();
+        config
+            .load_cert_chain_from_pem_file("quiceh/examples/cert.crt")
+            .unwrap();
+        config
+            .load_priv_key_from_pem_file("quiceh/examples/cert.key")
+            .unwrap();
+        config
+            .set_application_protos(&[
+                b"hq-interop",
+                b"hq-29",
+                b"hq-28",
+                b"hq-27",
+                b"http/0.9",
+            ])
+            .unwrap();
+        config.discover_pmtu(false);
+        config.set_max_idle_timeout(5000);
+        config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
+        config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
+        config.set_initial_max_data(10_000_000);
+        config.set_initial_max_stream_data_bidi_local(1_000_000);
+        config.set_initial_max_stream_data_bidi_remote(1_000_000);
+        config.set_initial_max_stream_data_uni(1_000_000);
+        config.set_initial_max_streams_bidi(100);
+        config.set_initial_max_streams_uni(100);
+        config.set_disable_active_migration(true);
 
-    let socket =
-        Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:4433").await.unwrap());
-    let mut pacing = false;
-    match set_txtime_sockopt(&socket) {
-        Ok(_) => {
-            pacing = true;
-            debug!("successfully set SO_TXTIME socket option");
-        },
-        Err(e) => debug!("setsockopt failed {:?}", e),
-    };
+        config.set_initial_congestion_window_packets(10);
+        config.set_max_connection_window(25_165_824);
+        config.set_max_stream_window(16_777_216);
+        config.enable_early_data();
+        // XXX  We're not using it when enabled
+        config.enable_pacing(pacing);
+        config.enable_hidden_copy_for_zc_sender(false);
 
-    // Create the configuration for the QUIC connections.
-    let mut config =
-        quiceh::Config::new(quiceh::PROTOCOL_VERSION_VREVERSO).unwrap();
-    config
-        .load_cert_chain_from_pem_file("quiceh/examples/cert.crt")
-        .unwrap();
-    config
-        .load_priv_key_from_pem_file("quiceh/examples/cert.key")
-        .unwrap();
-    config
-        .set_application_protos(&[
-            b"hq-interop",
-            b"hq-29",
-            b"hq-28",
-            b"hq-27",
-            b"http/0.9",
-        ])
-        .unwrap();
-    config.discover_pmtu(false);
-    config.set_max_idle_timeout(5000);
-    config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
-    config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
-    config.set_initial_max_data(10_000_000);
-    config.set_initial_max_stream_data_bidi_local(1_000_000);
-    config.set_initial_max_stream_data_bidi_remote(1_000_000);
-    config.set_initial_max_stream_data_uni(1_000_000);
-    config.set_initial_max_streams_bidi(100);
-    config.set_initial_max_streams_uni(100);
-    config.set_disable_active_migration(true);
+        let rng = SystemRandom::new();
+        let conn_id_seed =
+            ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap();
 
-    config.set_initial_congestion_window_packets(10);
-    config.set_max_connection_window(25_165_824);
-    config.set_max_stream_window(16_777_216);
-    config.enable_early_data();
-    config.enable_pacing(pacing);
-    config.enable_hidden_copy_for_zc_sender(false);
+        let mut clients = ClientMap::new();
+        let (tx_garbage_conn, mut rx_garbage_conn) = mpsc::channel(128);
 
-    let rng = SystemRandom::new();
-    let conn_id_seed =
-        ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap();
+        let pool = FixedBufPool::new(
+            std::iter::repeat_with(|| vec![0; MAX_MESSAGE_SIZE])
+                .take(20)
+                .chain(
+                    std::iter::repeat_with(|| vec![0; MAX_DATAGRAM_SIZE])
+                        .take(20),
+                ),
+        );
 
-    let mut clients = ClientMap::new();
-    let (tx_garbage_conn, mut rx_garbage_conn) = mpsc::channel(128);
+        pool.register()?;
 
-    let handle = tokio::spawn(async move {
         loop {
-            let mut buf = SMALL_POOL.get_with(|d| d.expand(SMALL_POOL_BUF_SIZE));
-
+            let buf = pool.next(MAX_MESSAGE_SIZE).await;
             tokio::select! {
                 Some(scid) = rx_garbage_conn.recv() => {
                     let scid = quiceh::ConnectionId::from_vec(scid);
                     clients.remove(&scid);
                 }
 
-                result = socket.recv_from(&mut buf) => {
+                (result, mut buf) = socket.recv_from(buf) => {
+
                     let (len, from) = result.unwrap();
-                    buf.truncate(len);
+                    let pkt_buf = &mut buf[..len];
 
                     let hdr = match quiceh::Header::from_slice(
-                        &mut buf,
+                        pkt_buf,
                         quiceh::MAX_CONN_ID_LEN,
                     ) {
                         Ok(v) => v,
@@ -149,12 +159,11 @@ async fn main() {
                         if !quiceh::version_is_supported(hdr.version) {
                             warn!("Doing version negotiation");
 
-                            let mut out = [0; MAX_DATAGRAM_SIZE];
+                            let mut out = pool.next(MAX_DATAGRAM_SIZE).await;
                             let len =
-                                quiceh::negotiate_version(&hdr.scid, &hdr.dcid, &mut out)
+                                quiceh::negotiate_version(&hdr.scid, &hdr.dcid, &mut out[..])
                                     .unwrap();
-                            let out = &out[..len];
-                            if let Err(e) = socket.send_to(out, from).await {
+                            if let (Err(e), _) = socket.send_to(out.slice(0..len), from).await {
                                 if e.kind() == std::io::ErrorKind::WouldBlock {
                                     debug!("send() would block");
                                     break;
@@ -169,7 +178,6 @@ async fn main() {
 
                         let mut odcid = None;
 
-                        // TODO add CLAP and CLAP param
                         if args.with_retry {
                             let token = hdr.token.as_ref().unwrap();
 
@@ -177,18 +185,17 @@ async fn main() {
                                 warn!("Doing stateless retry");
                                 let scid = quiceh::ConnectionId::from_ref(&scid);
                                 let new_token = mint_token(&hdr, &from);
-                                let mut out = [0; MAX_DATAGRAM_SIZE];
+                                let mut out = pool.next(MAX_DATAGRAM_SIZE).await;
                                 let len = quiceh::retry(
                                     &hdr.scid,
                                     &hdr.dcid,
                                     &scid,
                                     &new_token,
                                     hdr.version,
-                                    &mut out,
+                                    &mut out[..],
                                 )
                                 .unwrap();
-                                let out = &out[..len];
-                                if let Err(e) = socket.send_to(out, from).await {
+                                if let (Err(e), _) = socket.send_to(out.slice(0..len), from).await {
                                     if e.kind() == std::io::ErrorKind::WouldBlock {
                                         debug!("send() would block");
                                         break;
@@ -230,12 +237,12 @@ async fn main() {
 
                         let (tx, rx) = mpsc::channel(128);
 
-                        tokio::spawn(handle_client(
+                        tokio_uring::spawn(handle_client(
                             socket.clone(),
-                            conn,
+                            Box::new(conn),
                             rx,
                             tx_garbage_conn.clone(),
-                            socket.local_addr().unwrap(),
+                            pool.clone(),
                         ));
 
                         clients.insert(scid.clone(), tx.clone());
@@ -245,33 +252,32 @@ async fn main() {
                     };
 
                     if let Some(client_sender) = client_sender {
-                        if let Err(e) = client_sender.send((buf, from)).await {
+                        if let Err(e) = client_sender.send((buf, len, from)).await {
                             error!("Failed to send packet to client handler: {}", e);
                         }
                     }
                 }
             }
         }
-    });
-    handle.await.unwrap();
+        Ok(())
+    })
 }
 
-async fn handle_client(
-    socket: Arc<tokio::net::UdpSocket>, mut conn: quiceh::Connection,
-    mut rx: mpsc::Receiver<(Pooled<ConsumeBuffer>, net::SocketAddr)>,
-    tx_garbage_conn: mpsc::Sender<Vec<u8>>, local_addr: net::SocketAddr,
+async fn handle_client<T: tokio_uring::buf::IoBufMut>(
+    socket: Arc<tokio_uring::net::UdpSocket>, mut conn: Box<quiceh::Connection>,
+    mut rx: mpsc::Receiver<(FixedBuf, usize, net::SocketAddr)>,
+    tx_garbage_conn: mpsc::Sender<Vec<u8>>, pool: FixedBufPool<T>,
 ) {
     let mut app_buffers = AppRecvBufMap::new(3, 1_000_000, 1_000_000);
     let mut partial_responses: HashMap<u64, PartialResponse> = HashMap::new();
-    let mut out = vec![0; 65535];
+
     let mut loss_rate: f64 = 0.0;
     let mut max_send_burst = 65535;
-    let send_state = UdpSocketState::new((&socket).into()).unwrap();
-    send_state
-        .set_send_buffer_size((&socket).into(), 2097152)
-        .unwrap();
 
     let mut continue_write = false;
+    // TODO: NO GSO support and TxTime support; (should use sendmsg_zc with appropriate message
+    // control)
+
     loop {
         let timeout = {
             if continue_write {
@@ -297,13 +303,15 @@ async fn handle_client(
                 }
             }
 
-            Some((mut pkt, from)) = rx.recv() => {
+            Some((mut buf, len, from)) = rx.recv() => {
                 let recv_info = quiceh::RecvInfo {
                     to: socket.local_addr().unwrap(),
                     from,
                 };
 
-                let read = match conn.recv(&mut pkt, &mut app_buffers, recv_info) {
+                let pkt = &mut buf[..len];
+
+                let read = match conn.recv(pkt, &mut app_buffers, recv_info) {
                     Ok(v) => v,
                     Err(e) => {
                         error!("{} recv failed: {:?}", conn.trace_id(), e);
@@ -358,6 +366,7 @@ async fn handle_client(
         continue_write = false;
         let mut total_write = 0;
         let mut dst_info = None;
+        let mut out = pool.next(MAX_MESSAGE_SIZE).await;
         let new_max_send_burst = {
             // Reduce max_send_burst by 25% if loss is increasing more than 0.1%.
             let new_loss_rate =
@@ -402,22 +411,26 @@ async fn handle_client(
         };
 
         if total_write != 0 && dst_info.is_some() {
-            let transmit = Transmit {
-                destination: dst_info.unwrap().to,
-                ecn: None,
-                contents: &out[..total_write],
-                segment_size: Some(MAX_DATAGRAM_SIZE),
-                src_ip: Some(local_addr.ip()),
+            debug!("Sending {} bytes in socket", total_write);
+            let (res, ..) = socket
+                .send_to(out.slice(0..total_write), dst_info.unwrap().to)
+                .await;
+
+            match res {
+                Ok(v) => {
+                    if v < total_write {
+                        debug!("Wrote {} out of {}", v, total_write);
+                    }
+                },
+                Err(e) => {
+                    if e.kind() == std::io::ErrorKind::WouldBlock {
+                        trace!("send() would block");
+                        continue;
+                    }
+
+                    panic!("send_to() failed: {:?}", e);
+                },
             };
-
-            if let Err(e) = send_state.send((&socket).into(), &transmit) {
-                if e.kind() == std::io::ErrorKind::WouldBlock {
-                    trace!("send() would block");
-                    continue;
-                }
-
-                panic!("send_to() failed: {:?}", e);
-            }
         }
 
         if total_write >= new_max_send_burst {
@@ -442,12 +455,17 @@ async fn handle_client(
                     .collect::<Vec<_>>()
                     .join("")
             );
-            tx_garbage_conn.send(scid.unwrap()).await.unwrap();
+            tx_garbage_conn
+                .send(scid.unwrap())
+                .await
+                .expect("failed to close connection");
             break;
         }
     }
 }
 
+/// This is an example. A deterministic token isn't a great idea for production;
+/// don't re-use this.
 fn mint_token(hdr: &quiceh::Header, src: &net::SocketAddr) -> Vec<u8> {
     let mut token = Vec::new();
     token.extend_from_slice(b"quiceh");
@@ -460,6 +478,7 @@ fn mint_token(hdr: &quiceh::Header, src: &net::SocketAddr) -> Vec<u8> {
     token
 }
 
+/// Provides no cryptographic validation whatsoever. It is only example code.
 fn validate_token<'a>(
     src: &net::SocketAddr, token: &'a [u8],
 ) -> Option<quiceh::ConnectionId<'a>> {
@@ -592,16 +611,35 @@ fn handle_writable(
 /// packet transmission time in the sendmsg syscall.
 ///
 /// Note that this socket option works only on linux platforms.
-fn set_txtime_sockopt(sock: &tokio::net::UdpSocket) -> std::io::Result<()> {
+fn set_txtime_sockopt(sock: &tokio_uring::net::UdpSocket) -> std::io::Result<()> {
     use nix::sys::socket::setsockopt;
     use nix::sys::socket::sockopt::TxTime;
+    use std::os::fd::AsRawFd;
+    use std::os::fd::FromRawFd;
 
     let config = nix::libc::sock_txtime {
         clockid: libc::CLOCK_MONOTONIC,
         flags: 0,
     };
 
-    setsockopt(sock, TxTime, &config)?;
+    let raw_fd = sock.as_raw_fd();
+    let std_socket = unsafe { std::net::UdpSocket::from_raw_fd(raw_fd) };
+
+    setsockopt(&std_socket, TxTime, &config)?;
+    std::mem::forget(std_socket);
 
     Ok(())
+}
+
+/// Set Udp GSO segment size
+pub fn set_gso(
+    socket: &tokio_uring::net::UdpSocket, segment_size: usize,
+) -> bool {
+    use nix::sys::socket::setsockopt;
+    use nix::sys::socket::sockopt::UdpGsoSegment;
+    use std::os::unix::io::AsRawFd;
+
+    let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(socket.as_raw_fd()) };
+
+    setsockopt(&fd, UdpGsoSegment, &(segment_size as i32)).is_ok()
 }

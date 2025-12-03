@@ -29,7 +29,7 @@ use std::time::Instant;
 
 // When autotuning the receiver window, decide how much
 // we increase the window.
-const WINDOW_INCREASE_FACTOR: u64 = 2;
+const WINDOW_INCREASE_FACTOR: u64 = 4;
 
 // When autotuning the receiver window, check if the last
 // update is within RTT * this constant.
@@ -196,7 +196,7 @@ mod tests {
         // Window size should be doubled.
         fc.autotune_window(Instant::now(), Duration::from_millis(100));
 
-        let w = w * 2;
+        let w = w * WINDOW_INCREASE_FACTOR;
         let consumed_inc = 15;
 
         fc.add_consumed(consumed_inc);
