@@ -116,6 +116,9 @@ harness = false
 [[bench]]
 name = "send_cwin_bench"
 harness = false
+[[bench]]
+name = "stream_recv_zc"
+harness = false
 
 [[example]]
 name = "tokio-server"

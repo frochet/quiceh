@@ -49,6 +49,26 @@ fn bench_v3_receive(
     black_box(b);
 }
 
+fn bench_v3_receive_zc(
+    pipe: &mut Pipe, flight: &mut Vec<(Vec<u8>, quiceh::SendInfo)>,
+) {
+    for &mut (ref mut pkt, ref mut si) in flight.iter_mut() {
+        let info = quiceh::RecvInfo {
+            to: si.to,
+            from: si.from,
+        };
+        pipe.client
+            .recv(pkt, &mut pipe.client_app_buffers, info)
+            .unwrap();
+    }
+    let (chunk, ..) = pipe
+        .client
+        .stream_recv_zc(1, &mut pipe.client_app_buffers)
+        .unwrap();
+
+    black_box(chunk);
+}
+
 fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
     let mut config_v1 = quiceh::Config::new(quiceh::PROTOCOL_VERSION_V1).unwrap();
     let mut config_v3 =
@@ -92,7 +112,7 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
     config_v3.set_initial_max_stream_data_bidi_remote(10_000_000_000);
     config_v3.verify_peer(false);
 
-    let mut group = c.benchmark_group("Quiche_Recv_path");
+    let mut group = c.benchmark_group("Quiceh_Recv_path");
     let sendbuf = vec![0; 10000];
     group.throughput(Throughput::Bytes(10000));
 
@@ -100,7 +120,7 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
     // the application through the stream_recv() call in V1 or the
     // stream_peek() call in V3. We do this for a full cwnd.
     group.bench_with_input(
-        BenchmarkId::new("Quic_V3_Recv_Path", 10000),
+        BenchmarkId::new("Quic_Reverso_Recv_Path_Peek", 10000),
         &sendbuf,
         |b, sendbuf| {
             b.iter_batched_ref(
@@ -126,6 +146,36 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
                     (pipe_v3, flight)
                 },
                 |(ref mut pipe, flight)| bench_v3_receive(pipe, flight),
+                BatchSize::SmallInput,
+            )
+        },
+    );
+    group.bench_with_input(
+        BenchmarkId::new("Quic_Reverso_Recv_Path_ZC", 10000),
+        &sendbuf,
+        |b, sendbuf| {
+            b.iter_batched_ref(
+                || {
+                    let mut pipe_v3 = Pipe::with_config(&mut config_v3).unwrap();
+                    pipe_v3.set_client_expected_chunklen_to_consume(10000);
+                    pipe_v3.handshake().unwrap();
+                    pipe_v3.server.stream_send(1, b"init", false).unwrap();
+                    pipe_v3.advance().unwrap();
+                    pipe_v3
+                        .client
+                        .stream_peek(1, &mut pipe_v3.client_app_buffers)
+                        .unwrap();
+                    pipe_v3
+                        .client
+                        .stream_consumed(1, 4, &mut pipe_v3.client_app_buffers)
+                        .unwrap();
+                    pipe_v3.server.stream_send(1, sendbuf, false).unwrap();
+                    let flight =
+                        quiceh::testing::emit_flight(&mut pipe_v3.server)
+                            .unwrap();
+                    (pipe_v3, flight)
+                },
+                |(ref mut pipe, flight)| bench_v3_receive_zc(pipe, flight),
                 BatchSize::SmallInput,
             )
         },
