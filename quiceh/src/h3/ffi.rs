@@ -138,24 +138,6 @@ pub extern "C" fn quiceh_h3_conn_poll(
 }
 
 #[no_mangle]
-pub extern "C" fn quiceh_h3_conn_poll_v3(
-    conn: &mut h3::Connection, quic_conn: &mut Connection,
-    app_buffers: &mut AppRecvBufMap, ev: *mut *const h3::Event,
-) -> i64 {
-    match conn.poll_v3(quic_conn, app_buffers) {
-        Ok((id, v)) => {
-            unsafe {
-                *ev = Box::into_raw(Box::new(v));
-            }
-
-            id as i64
-        },
-
-        Err(e) => e.to_c() as i64,
-    }
-}
-
-#[no_mangle]
 pub extern "C" fn quiceh_h3_event_type(ev: &h3::Event) -> u32 {
     match ev {
         h3::Event::Headers { .. } => 0,
@@ -187,7 +169,7 @@ pub extern "C" fn quiceh_h3_event_for_each_header(
     argp: *mut c_void,
 ) -> c_int {
     match ev {
-        h3::Event::Headers { list, .. } =>
+        h3::Event::Headers { list, .. } => {
             for h in list {
                 let rc = cb(
                     h.name().as_ptr(),
@@ -200,7 +182,8 @@ pub extern "C" fn quiceh_h3_event_for_each_header(
                 if rc != 0 {
                     return rc;
                 }
-            },
+            }
+        },
 
         _ => unreachable!(),
     }
@@ -328,15 +311,13 @@ pub extern "C" fn quiceh_h3_recv_body(
 #[no_mangle]
 pub extern "C" fn quiceh_h3_body_peek(
     conn: &mut h3::Connection, quic_conn: &mut Connection, stream_id: u64,
-    app_buffers: &mut AppRecvBufMap, out: *mut *const u8,
-    expected_bytes: *mut size_t,
+    out: *mut *const u8, expected_bytes: *mut size_t,
 ) -> ssize_t {
-    let (b, expected_len) =
-        match conn.body_peek(quic_conn, stream_id, app_buffers) {
-            Ok(v) => v,
+    let (b, expected_len) = match conn.body_peek(quic_conn, stream_id) {
+        Ok(v) => v,
 
-            Err(e) => return e.to_c() as ssize_t,
-        };
+        Err(e) => return e.to_c() as ssize_t,
+    };
 
     unsafe {
         *out = b.as_ptr();
@@ -351,9 +332,9 @@ pub extern "C" fn quiceh_h3_body_peek(
 #[no_mangle]
 pub extern "C" fn quiceh_h3_body_consumed(
     conn: &mut h3::Connection, quic_conn: &mut Connection, stream_id: u64,
-    consumed: size_t, app_buffers: &mut AppRecvBufMap,
+    consumed: size_t,
 ) -> c_int {
-    match conn.body_consumed(quic_conn, stream_id, consumed, app_buffers) {
+    match conn.body_consumed(quic_conn, stream_id, consumed) {
         Ok(()) => 0,
 
         Err(e) => e.to_c() as c_int,

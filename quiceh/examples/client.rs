@@ -29,8 +29,6 @@ extern crate log;
 
 use ring::rand::*;
 
-use quiceh::AppRecvBufMap;
-
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
 const HTTP_REQ_STREAM_ID: u64 = 4;
@@ -137,7 +135,6 @@ fn main() {
     let req_start = std::time::Instant::now();
 
     let mut req_sent = false;
-    let mut app_buffers = AppRecvBufMap::new(3, 1_000_000, 1_000_000);
 
     loop {
         poll.poll(&mut events, conn.timeout()).unwrap();
@@ -178,15 +175,14 @@ fn main() {
             };
 
             // Process potentially coalesced packets.
-            let read =
-                match conn.recv(&mut buf[..len], &mut app_buffers, recv_info) {
-                    Ok(v) => v,
+            let read = match conn.recv(&mut buf[..len], recv_info) {
+                Ok(v) => v,
 
-                    Err(e) => {
-                        error!("recv failed: {:?}", e);
-                        continue 'read;
-                    },
-                };
+                Err(e) => {
+                    error!("recv failed: {:?}", e);
+                    continue 'read;
+                },
+            };
 
             debug!("processed {} bytes", read);
         }
@@ -240,7 +236,7 @@ fn main() {
                     }
                 }
             } else if conn.version() == quiceh::PROTOCOL_VERSION_VREVERSO {
-                match conn.stream_peek(s, &mut app_buffers) {
+                match conn.stream_peek(s) {
                     Ok((b, len, fin)) => {
                         debug!("received {} bytes", len);
 
@@ -250,7 +246,7 @@ fn main() {
                             std::str::from_utf8_unchecked(b)
                         });
 
-                        conn.stream_consumed(s, len, &mut app_buffers).unwrap();
+                        conn.stream_consumed(s, len).unwrap();
                         // The server reported that it has no more data to send,
                         // which
                         //

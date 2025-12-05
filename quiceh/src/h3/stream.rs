@@ -30,7 +30,6 @@ use super::Error;
 use super::Result;
 
 use super::frame;
-use crate::AppRecvBufMap;
 
 pub const HTTP3_CONTROL_STREAM_TYPE_ID: u64 = 0x0;
 pub const HTTP3_PUSH_STREAM_TYPE_ID: u64 = 0x1;
@@ -268,27 +267,32 @@ impl Stream {
                 // initialized, no more SETTINGS are permitted.
                 match (ty, self.remote_initialized) {
                     // Initialize control stream.
-                    (frame::SETTINGS_FRAME_TYPE_ID, false) =>
-                        self.remote_initialized = true,
+                    (frame::SETTINGS_FRAME_TYPE_ID, false) => {
+                        self.remote_initialized = true
+                    },
 
                     // Non-SETTINGS frames not allowed on control stream
                     // before initialization.
                     (_, false) => return Err(Error::MissingSettings),
 
                     // Additional SETTINGS frame.
-                    (frame::SETTINGS_FRAME_TYPE_ID, true) =>
-                        return Err(Error::FrameUnexpected),
+                    (frame::SETTINGS_FRAME_TYPE_ID, true) => {
+                        return Err(Error::FrameUnexpected)
+                    },
 
                     // Frames that can't be received on control stream
                     // after initialization.
-                    (frame::DATA_FRAME_TYPE_ID, true) =>
-                        return Err(Error::FrameUnexpected),
+                    (frame::DATA_FRAME_TYPE_ID, true) => {
+                        return Err(Error::FrameUnexpected)
+                    },
 
-                    (frame::HEADERS_FRAME_TYPE_ID, true) =>
-                        return Err(Error::FrameUnexpected),
+                    (frame::HEADERS_FRAME_TYPE_ID, true) => {
+                        return Err(Error::FrameUnexpected)
+                    },
 
-                    (frame::PUSH_PROMISE_FRAME_TYPE_ID, true) =>
-                        return Err(Error::FrameUnexpected),
+                    (frame::PUSH_PROMISE_FRAME_TYPE_ID, true) => {
+                        return Err(Error::FrameUnexpected)
+                    },
 
                     // All other frames are ignored after initialization.
                     (_, true) => (),
@@ -300,23 +304,29 @@ impl Stream {
                 // is accepted. Other frames cause an error.
                 if !self.is_local {
                     match (ty, self.remote_initialized) {
-                        (frame::HEADERS_FRAME_TYPE_ID, false) =>
-                            self.remote_initialized = true,
+                        (frame::HEADERS_FRAME_TYPE_ID, false) => {
+                            self.remote_initialized = true
+                        },
 
-                        (frame::DATA_FRAME_TYPE_ID, false) =>
-                            return Err(Error::FrameUnexpected),
+                        (frame::DATA_FRAME_TYPE_ID, false) => {
+                            return Err(Error::FrameUnexpected)
+                        },
 
-                        (frame::CANCEL_PUSH_FRAME_TYPE_ID, _) =>
-                            return Err(Error::FrameUnexpected),
+                        (frame::CANCEL_PUSH_FRAME_TYPE_ID, _) => {
+                            return Err(Error::FrameUnexpected)
+                        },
 
-                        (frame::SETTINGS_FRAME_TYPE_ID, _) =>
-                            return Err(Error::FrameUnexpected),
+                        (frame::SETTINGS_FRAME_TYPE_ID, _) => {
+                            return Err(Error::FrameUnexpected)
+                        },
 
-                        (frame::GOAWAY_FRAME_TYPE_ID, _) =>
-                            return Err(Error::FrameUnexpected),
+                        (frame::GOAWAY_FRAME_TYPE_ID, _) => {
+                            return Err(Error::FrameUnexpected)
+                        },
 
-                        (frame::MAX_PUSH_FRAME_TYPE_ID, _) =>
-                            return Err(Error::FrameUnexpected),
+                        (frame::MAX_PUSH_FRAME_TYPE_ID, _) => {
+                            return Err(Error::FrameUnexpected)
+                        },
 
                         // All other frames can be ignored regardless of stream
                         // state.
@@ -328,20 +338,25 @@ impl Stream {
             Some(Type::Push) => {
                 match ty {
                     // Frames that can never be received on request streams.
-                    frame::CANCEL_PUSH_FRAME_TYPE_ID =>
-                        return Err(Error::FrameUnexpected),
+                    frame::CANCEL_PUSH_FRAME_TYPE_ID => {
+                        return Err(Error::FrameUnexpected)
+                    },
 
-                    frame::SETTINGS_FRAME_TYPE_ID =>
-                        return Err(Error::FrameUnexpected),
+                    frame::SETTINGS_FRAME_TYPE_ID => {
+                        return Err(Error::FrameUnexpected)
+                    },
 
-                    frame::PUSH_PROMISE_FRAME_TYPE_ID =>
-                        return Err(Error::FrameUnexpected),
+                    frame::PUSH_PROMISE_FRAME_TYPE_ID => {
+                        return Err(Error::FrameUnexpected)
+                    },
 
-                    frame::GOAWAY_FRAME_TYPE_ID =>
-                        return Err(Error::FrameUnexpected),
+                    frame::GOAWAY_FRAME_TYPE_ID => {
+                        return Err(Error::FrameUnexpected)
+                    },
 
-                    frame::MAX_PUSH_FRAME_TYPE_ID =>
-                        return Err(Error::FrameUnexpected),
+                    frame::MAX_PUSH_FRAME_TYPE_ID => {
+                        return Err(Error::FrameUnexpected)
+                    },
 
                     _ => (),
                 }
@@ -374,10 +389,10 @@ impl Stream {
                 // These frame types can never have 0 payload length because
                 // they always have fields that must be populated.
                 Some(
-                    frame::GOAWAY_FRAME_TYPE_ID |
-                    frame::PUSH_PROMISE_FRAME_TYPE_ID |
-                    frame::CANCEL_PUSH_FRAME_TYPE_ID |
-                    frame::MAX_PUSH_FRAME_TYPE_ID,
+                    frame::GOAWAY_FRAME_TYPE_ID
+                    | frame::PUSH_PROMISE_FRAME_TYPE_ID
+                    | frame::CANCEL_PUSH_FRAME_TYPE_ID
+                    | frame::MAX_PUSH_FRAME_TYPE_ID,
                 ) => {
                     if len == 0 {
                         return Err(Error::FrameError);
@@ -400,8 +415,7 @@ impl Stream {
     /// Read the connection and acquire a reference to the data containing the
     /// state
     pub fn try_acquire_state_buffer<'a, F: BufFactory>(
-        &mut self, conn: &mut crate::Connection<F>,
-        app_buf: &'a mut AppRecvBufMap,
+        &mut self, conn: &'a mut crate::Connection<F>,
     ) -> Result<&'a [u8]> {
         // In v3, the state is kept mixed with data. We eventually
         // give a slice to the upper layer containing the DATA from
@@ -409,14 +423,9 @@ impl Stream {
         //
         // This gives everything readable until it is explicitely
         // marked as consumed.
-        let b = match conn.stream_peek(self.id, app_buf) {
+
+        let b = match conn.stream_peek(self.id) {
             Ok((b, len, _)) => {
-                trace!(
-                    "{} Acquiring {} bytes of the HTTP/3 frame from Stream {} ",
-                    conn.trace_id(),
-                    len,
-                    self.id
-                );
                 // We read nothing form the QUIC stream
                 if len == 0 {
                     self.reset_data_event();
@@ -428,12 +437,6 @@ impl Stream {
             },
 
             Err(e) => {
-                trace!(
-                    "{} failed to recv bytes from Stream {}, error {:?}",
-                    conn.trace_id(),
-                    self.id,
-                    e
-                );
                 // The stream is not readable anymore, so re-arm the Data event.
                 if e == crate::Error::Done {
                     self.reset_data_event();
@@ -449,11 +452,10 @@ impl Stream {
     /// Mark the data acquired from the state buffer as consumed.
     pub fn mark_state_buffer_consumed<F: BufFactory>(
         &mut self, conn: &mut crate::Connection<F>, consumed: usize,
-        app_buf: &mut AppRecvBufMap,
     ) -> Result<()> {
         self.state_off += consumed;
 
-        conn.stream_consumed(self.id, consumed, app_buf)?;
+        conn.stream_consumed(self.id, consumed)?;
 
         self.reset_data_event();
 
@@ -686,11 +688,14 @@ impl Stream {
     /// Tries to get a reference to the DATA payload for the  application to
     /// eventually consume.
     pub fn try_acquire_data<'a, F: BufFactory>(
-        &mut self, conn: &mut crate::Connection<F>,
-        app_buf: &'a mut AppRecvBufMap,
+        &mut self, conn: &'a mut crate::Connection<F>,
     ) -> Result<(&'a [u8], usize, bool)> {
-        let (b, len, fin) = match conn.stream_peek(self.id, app_buf) {
-            Ok(v) => v,
+        let (b, len, fin) = match conn.stream_peek(self.id) {
+            Ok(v) => {
+                let left =
+                    std::cmp::min(v.0.len(), self.state_len - self.state_off);
+                (&v.0[..left], v.1, v.2)
+            },
 
             Err(e) => {
                 // The stream is not readable anymore, so re-arm the Data event.
@@ -701,14 +706,13 @@ impl Stream {
                 return Err(e.into());
             },
         };
-        let left = std::cmp::min(b.len(), self.state_len - self.state_off);
 
         // The stream is not readable anymore, so re-arm the Data event.
-        if !conn.stream_readable(self.id) {
-            self.reset_data_event();
-        }
+        //if !conn.stream_readable(self.id) {
+        //self.reset_data_event();
+        //}
 
-        Ok((&b[..left], len, fin))
+        Ok((b, len, fin))
     }
 
     /// Tries to read DATA payload from the transport stream.
@@ -722,7 +726,7 @@ impl Stream {
 
             Err(e) => {
                 // The stream is not readable anymore, so re-arm the Data event.
-                if e == crate::Error::Done {
+                if e == crate::Error::Done || !conn.stream_readable(self.id) {
                     self.reset_data_event();
                 }
 
@@ -746,21 +750,22 @@ impl Stream {
 
     /// Marks DATA payload read and consumed (up to `consumed`).
     pub fn mark_data_consumed<F: BufFactory>(
-        &mut self, conn: &mut crate::Connection<F>, app_buf: &mut AppRecvBufMap,
-        consumed: usize,
+        &mut self, conn: &mut crate::Connection<F>, consumed: usize,
     ) -> Result<()> {
         // Account for DATA consumed by the app
         self.state_off += consumed;
 
-        let (_, len, _) = conn.stream_peek(self.id, app_buf)?;
+        let (_, len, _) = conn.stream_peek(self.id)?;
 
         // Tell the underlying QUIC stream that we consumed part of the data.
-        conn.stream_consumed(self.id, consumed, app_buf)?;
+        conn.stream_consumed(self.id, consumed)?;
 
         if self.state_buffer_complete() {
             // We can transition if we consumed the whole data frame.
             self.state_transition(State::FrameType, 1, true)?;
-        } else if len == consumed {
+        }
+
+        if len == consumed {
             // We have consumed all available data, let's rearm the Data event
             trace!("Consumed the whole stream chunk. Rearming data event");
             self.reset_data_event();

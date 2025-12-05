@@ -33,8 +33,6 @@ use std::collections::HashMap;
 
 use ring::rand::*;
 
-use quiceh::AppRecvBufMap;
-
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
 struct PartialResponse {
@@ -116,8 +114,6 @@ fn main() {
 
     let local_addr = socket.local_addr().unwrap();
 
-    let mut app_buffers = AppRecvBufMap::new(3, 1_000_000, 1_000_000);
-
     loop {
         // Find the shorter timeout from all the active connections.
         //
@@ -180,8 +176,8 @@ fn main() {
 
             // Lookup a connection based on the packet's connection ID. If there
             // is no connection matching, create a new one.
-            let client = if !clients.contains_key(&hdr.dcid) &&
-                !clients.contains_key(&conn_id)
+            let client = if !clients.contains_key(&hdr.dcid)
+                && !clients.contains_key(&conn_id)
             {
                 if hdr.ty != quiceh::Type::Initial {
                     error!("Packet is not Initial");
@@ -296,15 +292,14 @@ fn main() {
             };
 
             // Process potentially coalesced packets.
-            let read =
-                match client.conn.recv(pkt_buf, &mut app_buffers, recv_info) {
-                    Ok(v) => v,
+            let read = match client.conn.recv(pkt_buf, recv_info) {
+                Ok(v) => v,
 
-                    Err(e) => {
-                        error!("{} recv failed: {:?}", client.conn.trace_id(), e);
-                        continue 'read;
-                    },
-                };
+                Err(e) => {
+                    error!("{} recv failed: {:?}", client.conn.trace_id(), e);
+                    continue 'read;
+                },
+            };
 
             debug!("{} processed {} bytes", client.conn.trace_id(), read);
 
@@ -341,35 +336,33 @@ fn main() {
                     }
                 } else {
                     for s in client.conn.readable() {
-                        match client.conn.stream_peek(s, &mut app_buffers) {
-                            Ok((stream_buf, len, fin)) => {
+                        debug!(
+                            "{}, stream {} is readable",
+                            client.conn.trace_id(),
+                            s
+                        );
+                        let chunk = match client.conn.stream_recv_zc(s) {
+                            Ok((chunk, fin)) => {
+                                debug!("received {} bytes", read);
                                 debug!(
-                                    "{} received {} bytes",
-                                    client.conn.trace_id(),
-                                    read
-                                );
-                                debug!(
-                                    "{} stream {} has {} bytes (fin? {})",
-                                    client.conn.trace_id(),
+                                    "stream {} has {} bytes (fin? {})",
                                     s,
-                                    stream_buf.len(),
+                                    chunk.len(),
                                     fin
                                 );
-
-                                handle_stream(
-                                    client,
-                                    s,
-                                    stream_buf,
-                                    "examples/root",
-                                );
-
-                                client
-                                    .conn
-                                    .stream_consumed(s, len, &mut app_buffers)
-                                    .unwrap();
+                                Some(chunk)
                             },
-                            _ => (),
+                            _ => None,
                         };
+                        if let Some(stream_buf) = chunk {
+                            handle_stream(
+                                client,
+                                s,
+                                &stream_buf[..],
+                                "examples/root",
+                            );
+                            client.conn.stream_consumed(s, len).unwrap();
+                        }
                     }
                 }
             }

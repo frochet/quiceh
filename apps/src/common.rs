@@ -170,8 +170,6 @@ where
     pub loss_rate: f64,
 
     pub max_send_burst: usize,
-
-    pub app_buffers: quiceh::AppRecvBufMap,
 }
 
 pub type ClientIdMap = HashMap<ConnectionId<'static>, ClientId>;
@@ -419,7 +417,7 @@ pub trait HttpConn<F: BufFactory> {
 
     fn handle_responses_on_quic_v3(
         &mut self, conn: &mut quiceh::Connection<F>,
-        app_buffers: &mut quiceh::AppRecvBufMap, req_start: &std::time::Instant,
+        req_start: &std::time::Instant,
     );
 
     fn report_incomplete(&self, start: &std::time::Instant) -> bool;
@@ -429,13 +427,12 @@ pub trait HttpConn<F: BufFactory> {
         partial_requests: &mut HashMap<u64, PartialRequest>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
         index: &str, buf: &mut [u8],
-        app_buffers: Option<&mut quiceh::AppRecvBufMap>,
     ) -> quiceh::h3::Result<()>;
 
     fn handle_requests_on_quic_v3(
         &mut self, conn: &mut quiceh::Connection<F>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
-        index: &str, app_buffers: &mut quiceh::AppRecvBufMap,
+        index: &str,
     ) -> quiceh::h3::Result<()>;
 
     fn handle_writable(
@@ -573,67 +570,74 @@ where
 
     fn handle_responses_on_quic_v3(
         &mut self, conn: &mut quiceh::Connection<F>,
-        app_buffers: &mut quiceh::AppRecvBufMap, req_start: &std::time::Instant,
+        req_start: &std::time::Instant,
     ) {
         for s in conn.readable() {
-            if let Ok((b, len, fin)) = conn.stream_peek(s, app_buffers) {
-                trace!(
-                    "received {}  bytes available to consume, fin is {}",
-                    len,
-                    fin
-                );
-
-                let req = self
-                    .reqs
-                    .iter_mut()
-                    .find(|r| r.stream_id == Some(s))
-                    .unwrap();
-
-                match &mut req.response_writer {
-                    Some(rw) => {
-                        rw.write_all(b).ok();
-                    },
-
-                    None => {
-                        self.output_sink.borrow_mut()(unsafe {
-                            String::from_utf8_unchecked(b.to_vec())
-                        });
-                    },
-                }
-
-                conn.stream_consumed(s, b.len(), app_buffers).unwrap();
-
-                // The server reported that it has no more data to send on
-                // a client-initiated
-                // bidirectional stream, which means
-                // we got the full response. If all responses are received
-                // then close the connection.
-                if &s % 4 == 0 && fin {
-                    self.reqs_complete += 1;
-                    let reqs_count = self.reqs.len();
-
-                    debug!(
-                        "{}/{} responses received",
-                        self.reqs_complete, reqs_count
+            info!("{} is readable on stream {}", conn.trace_id(), s);
+            let (len, fin) = match conn.stream_peek(s) {
+                Ok((b, len, fin)) => {
+                    trace!(
+                        "received {}  bytes available to consume, fin is {}",
+                        len,
+                        fin
                     );
 
-                    if self.reqs_complete == reqs_count {
-                        info!(
-                            "{}/{} response(s) received in {:?}, closing...",
-                            self.reqs_complete,
-                            reqs_count,
-                            req_start.elapsed()
-                        );
+                    let req = self
+                        .reqs
+                        .iter_mut()
+                        .find(|r| r.stream_id == Some(s))
+                        .unwrap();
 
-                        match conn.close(true, 0x00, b"kthxbye") {
-                            // Already closed.
-                            Ok(_) | Err(quiceh::Error::Done) => (),
+                    match &mut req.response_writer {
+                        Some(rw) => {
+                            rw.write_all(b).ok();
+                        },
 
-                            Err(e) => panic!("error closing conn: {:?}", e),
-                        }
+                        None => {
+                            self.output_sink.borrow_mut()(unsafe {
+                                String::from_utf8_unchecked(b.to_vec())
+                            });
+                        },
+                    };
 
-                        break;
+                    (len, fin)
+                },
+                Err(_) => continue,
+            };
+
+            conn.stream_consumed(s, len)
+                .expect("Could not consume buffer");
+
+            // The server reported that it has no more data to send on
+            // a client-initiated
+            // bidirectional stream, which means
+            // we got the full response. If all responses are received
+            // then close the connection.
+            if &s % 4 == 0 && fin {
+                self.reqs_complete += 1;
+                let reqs_count = self.reqs.len();
+
+                debug!(
+                    "{}/{} responses received",
+                    self.reqs_complete, reqs_count
+                );
+
+                if self.reqs_complete == reqs_count {
+                    info!(
+                        "{}/{} response(s) received in {:?}, closing...",
+                        self.reqs_complete,
+                        reqs_count,
+                        req_start.elapsed()
+                    );
+
+                    match conn.close(true, 0x00, b"kthxbye") {
+                        // Already closed.
+                        Ok(_) | Err(quiceh::Error::Done) => (),
+
+                        Err(e) => panic!("error closing conn: {:?}", e),
                     }
+
+                    break;
                 }
             }
         }
@@ -729,87 +733,87 @@ where
     fn handle_requests_on_quic_v3(
         &mut self, conn: &mut quiceh::Connection<F>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
-        index: &str, app_buffers: &mut quiceh::AppRecvBufMap,
+        index: &str,
     ) -> quiceh::h3::Result<()> {
         for s in conn.readable() {
-            if let Ok((b, len, fin)) = conn.stream_peek(s, app_buffers) {
-                trace!(
-                    "{} has {} bytes available to consume  with fin bit {}",
-                    conn.trace_id(),
-                    len,
-                    fin
-                );
-                if !b.ends_with(b"\r\n") {
-                    return Ok(());
-                }
+            info!("{} is readable", conn.trace_id());
+            let (peek_len, body, bodylen) = match conn.stream_peek(s) {
+                Ok((b, len, fin)) => {
+                    trace!(
+                        "received {}  bytes available to consume, fin is {}",
+                        len,
+                        fin
+                    );
 
-                if b.starts_with(b"GET ") {
-                    let uri = &b[4..b.len() - 2];
-                    let uri = String::from_utf8(uri.to_vec()).unwrap();
-                    let uri = String::from(uri.lines().next().unwrap());
-                    let uri = path::Path::new(&uri);
-                    let mut path = path::PathBuf::from(root);
+                    if !b.ends_with(b"\r\n") {
+                        return Ok(());
+                    }
 
-                    for c in uri.components() {
-                        if let path::Component::Normal(v) = c {
-                            path.push(v)
+                    if b.starts_with(b"GET ") {
+                        let uri = &b[4..b.len() - 2];
+                        let uri = String::from_utf8(uri.to_vec()).unwrap();
+                        let uri = String::from(uri.lines().next().unwrap());
+                        let uri = path::Path::new(&uri);
+                        let mut path = path::PathBuf::from(root);
+
+                        for c in uri.components() {
+                            if let path::Component::Normal(v) = c {
+                                path.push(v)
+                            }
                         }
+
+                        path = autoindex(path, index);
+
+                        info!("got GET request for {:?} on stream {}", path, s);
+
+                        let body = std::fs::read(path.as_path())
+                            .unwrap_or_else(|_| b"Not Found!\r\n".to_vec());
+
+                        info!(
+                            "sending response of size {} on stream {}",
+                            body.len(),
+                            s
+                        );
+                        let bodylen = body.len();
+
+                        (len, Some(body), Some(bodylen))
+                    } else {
+                        (len, None, None)
                     }
+                },
+                Err(_) => continue,
+            };
 
-                    path = autoindex(path, index);
+            trace!("{} has consumed {} bytes", conn.trace_id(), peek_len);
+            conn.stream_consumed(s, peek_len)?;
 
-                    info!(
-                        "{} got GET request for {:?} on stream {}",
-                        conn.trace_id(),
-                        path,
-                        s
-                    );
+            if let (Some(body), Some(bodylen)) = (body, bodylen) {
+                let (written, remaining) = match conn.stream_send_zc(
+                    s,
+                    body.into(),
+                    Some(bodylen),
+                    true,
+                ) {
+                    Ok(v) => v,
 
-                    let body = std::fs::read(path.as_path())
-                        .unwrap_or_else(|_| b"Not Found!\r\n".to_vec());
+                    Err(quiceh::Error::Done) => (0, None),
 
-                    info!(
-                        "{} sending response of size {} on stream {}",
-                        conn.trace_id(),
-                        body.len(),
-                        s
-                    );
-                    let bodylen = body.len();
+                    Err(e) => {
+                        error!("stream send failed {:?}", e);
+                        return Err(From::from(e));
+                    },
+                };
 
-                    let (written, remaining) = match conn.stream_send_zc(
-                        s,
-                        body.into(),
-                        Some(bodylen),
-                        true,
-                    ) {
-                        Ok(v) => v,
-
-                        Err(quiceh::Error::Done) => (0, None),
-
-                        Err(e) => {
-                            error!(
-                                "{} stream send failed {:?}",
-                                conn.trace_id(),
-                                e
-                            );
-                            conn.stream_consumed(s, b.len(), app_buffers)?;
-                            return Err(From::from(e));
-                        },
+                if let Some(body) = remaining {
+                    let response = PartialResponse {
+                        headers: None,
+                        priority: None,
+                        body,
+                        remaining_len: bodylen.saturating_sub(written),
                     };
-                    if let Some(body) = remaining {
-                        let response = PartialResponse {
-                            headers: None,
-                            priority: None,
-                            body,
-                            remaining_len: bodylen.saturating_sub(written),
-                        };
 
-                        partial_responses.insert(s, response);
-                    }
+                    partial_responses.insert(s, response);
                 }
-                conn.stream_consumed(s, b.len(), app_buffers)?;
-            } else {
-                trace!("Some error");
             }
         }
 
@@ -821,7 +825,6 @@ where
         partial_requests: &mut HashMap<u64, PartialRequest>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
         index: &str, buf: &mut [u8],
-        _app_buffers: Option<&mut quiceh::AppRecvBufMap>,
     ) -> quiceh::h3::Result<()> {
         // Process all readable streams.
         for s in conn.readable() {
@@ -1162,13 +1165,8 @@ impl Http3Conn {
     /// connection context.
     fn poll_internal<F: BufFactory>(
         &mut self, conn: &mut quiceh::Connection<F>,
-        app_buffers: &mut Option<&mut quiceh::AppRecvBufMap>,
     ) -> quiceh::h3::Result<(u64, quiceh::h3::Event)> {
-        if let Some(ref mut app_buffers) = app_buffers {
-            self.h3_conn.poll_v3(conn, app_buffers)
-        } else {
-            self.h3_conn.poll(conn)
-        }
+        self.h3_conn.poll(conn)
     }
 
     /// Builds an HTTP/3 response given a request.
@@ -1248,11 +1246,12 @@ impl Http3Conn {
         let decided_method = match method {
             Some(method) => {
                 match method {
-                    "" =>
+                    "" => {
                         return Err((
                             H3_MESSAGE_ERROR,
                             ":method value cannot be empty".to_string(),
-                        )),
+                        ))
+                    },
 
                     "CONNECT" => {
                         // not allowed
@@ -1271,11 +1270,12 @@ impl Http3Conn {
                 }
             },
 
-            None =>
+            None => {
                 return Err((
                     H3_MESSAGE_ERROR,
                     ":method cannot be missing".to_string(),
-                )),
+                ))
+            },
         };
 
         let decided_scheme = match scheme {
@@ -1299,54 +1299,61 @@ impl Http3Conn {
                 scheme
             },
 
-            None =>
+            None => {
                 return Err((
                     H3_MESSAGE_ERROR,
                     ":scheme cannot be missing".to_string(),
-                )),
+                ))
+            },
         };
 
         let decided_host = match (authority, host) {
-            (None, Some("")) =>
+            (None, Some("")) => {
                 return Err((
                     H3_MESSAGE_ERROR,
                     "host value cannot be empty".to_string(),
-                )),
+                ))
+            },
 
-            (Some(""), None) =>
+            (Some(""), None) => {
                 return Err((
                     H3_MESSAGE_ERROR,
                     ":authority value cannot be empty".to_string(),
-                )),
+                ))
+            },
 
-            (Some(""), Some("")) =>
+            (Some(""), Some("")) => {
                 return Err((
                     H3_MESSAGE_ERROR,
                     ":authority and host value cannot be empty".to_string(),
-                )),
+                ))
+            },
 
-            (None, None) =>
+            (None, None) => {
                 return Err((
                     H3_MESSAGE_ERROR,
                     ":authority and host missing".to_string(),
-                )),
+                ))
+            },
 
             // Any other combo, prefer :authority
             (..) => authority.unwrap(),
         };
 
         let decided_path = match path {
-            Some("") =>
+            Some("") => {
                 return Err((
                     H3_MESSAGE_ERROR,
                     ":path value cannot be empty".to_string(),
-                )),
+                ))
+            },
 
-            None =>
+            None => {
                 return Err((
                     H3_MESSAGE_ERROR,
                     ":path cannot be missing".to_string(),
-                )),
+                ))
+            },
 
             Some(path) => path,
         };
@@ -1503,10 +1510,10 @@ where
 
     fn handle_responses_on_quic_v3(
         &mut self, conn: &mut quiceh::Connection<F>,
-        app_buffers: &mut quiceh::AppRecvBufMap, req_start: &std::time::Instant,
+        req_start: &std::time::Instant,
     ) {
         loop {
-            match self.h3_conn.poll_v3(conn, app_buffers) {
+            match self.h3_conn.poll(conn) {
                 Ok((stream_id, quiceh::h3::Event::Headers { list, .. })) => {
                     debug!(
                         "got response headers {:?} on stream id {}",
@@ -1524,11 +1531,7 @@ where
                 },
 
                 Ok((stream_id, quiceh::h3::Event::Data)) => {
-                    let b = match self.h3_conn.body_peek(
-                        conn,
-                        stream_id,
-                        app_buffers,
-                    ) {
+                    let b = match self.h3_conn.body_peek(conn, stream_id) {
                         Ok((b, tot_exp_len)) => {
                             debug!(
                                 "got {} bytes of response data on stream {}. Total expected will be {}",
@@ -1554,14 +1557,6 @@ where
                     match &mut req.response_writer {
                         Some(rw) => {
                             rw.write_all(b).ok();
-                            self.h3_conn
-                                .body_consumed(
-                                    conn,
-                                    stream_id,
-                                    b.len(),
-                                    app_buffers,
-                                )
-                                .unwrap();
                         },
                         None => {
                             if !self.dump_json {
@@ -1569,16 +1564,11 @@ where
                                     std::str::from_utf8_unchecked(b).to_string()
                                 });
                             }
-                            self.h3_conn
-                                .body_consumed(
-                                    conn,
-                                    stream_id,
-                                    b.len(),
-                                    app_buffers,
-                                )
-                                .unwrap();
                         },
                     }
+                    let len = b.len();
+
+                    self.h3_conn.body_consumed(conn, stream_id, len).unwrap();
                 },
 
                 Ok((_stream_id, quiceh::h3::Event::Finished)) => {
@@ -1708,14 +1698,15 @@ where
                                 rw.write_all(&buf[..read]).ok();
                             },
 
-                            None =>
+                            None => {
                                 if !self.dump_json {
                                     self.output_sink.borrow_mut()(unsafe {
                                         String::from_utf8_unchecked(
                                             buf[..read].to_vec(),
                                         )
                                     });
-                                },
+                                }
+                            },
                         }
                     }
                 },
@@ -1835,7 +1826,7 @@ where
     fn handle_requests_on_quic_v3(
         &mut self, conn: &mut quiceh::Connection<F>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
-        index: &str, app_buffers: &mut quiceh::AppRecvBufMap,
+        index: &str,
     ) -> quiceh::h3::Result<()> {
         self.handle_requests(
             conn,
@@ -1844,7 +1835,6 @@ where
             root,
             index,
             &mut [0; 0],
-            Some(app_buffers),
         )
     }
 
@@ -1853,11 +1843,10 @@ where
         _partial_requests: &mut HashMap<u64, PartialRequest>,
         partial_responses: &mut HashMap<u64, PartialResponse>, root: &str,
         index: &str, buf: &mut [u8],
-        mut app_buffers: Option<&mut quiceh::AppRecvBufMap>,
     ) -> quiceh::h3::Result<()> {
         // Process HTTP stream-related events.
         loop {
-            match self.poll_internal(conn, &mut app_buffers) {
+            match self.poll_internal(conn) {
                 Ok((stream_id, quiceh::h3::Event::Headers { list, .. })) => {
                     info!(
                         "{} got request {:?} on stream id {}",
@@ -2081,7 +2070,7 @@ where
         let body = resp.body.clone();
 
         match self.h3_conn.send_body_zc(conn, stream_id, body, true) {
-            Ok((written, remaining)) =>
+            Ok((written, remaining)) => {
                 if let Some(body) = remaining {
                     resp.remaining_len =
                         resp.remaining_len.saturating_sub(written);
@@ -2091,7 +2080,8 @@ where
                     }
                 } else if written == resp.remaining_len {
                     partial_responses.remove(&stream_id);
-                },
+                }
+            },
 
             Err(quiceh::h3::Error::Done) => {
                 info!("{} sending on stream_id {} returned Error::Done; likely we're lacking stream

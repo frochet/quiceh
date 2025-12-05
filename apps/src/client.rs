@@ -26,7 +26,6 @@
 
 use crate::args::*;
 use crate::common::*;
-use quiceh::AppRecvBufMap;
 use quiceh::BufFactory;
 use quiceh::BufSplit;
 
@@ -205,18 +204,6 @@ where
 
     let local_addr = socket.local_addr().unwrap();
 
-    let mut app_buffers = AppRecvBufMap::new(
-        3,
-        conn_args.max_streams_bidi,
-        conn_args.max_streams_uni,
-    );
-    // Chunks of 1MiB
-    app_buffers
-        .set_expected_chunklen_to_consume(
-            std::num::NonZero::new(MAX_FLUSH_SIZE).unwrap(),
-        )
-        .unwrap();
-
     // Create a QUIC connection and initiate handshake.
     let mut conn = quiceh::connect_with_buffer_factory(
         connect_url.domain(),
@@ -364,11 +351,7 @@ where
                     while !data.is_empty() {
                         pkt_count += 1;
                         let mut buf = data.split_to(meta.stride.min(data.len()));
-                        read += match conn.recv(
-                            &mut buf,
-                            &mut app_buffers,
-                            recv_info,
-                        ) {
+                        read += match conn.recv(&mut buf, recv_info) {
                             Ok(v) => v,
 
                             Err(e) => {
@@ -417,9 +400,9 @@ where
 
         // Create a new application protocol session once the QUIC connection is
         // established.
-        if (conn.is_established() || conn.is_in_early_data()) &&
-            (!args.perform_migration || migrated) &&
-            !app_proto_selected
+        if (conn.is_established() || conn.is_in_early_data())
+            && (!args.perform_migration || migrated)
+            && !app_proto_selected
         {
             // At this stage the ALPN negotiation succeeded and selected a
             // single application protocol name. We'll use this to construct
@@ -475,11 +458,7 @@ where
         if let Some(h_conn) = http_conn.as_mut() {
             h_conn.send_requests(&mut conn, &args.dump_response_path);
             if conn.version() == quiceh::PROTOCOL_VERSION_VREVERSO {
-                h_conn.handle_responses_on_quic_v3(
-                    &mut conn,
-                    &mut app_buffers,
-                    &app_data_start,
-                );
+                h_conn.handle_responses_on_quic_v3(&mut conn, &app_data_start);
             } else {
                 h_conn.handle_responses(&mut conn, &mut buf, &app_data_start);
             }
@@ -544,10 +523,10 @@ where
             scid_sent = true;
         }
 
-        if args.perform_migration &&
-            !new_path_probed &&
-            scid_sent &&
-            conn.available_dcids() > 0
+        if args.perform_migration
+            && !new_path_probed
+            && scid_sent
+            && conn.available_dcids() > 0
         {
             let additional_local_addr =
                 migrate_socket.as_ref().unwrap().local_addr().unwrap();

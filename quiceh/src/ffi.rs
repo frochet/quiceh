@@ -797,30 +797,6 @@ pub extern "C" fn quiceh_conn_set_session(
     }
 }
 
-#[no_mangle]
-pub extern "C" fn quiceh_app_recv_buf_map_new(
-    recycled_capacity: usize, max_streams_bidi: u64, max_streams_uni_remote: u64,
-) -> *mut AppRecvBufMap {
-    Box::into_raw(Box::new(AppRecvBufMap::new(
-        recycled_capacity,
-        max_streams_bidi,
-        max_streams_uni_remote,
-    )))
-}
-
-#[no_mangle]
-pub extern "C" fn quiceh_app_recv_buf_map_default() -> *mut AppRecvBufMap {
-    Box::into_raw(Box::new(AppRecvBufMap::default()))
-}
-
-#[no_mangle]
-pub extern "C" fn quiceh_app_recv_buf_map_free(app_buffers: *mut AppRecvBufMap) {
-    if app_buffers.is_null() {
-        return;
-    }
-    drop(unsafe { Box::from_raw(app_buffers) });
-}
-
 #[repr(C)]
 pub struct RecvInfo<'a> {
     from: &'a sockaddr,
@@ -840,8 +816,7 @@ impl<'a> From<&RecvInfo<'a>> for crate::RecvInfo {
 
 #[no_mangle]
 pub extern "C" fn quiceh_conn_recv(
-    conn: &mut Connection, buf: *mut u8, buf_len: size_t,
-    app_buffers: &mut AppRecvBufMap, info: &RecvInfo,
+    conn: &mut Connection, buf: *mut u8, buf_len: size_t, info: &RecvInfo,
 ) -> ssize_t {
     if buf_len > <ssize_t>::max_value() as usize {
         panic!("The provided buffer is too large");
@@ -849,7 +824,7 @@ pub extern "C" fn quiceh_conn_recv(
 
     let buf = unsafe { slice::from_raw_parts_mut(buf, buf_len) };
 
-    match conn.recv(buf, app_buffers, info.into()) {
+    match conn.recv(buf, info.into()) {
         Ok(v) => v as ssize_t,
 
         Err(e) => e.to_c(),
@@ -948,11 +923,11 @@ pub extern "C" fn quiceh_conn_stream_recv(
 }
 
 #[no_mangle]
-pub extern "C" fn quiceh_conn_peek<'a>(
-    conn: &mut Connection, stream_id: u64, app_buffers: &'a mut AppRecvBufMap,
-    out: *mut *const u8, fin: &mut bool, out_error_code: &mut u64,
+pub extern "C" fn quiceh_conn_stream_peek<'a>(
+    conn: &mut Connection, stream_id: u64, out: *mut *const u8, fin: &mut bool,
+    out_error_code: &mut u64,
 ) -> ssize_t {
-    let (b, out_len, out_fin) = match conn.stream_peek(stream_id, app_buffers) {
+    let (b, out_len, out_fin) = match conn.stream_peek(stream_id) {
         Ok(v) => v,
 
         Err(e) => {
@@ -977,9 +952,8 @@ pub extern "C" fn quiceh_conn_peek<'a>(
 #[no_mangle]
 pub extern "C" fn quiceh_conn_stream_consumed(
     conn: &mut Connection, stream_id: u64, consumed: size_t,
-    app_buffers: &mut AppRecvBufMap,
 ) -> c_int {
-    match conn.stream_consumed(stream_id, consumed as usize, app_buffers) {
+    match conn.stream_consumed(stream_id, consumed as usize) {
         Ok(_) => 0,
 
         Err(e) => e.to_c() as c_int,
@@ -1171,7 +1145,7 @@ impl<'a> Iterator for ConnectionIdIter<'a> {
 #[no_mangle]
 pub extern "C" fn quiceh_conn_source_ids(
     conn: &Connection,
-) -> *mut ConnectionIdIter {
+) -> *mut ConnectionIdIter<'_> {
     let vec = conn.source_ids().cloned().collect();
     Box::into_raw(Box::new(ConnectionIdIter {
         cids: vec,

@@ -35,8 +35,6 @@ use ring::rand::*;
 
 use quiceh::h3::NameValue;
 
-use quiceh::AppRecvBufMap;
-
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
 struct PartialResponse {
@@ -118,8 +116,6 @@ fn main() {
 
     let local_addr = socket.local_addr().unwrap();
 
-    let mut app_buffers = AppRecvBufMap::new(3, 100, 100);
-
     loop {
         // Find the shorter timeout from all the active connections.
         //
@@ -182,8 +178,8 @@ fn main() {
 
             // Lookup a connection based on the packet's connection ID. If there
             // is no connection matching, create a new one.
-            let client = if !clients.contains_key(&hdr.dcid) &&
-                !clients.contains_key(&conn_id)
+            let client = if !clients.contains_key(&hdr.dcid)
+                && !clients.contains_key(&conn_id)
             {
                 if hdr.ty != quiceh::Type::Initial {
                     error!("Packet is not Initial");
@@ -299,22 +295,21 @@ fn main() {
             };
 
             // Process potentially coalesced packets.
-            let read =
-                match client.conn.recv(pkt_buf, &mut app_buffers, recv_info) {
-                    Ok(v) => v,
+            let read = match client.conn.recv(pkt_buf, recv_info) {
+                Ok(v) => v,
 
-                    Err(e) => {
-                        error!("{} recv failed: {:?}", client.conn.trace_id(), e);
-                        continue 'read;
-                    },
-                };
+                Err(e) => {
+                    error!("{} recv failed: {:?}", client.conn.trace_id(), e);
+                    continue 'read;
+                },
+            };
 
             debug!("{} processed {} bytes", client.conn.trace_id(), read);
 
             // Create a new HTTP/3 connection as soon as the QUIC connection
             // is established.
-            if (client.conn.is_in_early_data() || client.conn.is_established()) &&
-                client.http3_conn.is_none()
+            if (client.conn.is_in_early_data() || client.conn.is_established())
+                && client.http3_conn.is_none()
             {
                 debug!(
                     "{} QUIC handshake completed, now trying HTTP/3",
@@ -370,8 +365,9 @@ fn main() {
 
                             Ok((_stream_id, quiceh::h3::Event::Finished)) => (),
 
-                            Ok((_stream_id, quiceh::h3::Event::Reset { .. })) =>
-                                (),
+                            Ok((_stream_id, quiceh::h3::Event::Reset { .. })) => {
+                                ()
+                            },
 
                             Ok((
                                 _prioritized_element_id,
@@ -394,12 +390,10 @@ fn main() {
                                 break;
                             },
                         }
-                    } else if client.conn.version() ==
-                        quiceh::PROTOCOL_VERSION_VREVERSO
+                    } else if client.conn.version()
+                        == quiceh::PROTOCOL_VERSION_VREVERSO
                     {
-                        match http3_conn
-                            .poll_v3(&mut client.conn, &mut app_buffers)
-                        {
+                        match http3_conn.poll(&mut client.conn) {
                             Ok((
                                 stream_id,
                                 quiceh::h3::Event::Headers { list, .. },
@@ -422,8 +416,9 @@ fn main() {
 
                             Ok((_stream_id, quiceh::h3::Event::Finished)) => (),
 
-                            Ok((_stream_id, quiceh::h3::Event::Reset { .. })) =>
-                                (),
+                            Ok((_stream_id, quiceh::h3::Event::Reset { .. })) => {
+                                ()
+                            },
 
                             Ok((
                                 _prioritized_element_id,
@@ -634,10 +629,11 @@ fn build_response(
     // Look for the request's path and method.
     for hdr in request {
         match hdr.name() {
-            b":path" =>
+            b":path" => {
                 path = std::path::Path::new(
                     std::str::from_utf8(hdr.value()).unwrap(),
-                ),
+                )
+            },
 
             b":method" => method = Some(hdr.value()),
 

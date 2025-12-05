@@ -29,8 +29,6 @@ extern crate log;
 
 use quiceh::h3::NameValue;
 
-use quiceh::AppRecvBufMap;
-
 use ring::rand::*;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
@@ -156,8 +154,6 @@ fn main() {
 
     let mut req_sent = false;
 
-    let mut app_buffers = AppRecvBufMap::new(3, 100, 100);
-
     loop {
         poll.poll(&mut events, conn.timeout()).unwrap();
 
@@ -198,15 +194,14 @@ fn main() {
             };
 
             // Process potentially coalesced packets.
-            let read =
-                match conn.recv(&mut buf[..len], &mut app_buffers, recv_info) {
-                    Ok(v) => v,
+            let read = match conn.recv(&mut buf[..len], recv_info) {
+                Ok(v) => v,
 
-                    Err(e) => {
-                        error!("recv failed: {:?}", e);
-                        continue 'read;
-                    },
-                };
+                Err(e) => {
+                    error!("recv failed: {:?}", e);
+                    continue 'read;
+                },
+            };
 
             debug!("processed {} bytes", read);
         }
@@ -306,7 +301,7 @@ fn main() {
                         },
                     }
                 } else if conn.version() == quiceh::PROTOCOL_VERSION_VREVERSO {
-                    match http3_conn.poll_v3(&mut conn, &mut app_buffers) {
+                    match http3_conn.poll(&mut conn) {
                         Ok((
                             stream_id,
                             quiceh::h3::Event::Headers { list, .. },
@@ -319,11 +314,7 @@ fn main() {
                         },
 
                         Ok((stream_id, quiceh::h3::Event::Data)) => {
-                            match http3_conn.body_peek(
-                                &mut conn,
-                                stream_id,
-                                &mut app_buffers,
-                            ) {
+                            match http3_conn.body_peek(&mut conn, stream_id) {
                                 Ok((b, _)) => {
                                     debug!(
                                         "got {} bytes of response data on stream {}",
@@ -334,13 +325,10 @@ fn main() {
                                         std::str::from_utf8_unchecked(b)
                                     });
 
+                                    let len = b.len();
+
                                     http3_conn
-                                        .body_consumed(
-                                            &mut conn,
-                                            stream_id,
-                                            b.len(),
-                                            &mut app_buffers,
-                                        )
+                                        .body_consumed(&mut conn, stream_id, len)
                                         .unwrap();
                                 },
 

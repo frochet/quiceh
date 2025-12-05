@@ -24,9 +24,7 @@ fn bench_v1_receive(
             to: si.to,
             from: si.from,
         };
-        pipe.client
-            .recv(pkt, &mut pipe.client_app_buffers, info)
-            .unwrap();
+        pipe.client.recv(pkt, info).unwrap();
     }
     let (..) = pipe.client.stream_recv(1, buf).unwrap();
 
@@ -41,14 +39,9 @@ fn bench_v3_receive(
             to: si.to,
             from: si.from,
         };
-        pipe.client
-            .recv(pkt, &mut pipe.client_app_buffers, info)
-            .unwrap();
+        pipe.client.recv(pkt, info).unwrap();
     }
-    let (b, ..) = pipe
-        .client
-        .stream_peek(1, &mut pipe.client_app_buffers)
-        .unwrap();
+    let (b, ..) = pipe.client.stream_peek(1).unwrap();
 
     black_box(b);
 }
@@ -61,14 +54,9 @@ fn bench_v3_receive_zc(
             to: si.to,
             from: si.from,
         };
-        pipe.client
-            .recv(pkt, &mut pipe.client_app_buffers, info)
-            .unwrap();
+        pipe.client.recv(pkt, info).unwrap();
     }
-    let (chunk, ..) = pipe
-        .client
-        .stream_recv_zc(1, &mut pipe.client_app_buffers)
-        .unwrap();
+    let (chunk, ..) = pipe.client.stream_recv_zc(1).unwrap();
 
     black_box(chunk);
 }
@@ -129,20 +117,15 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
         |b, sendbuf| {
             b.iter_batched_ref(
                 || {
+                    config_v3.set_expected_chunklen_to_consume(10000);
                     let mut pipe_v3 = Pipe::with_config(&mut config_v3).unwrap();
                     pipe_v3.handshake().unwrap();
                     // designed to avoid having the receiver's buffer being
                     // initialized as part of the benchmark.
                     pipe_v3.server.stream_send(1, b"init", false).unwrap();
                     pipe_v3.advance().unwrap();
-                    pipe_v3
-                        .client
-                        .stream_peek(1, &mut pipe_v3.client_app_buffers)
-                        .unwrap();
-                    pipe_v3
-                        .client
-                        .stream_consumed(1, 4, &mut pipe_v3.client_app_buffers)
-                        .unwrap();
+                    pipe_v3.client.stream_peek(1).unwrap();
+                    pipe_v3.client.stream_consumed(1, 4).unwrap();
                     pipe_v3.server.stream_send(1, sendbuf, false).unwrap();
                     let flight =
                         quiceh::testing::emit_flight(&mut pipe_v3.server)
@@ -160,19 +143,13 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
         |b, sendbuf| {
             b.iter_batched_ref(
                 || {
+                    config_v3.set_expected_chunklen_to_consume(10000);
                     let mut pipe_v3 = Pipe::with_config(&mut config_v3).unwrap();
-                    pipe_v3.set_client_expected_chunklen_to_consume(10000);
                     pipe_v3.handshake().unwrap();
                     pipe_v3.server.stream_send(1, b"init", false).unwrap();
                     pipe_v3.advance().unwrap();
-                    pipe_v3
-                        .client
-                        .stream_peek(1, &mut pipe_v3.client_app_buffers)
-                        .unwrap();
-                    pipe_v3
-                        .client
-                        .stream_consumed(1, 4, &mut pipe_v3.client_app_buffers)
-                        .unwrap();
+                    pipe_v3.client.stream_peek(1).unwrap();
+                    pipe_v3.client.stream_consumed(1, 4).unwrap();
                     pipe_v3.server.stream_send(1, sendbuf, false).unwrap();
                     let flight =
                         quiceh::testing::emit_flight(&mut pipe_v3.server)

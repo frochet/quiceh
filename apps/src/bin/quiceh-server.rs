@@ -51,7 +51,6 @@ use quinn_udp::Transmit;
 use quinn_udp::UdpSocketState;
 
 const MAX_BUF_SIZE: usize = 65507;
-const MAX_FLUSH_SIZE: usize = 1_048_576;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
@@ -265,8 +264,8 @@ fn main() {
 
             // Lookup a connection based on the packet's connection ID. If there
             // is no connection matching, create a new one.
-            let client = if !clients_ids.contains_key(&hdr.dcid) &&
-                !clients_ids.contains_key(&conn_id)
+            let client = if !clients_ids.contains_key(&hdr.dcid)
+                && !clients_ids.contains_key(&conn_id)
             {
                 if hdr.ty != quiceh::Type::Initial {
                     error!("Packet is not Initial");
@@ -388,7 +387,7 @@ fn main() {
 
                 let client_id = next_client_id;
 
-                let mut client = Client {
+                let client = Client {
                     conn,
                     http_conn: None,
                     client_id,
@@ -398,19 +397,7 @@ fn main() {
                     max_datagram_size,
                     loss_rate: 0.0,
                     max_send_burst: MAX_BUF_SIZE,
-                    app_buffers: quiceh::AppRecvBufMap::new(
-                        3,
-                        conn_args.max_streams_bidi,
-                        conn_args.max_streams_uni,
-                    ),
                 };
-
-                client
-                    .app_buffers
-                    .set_expected_chunklen_to_consume(
-                        std::num::NonZero::new(MAX_FLUSH_SIZE).unwrap(),
-                    )
-                    .unwrap();
 
                 clients.insert(client_id, client);
                 clients_ids.insert(scid.clone(), client_id);
@@ -434,11 +421,7 @@ fn main() {
             };
 
             // Process potentially coalesced packets.
-            let read = match client.conn.recv(
-                pkt_buf,
-                &mut client.app_buffers,
-                recv_info,
-            ) {
+            let read = match client.conn.recv(pkt_buf, recv_info) {
                 Ok(v) => v,
 
                 Err(e) => {
@@ -451,9 +434,9 @@ fn main() {
 
             // Create a new application protocol session as soon as the QUIC
             // connection is established.
-            if !client.app_proto_selected &&
-                (client.conn.is_in_early_data() ||
-                    client.conn.is_established())
+            if !client.app_proto_selected
+                && (client.conn.is_in_early_data()
+                    || client.conn.is_established())
             {
                 // At this stage the ALPN negotiation succeeded and selected a
                 // single application protocol name. We'll use this to construct
@@ -521,7 +504,6 @@ fn main() {
                             partial_responses,
                             &args.root,
                             &args.index,
-                            &mut client.app_buffers,
                         )
                         .is_err()
                     {
@@ -535,7 +517,6 @@ fn main() {
                         &args.root,
                         &args.index,
                         &mut buf,
-                        None,
                     )
                     .is_err()
                 {
@@ -579,9 +560,9 @@ fn main() {
             }
 
             let max_send_burst =
-                client.conn.send_quantum().min(client.max_send_burst) /
-                    client.max_datagram_size *
-                    client.max_datagram_size;
+                client.conn.send_quantum().min(client.max_send_burst)
+                    / client.max_datagram_size
+                    * client.max_datagram_size;
             let mut total_write = 0;
             let mut dst_info = None;
 
