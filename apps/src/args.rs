@@ -54,6 +54,7 @@ pub struct CommonArgs {
     pub qpack_max_table_capacity: Option<u64>,
     pub qpack_blocked_streams: Option<u64>,
     pub initial_cwnd_packets: u64,
+    pub max_bufpool_size: Option<usize>,
 }
 
 /// Creates a new `CommonArgs` structure using the provided [`Docopt`].
@@ -192,6 +193,16 @@ impl Args for CommonArgs {
             .parse::<u64>()
             .unwrap();
 
+        let max_bufpool_size = if !args.get_str("--max-bufpool-size").is_empty() {
+            Some(
+                args.get_str("--max-bufpool-size")
+                    .parse::<usize>()
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
+
         CommonArgs {
             alpns,
             max_data,
@@ -215,6 +226,7 @@ impl Args for CommonArgs {
             qpack_max_table_capacity,
             qpack_blocked_streams,
             initial_cwnd_packets,
+            max_bufpool_size,
         }
     }
 }
@@ -244,6 +256,7 @@ impl Default for CommonArgs {
             qpack_max_table_capacity: None,
             qpack_blocked_streams: None,
             initial_cwnd_packets: 10,
+            max_bufpool_size: None,
         }
     }
 }
@@ -290,6 +303,7 @@ Options:
   --session-file PATH      File used to cache a TLS session for resumption.
   --source-port PORT       Source port to use when connecting to the server [default: 0].
   --initial-cwnd-packets PACKETS   The initial congestion window size in terms of packet count [default: 10].
+  --max-bufpool-size BYTES   The maximum number of bytes the buffer pool can allocate. If not specified, a default will be used.
   -h --help                Show this screen.
 ";
 
@@ -464,6 +478,7 @@ Options:
   --qpack-blocked-streams STREAMS   Limit of streams that can be blocked while decoding. Any value other that 0 is currently unsupported.
   --disable-pacing            Disable pacing (linux only).
   --initial-cwnd-packets PACKETS      The initial congestion window size in terms of packet count [default: 10].
+  --max-bufpool-size BYTES    The maximum number of bytes the buffer pool can allocate. If not specified, a default will be used.
   --enable-hidden-copy        [EXPERIMENTAL] Assemble a stream frame and control through encryption -- currently negatively impact performance with BoringSSL.
   -h --help                   Show this screen.
 ";

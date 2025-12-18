@@ -38,7 +38,7 @@ use crate::flowcontrol;
 use super::Chunk;
 use super::RecvBufInfo;
 use super::DEFAULT_STREAM_WINDOW;
-use crate::bufpool::POOL;
+use crate::bufpool::pool_or_default;
 use crate::range_buf::RangeBuf;
 use buffer_pool::Reuse;
 use std::collections::btree_map;
@@ -327,7 +327,7 @@ impl RecvBuf {
     ) -> RecvBuf {
         let mut chunks = VecDeque::new();
         let chunk =
-            POOL.get_with(|pooled| streamchunk_init(pooled, max_chunklen, 0));
+            pool_or_default().get_with(|pooled| streamchunk_init(pooled, max_chunklen, 0));
 
         chunks.push_back(chunk.into_inner());
         RecvBuf {
@@ -701,7 +701,7 @@ impl RecvBuf {
 
         self.flow_control.add_consumed(chunk.len() as u64);
 
-        let pooled = POOL.from_owned(chunk);
+        let pooled = pool_or_default().from_owned(chunk);
 
         Ok((pooled, self.is_fin()))
     }
@@ -785,7 +785,7 @@ impl RecvBuf {
         // let's recycle
         if is_fully_consumed || (does_consumed_reach_coff && self.is_fin()) {
             trace!("Chunk fully consumed. Sending it back to the pool");
-            POOL.from_owned(
+            pool_or_default().from_owned(
                 self.chunks.pop_front().expect("BUG: Chunks is empty"),
             );
         }
@@ -851,7 +851,7 @@ impl RecvBuf {
                         trace!(
                             "Copying across chunks: Adding a chunk to fill a gap"
                         );
-                        let mut chunk = POOL.get_with(|pooled| {
+                        let mut chunk = pool_or_default().get_with(|pooled| {
                             streamchunk_init(pooled, self.max_chunklen, toffset)
                         });
                         written += chunk.fill_from(&buf[written..], toffset);
@@ -874,7 +874,7 @@ impl RecvBuf {
                 },
                 None => {
                     trace!("Creating missing memory chunk at offset {} and {} bytes left to write", toffset, buf.len() - written);
-                    let chunk = POOL.get_with(|pooled| {
+                    let chunk = pool_or_default().get_with(|pooled| {
                         streamchunk_init(pooled, self.max_chunklen, toffset)
                     });
                     let mut chunk = chunk.into_inner();
@@ -908,7 +908,7 @@ impl RecvBuf {
         }
 
         if self.chunks.is_empty() {
-            let chunk = POOL.get_with(|pooled| {
+            let chunk = pool_or_default().get_with(|pooled| {
                 streamchunk_init(
                     pooled,
                     self.max_chunklen,
@@ -936,12 +936,12 @@ impl RecvBuf {
             // We have found the chunk which should the decrypted data. Does the
             // data fits within the chunk or is it data across chunks?
             let chunk = self.chunks.remove(index).unwrap();
-            Ok(POOL.from_owned(chunk))
+            Ok(pool_or_default().from_owned(chunk))
         } else {
             // Not found. We have a hole, so we need a new chunk.
             let stream_offset_start = stream_offset - relative_buf_offset;
             trace!("Creating missing memory chunk");
-            Ok(POOL.get_with(|pooled| {
+            Ok(pool_or_default().get_with(|pooled| {
                 streamchunk_init(pooled, self.max_chunklen, stream_offset_start)
             }))
         }
@@ -949,7 +949,7 @@ impl RecvBuf {
 
     pub(crate) fn collect(&mut self) {
         for chunk in self.chunks.drain(..) {
-            let _ = POOL.from_owned(chunk);
+            let _ = pool_or_default().from_owned(chunk);
         }
     }
 
@@ -988,7 +988,7 @@ impl RecvBuf {
             // chunks should always have at least one element as long as
             // the fin flag is not consumed.
             let chunk =
-                POOL.get_with(|pooled| streamchunk_init(pooled, self.max_chunklen, 0));
+                pool_or_default().get_with(|pooled| streamchunk_init(pooled, self.max_chunklen, 0));
 
             self.chunks.push_back(chunk.into_inner());
 
@@ -2296,7 +2296,7 @@ mod tests {
 
     #[test]
     fn indexable_chunks() {
-        let mut chunk = POOL
+        let mut chunk = pool_or_default()
             .get_with(|pooled| streamchunk_init(pooled, 42, 0))
             .into_inner();
         chunk.inner = vec![0; 42]; // override init

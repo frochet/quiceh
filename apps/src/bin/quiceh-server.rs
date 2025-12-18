@@ -48,7 +48,10 @@ use quiceh_apps::args::*;
 use quiceh_apps::common::*;
 
 use quinn_udp::Transmit;
+
 use quinn_udp::UdpSocketState;
+
+use quiceh::bufpool;
 
 const MAX_BUF_SIZE: usize = 65507;
 
@@ -65,6 +68,10 @@ fn main() {
     let docopt = docopt::Docopt::new(SERVER_USAGE).unwrap();
     let conn_args = CommonArgs::with_docopt(&docopt);
     let args = ServerArgs::with_docopt(&docopt);
+
+    if let Some(max_bufpool_size) = conn_args.max_bufpool_size {
+        bufpool::init(max_bufpool_size);
+    }
 
     // Setup the event loop.
     let mut poll = mio::Poll::new().unwrap();

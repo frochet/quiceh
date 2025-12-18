@@ -34,8 +34,13 @@
 //! The application is responsible for providing I/O (e.g. sockets handling) as
 //! well as an event loop with support for timers.
 //!
+//! The [`bufpool`] module provides a global, lazily-initialized buffer pool
+//! for `StreamChunk` objects, allowing for efficient memory management
+//! and configurable sizing.
+//!
 //! [quiceh]: https://github.com/frochet/quiceh/
 //! [ietf]: https://quicwg.org/
+//! [bufpool]: bufpool/index.html
 //!
 //! ## Configuring connections
 //!
@@ -20937,7 +20942,7 @@ pub use crate::stream::Chunk;
 
 use crate::stream::Stream;
 
-mod bufpool;
+pub mod bufpool;
 mod cid;
 mod crypto;
 mod dgram;

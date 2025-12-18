@@ -30,6 +30,8 @@ use quiceh_apps::common::*;
 
 use quiceh_apps::client::*;
 
+use quiceh::bufpool;
+
 fn main() {
     env_logger::builder().format_timestamp_nanos().init();
 
@@ -37,6 +39,10 @@ fn main() {
     let docopt = docopt::Docopt::new(CLIENT_USAGE).unwrap();
     let conn_args = CommonArgs::with_docopt(&docopt);
     let args = ClientArgs::with_docopt(&docopt);
+
+    if let Some(max_bufpool_size) = conn_args.max_bufpool_size {
+        bufpool::init(max_bufpool_size);
+    }
 
     match connect::<BufResponseFactory>(args, conn_args, stdout_sink) {
         Err(ClientError::HandshakeFail) => std::process::exit(-1),
