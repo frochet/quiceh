@@ -92,15 +92,12 @@ let conn = quiceh::accept(&scid, None, local, peer, &mut config)?;
 ```
 
 We have slight differences in processing packets and reading data
-from a stream. quiceh exposes a type `AppRecvBufMap` that aims to
-contain the decrypted stream(s) data. This object needs to be created by
-the Application, and a mutable reference is then passed to [`recv()`]
-and [`stream_peek()`]. Server-side, we need one of these for each
-connection.
+from a stream. quiceh exposes new APIs to read/process bytes in
+zero-copy. Here's an example using [`stream_peek()`] and
+[`stream_consumed()`].
 
 ```rust
 let to = socket.local_addr().unwrap();
-let mut app_buffers = quiceh::AppRecvBufMap::default();
 
 loop {
     let (len, from) = match socket.recv_from(&mut buf) {
@@ -123,7 +120,7 @@ loop {
 
     let recv_info = quiceh::RecvInfo { from, to };
 
-    let read = match conn.recv(&mut buf[..read], &mut app_buffers, recv_info) {
+    let read = match conn.recv(&mut buf[..read], recv_info) {
         Ok(v) => v,
 
         Err(e) => {
@@ -142,18 +139,40 @@ if conn.is_established() {
     for stream_id in conn.readable() {
         // Stream is readable, get a reference to the internal
         // contiguous stream data
-        let (streambuf, len, fin) = conn.stream_peek(stream_id, &mut app_buffers).unwrap();
+        let (streambuf, len, fin) = conn.stream_peek(stream_id).unwrap();
 
         // ... do something with streambuf
 
         // Optionally mark some data consumed to release it.
         // If this function is not called, then the next stream_peek
         // Would point to the same bytes, + any new content appended up
-        // until the internal ring buffer is full (see AppRecvBufMap's API).
+        // the stream's maximum window.
 
-        conn.stream_consumed(stream_id, len, &mut app_buffers).unwrap();
+        conn.stream_consumed(stream_id, len).unwrap();
     }
 }
+```
+
+Alternatively, if the Application requires ownership of the stream
+bytes:
+
+```rust
+
+if conn.is_established() {
+    // Iterate over readable streams.
+    for stream_id in conn.readable() {
+        // By default, chunks are 64 KiB buffers, this function will
+        // return it if it is full or if the fin bit is true  
+        // 
+        // If one wants to read/consume partially from the incomplete
+        // chunk, stream_peek() and stream_consume() are available.
+        while let Ok((chunk, fin)) = conn.stream_recv_zc(stream_id) {
+            println!("Got {} bytes on stream {}", chunk.len(),
+            stream_id);
+        }
+    }
+}
+
 ```
 
 ### Command-line apps
@@ -232,15 +251,12 @@ creating a configuration using [`with_boring_ssl_ctx_builder()`].
 
 A configuration object can be shared among multiple connections.
 
-The [`AppRecvBufMap`] should be instantiated passing info about the
-recycling capacity as a number of stream buffers that we may recycle,
-chosen max_streams_bidi and max_streams_uni_remote. Importantly, the
-application should use [`set_expected_chunklen_to_consume()`] to set the
-typical length it expects to consume at once. This value influences the
-size of the chunks being returned by [`stream_recv_zc()`] while
-processing stream data. Setting a size below a typical QUIC Stream frame
-length may lower performance compared to QUIC v1 and is unadvised. The
-default is currently 32K bytes.
+Applications should use [`set_expected_chunklen_to_consume()`] of
+[`Config`] to set the typical length it expects to consume at once. This
+value influences the size of the chunks being returned by
+[`stream_recv_zc()`] while processing stream data. Setting a size below
+a typical QUIC Stream frame length may lower performance compared to
+QUIC v1 and is unadvised. The default is currently 64KiB.
 
 ### Generating outgoing packets
 
@@ -404,10 +420,6 @@ the same.
 [examples/]: quiceh/examples/
 
 
-### Limitations
-
-- [`stream_recv_zc()`] remains to be tested in a concurrent setup.
-
 Building
 --------
 
@@ -484,7 +496,6 @@ See [COPYING] for the license.
 [COPYING]: https://github.com/frochet/quiceh/tree/protocol_reverso/COPYING
 
 [`Config`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html
-[`AppRecvBufMap`]: https://docs.rs/quiceh/latest/quiceh/struct.AppRecvBufMap.html
 [`recv`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.recv
 [`stream_peek()`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.stream_peek
 [`stream_recv_zc()`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.stream_recv_zc
