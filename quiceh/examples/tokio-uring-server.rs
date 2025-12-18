@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use ring::rand::*;
 
-use quiceh::AppRecvBufMap;
 use tokio::sync::mpsc;
 use tokio_uring::buf::fixed::{FixedBuf, FixedBufPool};
 use tokio_uring::buf::BoundedBuf;
@@ -268,7 +267,6 @@ async fn handle_client<T: tokio_uring::buf::IoBufMut>(
     mut rx: mpsc::Receiver<(FixedBuf, usize, net::SocketAddr)>,
     tx_garbage_conn: mpsc::Sender<Vec<u8>>, pool: FixedBufPool<T>,
 ) {
-    let mut app_buffers = AppRecvBufMap::new(3, 1_000_000, 1_000_000);
     let mut partial_responses: HashMap<u64, PartialResponse> = HashMap::new();
 
     let mut loss_rate: f64 = 0.0;
@@ -311,7 +309,7 @@ async fn handle_client<T: tokio_uring::buf::IoBufMut>(
 
                 let pkt = &mut buf[..len];
 
-                let read = match conn.recv(pkt, &mut app_buffers, recv_info) {
+                let read = match conn.recv(pkt, recv_info) {
                     Ok(v) => v,
                     Err(e) => {
                         error!("{} recv failed: {:?}", conn.trace_id(), e);
@@ -324,7 +322,7 @@ async fn handle_client<T: tokio_uring::buf::IoBufMut>(
                 if conn.is_in_early_data() || conn.is_established() {
                     let readable: Vec<u64> = conn.readable().collect();
                     for s in readable {
-                        while let Ok((chunk, fin)) = conn.stream_recv_zc(s, &mut app_buffers) {
+                        while let Ok((chunk, fin)) = conn.stream_recv_zc(s) {
                             debug!("{} received {} bytes", conn.trace_id(), chunk.len());
                             debug!(
                                 "{} stream {} has {} bytes (fin? {})",

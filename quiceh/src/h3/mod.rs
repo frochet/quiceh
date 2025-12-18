@@ -442,50 +442,50 @@ pub enum Error {
 pub enum WireErrorCode {
     /// No error. This is used when the connection or stream needs to be closed,
     /// but there is no error to signal.
-    NoError              = 0x100,
+    NoError = 0x100,
     /// Peer violated protocol requirements in a way that does not match a more
     /// specific error code or endpoint declines to use the more specific
     /// error code.
     GeneralProtocolError = 0x101,
     /// An internal error has occurred in the HTTP stack.
-    InternalError        = 0x102,
+    InternalError = 0x102,
     /// The endpoint detected that its peer created a stream that it will not
     /// accept.
-    StreamCreationError  = 0x103,
+    StreamCreationError = 0x103,
     /// A stream required by the HTTP/3 connection was closed or reset.
     ClosedCriticalStream = 0x104,
     /// A frame was received that was not permitted in the current state or on
     /// the current stream.
-    FrameUnexpected      = 0x105,
+    FrameUnexpected = 0x105,
     /// A frame that fails to satisfy layout requirements or with an invalid
     /// size was received.
-    FrameError           = 0x106,
+    FrameError = 0x106,
     /// The endpoint detected that its peer is exhibiting a behavior that might
     /// be generating excessive load.
-    ExcessiveLoad        = 0x107,
+    ExcessiveLoad = 0x107,
     /// A stream ID or push ID was used incorrectly, such as exceeding a limit,
     /// reducing a limit, or being reused.
-    IdError              = 0x108,
+    IdError = 0x108,
     /// An endpoint detected an error in the payload of a SETTINGS frame.
-    SettingsError        = 0x109,
+    SettingsError = 0x109,
     /// No SETTINGS frame was received at the beginning of the control stream.
-    MissingSettings      = 0x10a,
+    MissingSettings = 0x10a,
     /// A server rejected a request without performing any application
     /// processing.
-    RequestRejected      = 0x10b,
+    RequestRejected = 0x10b,
     /// The request or its response (including pushed response) is cancelled.
-    RequestCancelled     = 0x10c,
+    RequestCancelled = 0x10c,
     /// The client's stream terminated without containing a fully formed
     /// request.
-    RequestIncomplete    = 0x10d,
+    RequestIncomplete = 0x10d,
     /// An HTTP message was malformed and cannot be processed.
-    MessageError         = 0x10e,
+    MessageError = 0x10e,
     /// The TCP connection established in response to a CONNECT request was
     /// reset or abnormally closed.
-    ConnectError         = 0x10f,
+    ConnectError = 0x10f,
     /// The requested operation cannot be served over HTTP/3. The peer should
     /// retry over HTTP/1.1.
-    VersionFallback      = 0x110,
+    VersionFallback = 0x110,
 }
 
 impl Error {
@@ -493,10 +493,12 @@ impl Error {
         match self {
             Error::Done => WireErrorCode::NoError as u64,
             Error::InternalError => WireErrorCode::InternalError as u64,
-            Error::StreamCreationError =>
-                WireErrorCode::StreamCreationError as u64,
-            Error::ClosedCriticalStream =>
-                WireErrorCode::ClosedCriticalStream as u64,
+            Error::StreamCreationError => {
+                WireErrorCode::StreamCreationError as u64
+            },
+            Error::ClosedCriticalStream => {
+                WireErrorCode::ClosedCriticalStream as u64
+            },
             Error::FrameUnexpected => WireErrorCode::FrameUnexpected as u64,
             Error::FrameError => WireErrorCode::FrameError as u64,
             Error::ExcessiveLoad => WireErrorCode::ExcessiveLoad as u64,
@@ -574,8 +576,9 @@ impl std::convert::From<octets_rev::BufferError> for Error {
     fn from(err: octets_rev::BufferError) -> Self {
         match err {
             octets_rev::BufferError::BufferTooShortError => Error::BufferTooShort,
-            octets_rev::BufferError::BufferProtocolError =>
-                Error::BufferProtocolError,
+            octets_rev::BufferError::BufferProtocolError => {
+                Error::BufferProtocolError
+            },
         }
     }
 }
@@ -675,8 +678,8 @@ impl Config {
         let dedup_settings: HashSet<u64> =
             additional_settings.iter().map(|(key, _)| *key).collect();
 
-        if dedup_settings.len() != additional_settings.len() ||
-            !explicit_quiceh_settings.is_disjoint(&dedup_settings)
+        if dedup_settings.len() != additional_settings.len()
+            || !explicit_quiceh_settings.is_disjoint(&dedup_settings)
         {
             return Err(Error::SettingsError);
         }
@@ -889,8 +892,8 @@ impl TryFrom<&[u8]> for Priority {
             // other streams.
             Some(sfv::ListEntry::Item(item)) => match item.bare_item.as_int() {
                 Some(v) => {
-                    if !(PRIORITY_URGENCY_LOWER_BOUND as i64..=
-                        PRIORITY_URGENCY_UPPER_BOUND as i64)
+                    if !(PRIORITY_URGENCY_LOWER_BOUND as i64
+                        ..=PRIORITY_URGENCY_UPPER_BOUND as i64)
                         .contains(&v)
                     {
                         PRIORITY_URGENCY_UPPER_BOUND
@@ -909,8 +912,9 @@ impl TryFrom<&[u8]> for Priority {
         };
 
         let incremental = match dict.get("i") {
-            Some(sfv::ListEntry::Item(item)) =>
-                item.bare_item.as_bool().ok_or(Error::Done)?,
+            Some(sfv::ListEntry::Item(item)) => {
+                item.bare_item.as_bool().ok_or(Error::Done)?
+            },
 
             // Omitted so use default value.
             _ => false,
@@ -1197,8 +1201,8 @@ impl Connection {
         // Clamp and shift urgency into quiche-priority space
         let urgency = priority
             .urgency
-            .clamp(PRIORITY_URGENCY_LOWER_BOUND, PRIORITY_URGENCY_UPPER_BOUND) +
-            PRIORITY_URGENCY_OFFSET;
+            .clamp(PRIORITY_URGENCY_LOWER_BOUND, PRIORITY_URGENCY_UPPER_BOUND)
+            + PRIORITY_URGENCY_OFFSET;
 
         conn.stream_priority(stream_id, urgency, priority.incremental)?;
 
@@ -1237,8 +1241,8 @@ impl Connection {
 
         let header_block = self.encode_header_block(headers)?;
 
-        let overhead = octets_rev::varint_len(frame::HEADERS_FRAME_TYPE_ID) +
-            octets_rev::varint_len(header_block.len() as u64);
+        let overhead = octets_rev::varint_len(frame::HEADERS_FRAME_TYPE_ID)
+            + octets_rev::varint_len(header_block.len() as u64);
 
         // Headers need to be sent atomically, so make sure the stream has
         // enough capacity.
@@ -1404,18 +1408,19 @@ impl Connection {
         let len = body.as_ref().len();
 
         // Validate that it is sane to send data on the stream.
-        if stream_id % 4 != 0 ||
-            (stream_id == 0 &&
-                conn.version == crate::PROTOCOL_VERSION_VREVERSO)
+        if stream_id % 4 != 0
+            || (stream_id == 0
+                && conn.version == crate::PROTOCOL_VERSION_VREVERSO)
         {
             return Err(Error::FrameUnexpected);
         }
 
         match self.streams.get(&stream_id) {
-            Some(s) =>
+            Some(s) => {
                 if !s.local_initialized() {
                     return Err(Error::FrameUnexpected);
-                },
+                }
+            },
 
             None => {
                 return Err(Error::FrameUnexpected);
@@ -1427,8 +1432,8 @@ impl Connection {
             return Err(Error::Done);
         }
 
-        let overhead = octets_rev::varint_len(frame::DATA_FRAME_TYPE_ID) +
-            octets_rev::varint_len(len as u64);
+        let overhead = octets_rev::varint_len(frame::DATA_FRAME_TYPE_ID)
+            + octets_rev::varint_len(len as u64);
 
         let stream_cap = match conn.stream_capacity(stream_id) {
             Ok(v) => v,
@@ -1517,8 +1522,8 @@ impl Connection {
     pub fn dgram_enabled_by_peer<F: BufFactory>(
         &self, conn: &super::Connection<F>,
     ) -> bool {
-        self.peer_settings.h3_datagram == Some(1) &&
-            conn.dgram_max_writable_len().is_some()
+        self.peer_settings.h3_datagram == Some(1)
+            && conn.dgram_max_writable_len().is_some()
     }
 
     /// Returns whether the peer enabled extended CONNECT support.
@@ -1536,7 +1541,7 @@ impl Connection {
     /// data and the total bytes to expect before body_consumed() must
     /// be called.
     ///
-    /// Applications should call this method whenever the [`poll_v3()`] method
+    /// Applications should call this method whenever the [`poll()`] method
     /// returns a [`Data`] event
     ///
     /// On success, a slice is returned and the total bytes to expect before
@@ -1551,13 +1556,12 @@ impl Connection {
     /// remaining slice, and the total remaining bytes to expect before
     /// [`body_consumed()`] must be called.
     ///
-    /// [`poll_v3()`]: struct.Connection.html#method.poll_v3
+    /// [`poll()`]: struct.Connection.html#method.poll
     /// [`body_consumed()`]: struct.Connection.html#method.body_consumed
     /// [`Data`]: enum.Event.html#variant.Data
     /// [`Done`]: enum.Error.html#variant.Done
     pub fn body_peek<'a, F: BufFactory>(
-        &mut self, conn: &mut super::Connection<F>, stream_id: u64,
-        app_buf: &'a mut crate::AppRecvBufMap,
+        &mut self, conn: &'a mut super::Connection<F>, stream_id: u64,
     ) -> Result<(&'a [u8], usize)> {
         if conn.version != crate::PROTOCOL_VERSION_VREVERSO {
             return Err(Error::InvalidAPICall(
@@ -1577,13 +1581,13 @@ impl Connection {
             return Err(Error::Done);
         }
 
-        let (b, len, _) = stream.try_acquire_data(conn, app_buf)?;
+        let (b, len, _) = stream.try_acquire_data(conn)?;
 
         if len == 0 {
-            trace!("{} Stream id {} could not acquire any data from the underyling buffer",
-                   conn.trace_id(),
-                   stream_id
-            );
+            //trace!("{} Stream id {} could not acquire any data from the underyling buffer",
+            //conn.trace_id(),
+            //stream_id
+            //);
             return Err(Error::Done);
         }
         Ok((b, stream.get_state_len() - stream.get_state_off()))
@@ -1605,7 +1609,7 @@ impl Connection {
     /// [`body_peek()`]: struct.Connection.html#method.body_peek
     pub fn body_consumed<F: BufFactory>(
         &mut self, conn: &mut super::Connection<F>, stream_id: u64,
-        consumed: usize, app_buf: &mut crate::AppRecvBufMap,
+        consumed: usize,
     ) -> Result<()> {
         if conn.version != crate::PROTOCOL_VERSION_VREVERSO {
             return Err(Error::InvalidAPICall(
@@ -1616,20 +1620,15 @@ impl Connection {
 
         let stream = self.streams.get_mut(&stream_id).ok_or(Error::Done)?;
 
-        stream.mark_data_consumed(conn, app_buf, consumed)?;
+        stream.mark_data_consumed(conn, consumed)?;
 
         // While body is being received, the stream is marked as finished only
         // when all data is read by the application.
-        if conn.stream_finished_v3(stream_id, app_buf) {
+        if conn.stream_finished_v3(stream_id) {
             self.process_finished_stream(stream_id);
         } else {
             // parse the next frame if any
-            match self.process_readable_stream(
-                conn,
-                stream_id,
-                false,
-                &mut Some(app_buf),
-            ) {
+            match self.process_readable_stream(conn, stream_id, false) {
                 Ok(_) => unreachable!(),
 
                 Err(Error::Done) => (),
@@ -1692,8 +1691,7 @@ impl Connection {
             // DATA frame was consumed, and another one is queued behind it,
             // this will ensure the additional data will also be returned to
             // the application.
-            match self.process_readable_stream(conn, stream_id, false, &mut None)
-            {
+            match self.process_readable_stream(conn, stream_id, false) {
                 Ok(_) => unreachable!(),
 
                 Err(Error::Done) => (),
@@ -1770,10 +1768,10 @@ impl Connection {
         let frame_payload_len =
             octets_rev::varint_len(stream_id) + priority_field_value.len();
 
-        let overhead = octets_rev::varint_len(
-            frame::PRIORITY_UPDATE_FRAME_REQUEST_TYPE_ID,
-        ) + octets_rev::varint_len(stream_id) +
-            octets_rev::varint_len(frame_payload_len as u64);
+        let overhead =
+            octets_rev::varint_len(frame::PRIORITY_UPDATE_FRAME_REQUEST_TYPE_ID)
+                + octets_rev::varint_len(stream_id)
+                + octets_rev::varint_len(frame_payload_len as u64);
 
         // Make sure the control stream has enough capacity.
         match conn.stream_writable(
@@ -1889,13 +1887,7 @@ impl Connection {
     pub fn poll<F: BufFactory>(
         &mut self, conn: &mut super::Connection<F>,
     ) -> Result<(u64, Event)> {
-        if conn.version != crate::PROTOCOL_VERSION_V1 {
-            return Err(Error::InvalidAPICall(
-                "This function should be called on a \
-                                         PROTOCOL_VERSION_V1 connection version",
-            ));
-        }
-        self.poll_internal(conn, None)
+        self.poll_internal(conn)
     }
 
     /// Processes HTTP/3 data received from the peer.
@@ -1936,17 +1928,9 @@ impl Connection {
     /// [`recv_dgram()`]: struct.Connection.html#method.recv_dgram
     /// [`take_last_priority_update()`]: struct.Connection.html#method.take_last_priority_update
     /// [`close()`]: ../struct.Connection.html#method.close
-    pub fn poll_v3<F: BufFactory>(
-        &mut self, conn: &mut super::Connection<F>,
-        app_buf: &mut crate::AppRecvBufMap,
-    ) -> Result<(u64, Event)> {
-        self.poll_internal(conn, Some(app_buf))
-    }
-
     #[inline(always)]
     fn poll_internal<F: BufFactory>(
         &mut self, conn: &mut super::Connection<F>,
-        mut app_buf: Option<&mut crate::AppRecvBufMap>,
     ) -> Result<(u64, Event)> {
         // When connection close is initiated by the local application (e.g. due
         // to a protocol error), the connection itself might be in a broken
@@ -1957,7 +1941,7 @@ impl Connection {
 
         // Process control streams first.
         if let Some(stream_id) = self.peer_control_stream_id {
-            match self.process_control_stream(conn, stream_id, &mut app_buf) {
+            match self.process_control_stream(conn, stream_id) {
                 Ok(ev) => return Ok(ev),
 
                 Err(Error::Done) => (),
@@ -1967,7 +1951,7 @@ impl Connection {
         }
 
         if let Some(stream_id) = self.peer_qpack_streams.encoder_stream_id {
-            match self.process_control_stream(conn, stream_id, &mut app_buf) {
+            match self.process_control_stream(conn, stream_id) {
                 Ok(ev) => return Ok(ev),
 
                 Err(Error::Done) => (),
@@ -1977,7 +1961,7 @@ impl Connection {
         }
 
         if let Some(stream_id) = self.peer_qpack_streams.decoder_stream_id {
-            match self.process_control_stream(conn, stream_id, &mut app_buf) {
+            match self.process_control_stream(conn, stream_id) {
                 Ok(ev) => return Ok(ev),
 
                 Err(Error::Done) => (),
@@ -1995,23 +1979,25 @@ impl Connection {
         for s in conn.readable() {
             trace!("{} stream id {} is readable", conn.trace_id(), s);
 
-            let ev =
-                match self.process_readable_stream(conn, s, true, &mut app_buf) {
-                    Ok(v) => Some(v),
+            let ev = match self.process_readable_stream(conn, s, true) {
+                Ok(v) => Some(v),
 
-                    Err(Error::Done) => None,
+                Err(Error::Done) => None,
 
-                    // Return early if the stream was reset, to avoid returning
-                    // a Finished event later as well.
-                    Err(Error::TransportError(crate::Error::StreamReset(e))) =>
-                        return Ok((s, Event::Reset(e))),
+                // Return early if the stream was reset, to avoid returning
+                // a Finished event later as well.
+                Err(Error::TransportError(crate::Error::StreamReset(e))) => {
+                    // cleanup and avoid returning a Finished event.
+                    let _ = conn.stream_consumed(s, 0);
+                    return Ok((s, Event::Reset(e)));
+                },
 
-                    Err(e) => return Err(e),
-                };
+                Err(e) => return Err(e),
+            };
 
-            if let Some(ref mut app_buf) = app_buf {
-                // called from poll_v3
-                if conn.stream_finished_v3(s, app_buf) {
+            if conn.version == crate::PROTOCOL_VERSION_VREVERSO {
+                // called from poll
+                if conn.stream_finished_v3(s) {
                     self.process_finished_stream(s);
                 }
             } else if conn.stream_finished(s) {
@@ -2031,11 +2017,15 @@ impl Connection {
             if conn.stream_readable(finished) {
                 // The stream is finished, but is still readable, it may
                 // indicate that there is a pending error, such as reset.
-                if let Some(ref mut app_buf) = app_buf {
+                if conn.version == crate::PROTOCOL_VERSION_VREVERSO {
                     if let Err(crate::Error::StreamReset(e)) =
-                        conn.stream_peek(finished, app_buf)
+                        conn.stream_peek(finished)
                     {
-                        return Ok((finished, Event::Reset(e)));
+                        if let Err(_) = conn.stream_consumed(finished, 0) {
+                            return Ok((finished, Event::Reset(e)));
+                        } else {
+                            return Ok((finished, Event::Reset(e)));
+                        }
                     }
                 } else if let Err(crate::Error::StreamReset(e)) =
                     conn.stream_recv(finished, &mut [])
@@ -2070,8 +2060,8 @@ impl Connection {
         // In the meantime always send 0 from client.
         if !self.is_server && conn.version == crate::PROTOCOL_VERSION_V1 {
             id = 0;
-        } else if !self.is_server &&
-            conn.version == crate::PROTOCOL_VERSION_VREVERSO
+        } else if !self.is_server
+            && conn.version == crate::PROTOCOL_VERSION_VREVERSO
         {
             id = 4;
         }
@@ -2138,9 +2128,9 @@ impl Connection {
 
         match ty {
             // Control and QPACK streams are the most important to schedule.
-            stream::HTTP3_CONTROL_STREAM_TYPE_ID |
-            stream::QPACK_ENCODER_STREAM_TYPE_ID |
-            stream::QPACK_DECODER_STREAM_TYPE_ID => {
+            stream::HTTP3_CONTROL_STREAM_TYPE_ID
+            | stream::QPACK_ENCODER_STREAM_TYPE_ID
+            | stream::QPACK_DECODER_STREAM_TYPE_ID => {
                 conn.stream_priority(stream_id, 0, false)?;
             },
 
@@ -2430,11 +2420,9 @@ impl Connection {
 
     fn process_control_stream<F: BufFactory>(
         &mut self, conn: &mut super::Connection<F>, stream_id: u64,
-        app_buf: &mut Option<&mut crate::AppRecvBufMap>,
     ) -> Result<(u64, Event)> {
         let is_finished = if conn.version == crate::PROTOCOL_VERSION_VREVERSO {
-            let app_buf = app_buf.as_mut().unwrap();
-            conn.stream_finished_v3(stream_id, app_buf)
+            conn.stream_finished_v3(stream_id)
         } else {
             conn.stream_finished(stream_id)
         };
@@ -2448,7 +2436,7 @@ impl Connection {
             return Err(Error::ClosedCriticalStream);
         }
 
-        match self.process_readable_stream(conn, stream_id, true, app_buf) {
+        match self.process_readable_stream(conn, stream_id, true) {
             Ok(ev) => return Ok(ev),
 
             Err(Error::Done) => (),
@@ -2457,8 +2445,7 @@ impl Connection {
         };
 
         let is_finished = if conn.version == crate::PROTOCOL_VERSION_VREVERSO {
-            let app_buf = app_buf.as_mut().unwrap();
-            conn.stream_finished_v3(stream_id, app_buf)
+            conn.stream_finished_v3(stream_id)
         } else {
             conn.stream_finished(stream_id)
         };
@@ -2477,8 +2464,7 @@ impl Connection {
     }
 
     fn process_readable_stream<F: BufFactory>(
-        &mut self, conn: &mut super::Connection<F>, stream_id: u64,
-        polling: bool, app_buf: &mut Option<&mut crate::AppRecvBufMap>,
+        &mut self, conn: &mut super::Connection<F>, stream_id: u64, polling: bool,
     ) -> Result<(u64, Event)> {
         self.streams.entry(stream_id).or_insert_with(|| {
             <stream::Stream>::new(stream_id, false, conn.version)
@@ -2490,11 +2476,10 @@ impl Connection {
         while let Some(stream) = self.streams.get_mut(&stream_id) {
             match stream.state() {
                 stream::State::StreamType => {
-                    let varint = if conn.version ==
-                        crate::PROTOCOL_VERSION_VREVERSO
+                    let varint = if conn.version
+                        == crate::PROTOCOL_VERSION_VREVERSO
                     {
-                        let app_buf = app_buf.as_mut().unwrap();
-                        let b = stream.try_acquire_state_buffer(conn, app_buf)?;
+                        let b = stream.try_acquire_state_buffer(conn)?;
 
                         let varint = match stream.try_consume_varint_from_buf(b) {
                             Ok(v) => v,
@@ -2506,7 +2491,6 @@ impl Connection {
                         stream.mark_state_buffer_consumed(
                             conn,
                             stream.get_state_len(),
-                            app_buf,
                         )?;
                         varint
                     } else {
@@ -2623,11 +2607,10 @@ impl Connection {
                 },
 
                 stream::State::PushId => {
-                    let varint = if conn.version ==
-                        crate::PROTOCOL_VERSION_VREVERSO
+                    let varint = if conn.version
+                        == crate::PROTOCOL_VERSION_VREVERSO
                     {
-                        let app_buf = app_buf.as_mut().unwrap();
-                        let b = stream.try_acquire_state_buffer(conn, app_buf)?;
+                        let b = stream.try_acquire_state_buffer(conn)?;
 
                         let varint = match stream.try_consume_varint_from_buf(b) {
                             Ok(v) => v,
@@ -2637,7 +2620,6 @@ impl Connection {
                         stream.mark_state_buffer_consumed(
                             conn,
                             stream.get_state_len(),
-                            app_buf,
                         )?;
                         varint
                     } else {
@@ -2656,11 +2638,10 @@ impl Connection {
                 },
 
                 stream::State::FrameType => {
-                    let varint = if conn.version ==
-                        crate::PROTOCOL_VERSION_VREVERSO
+                    let varint = if conn.version
+                        == crate::PROTOCOL_VERSION_VREVERSO
                     {
-                        let app_buf = app_buf.as_mut().unwrap();
-                        let b = stream.try_acquire_state_buffer(conn, app_buf)?;
+                        let b = stream.try_acquire_state_buffer(conn)?;
 
                         let varint = match stream.try_consume_varint_from_buf(b) {
                             Ok(v) => v,
@@ -2672,7 +2653,6 @@ impl Connection {
                         stream.mark_state_buffer_consumed(
                             conn,
                             stream.get_state_len(),
-                            app_buf,
                         )?;
                         varint
                     } else {
@@ -2712,11 +2692,10 @@ impl Connection {
                 },
 
                 stream::State::FramePayloadLen => {
-                    let payload_len = if conn.version ==
-                        crate::PROTOCOL_VERSION_VREVERSO
+                    let payload_len = if conn.version
+                        == crate::PROTOCOL_VERSION_VREVERSO
                     {
-                        let app_buf = app_buf.as_mut().unwrap();
-                        let b = stream.try_acquire_state_buffer(conn, app_buf)?;
+                        let b = stream.try_acquire_state_buffer(conn)?;
 
                         let varint = match stream.try_consume_varint_from_buf(b) {
                             Ok(v) => v,
@@ -2728,7 +2707,6 @@ impl Connection {
                         stream.mark_state_buffer_consumed(
                             conn,
                             stream.get_state_len(),
-                            app_buf,
                         )?;
                         varint
                     } else {
@@ -2777,60 +2755,58 @@ impl Connection {
                         break;
                     }
 
-                    let (frame, payload_len) = if conn.version ==
-                        crate::PROTOCOL_VERSION_VREVERSO
+                    let (frame, payload_len) = if conn.version
+                        == crate::PROTOCOL_VERSION_VREVERSO
                     {
-                        let app_buf = app_buf.as_mut().unwrap();
-                        let b = match stream
-                            .try_acquire_state_buffer(conn, app_buf)
-                        {
-                            Ok(b) => b,
-                            Err(e) => {
-                                if let Error::TransportError(_) = e {
+                        let b = stream.try_acquire_state_buffer(conn);
+
+                        match b {
+                            Ok(b) => match stream.try_consume_frame_from_buf(b) {
+                                Ok((frame, payload_len)) => {
+                                    stream.mark_state_buffer_consumed(
+                                        conn,
+                                        payload_len as usize,
+                                    )?;
+                                    (frame, payload_len)
+                                },
+
+                                Err(Error::Done) => return Err(Error::Done),
+
+                                Err(e) => {
+                                    conn.close(
+                                        true,
+                                        e.to_wire(),
+                                        b"Error handling frame.",
+                                    )?;
+
                                     return Err(e);
-                                }
-                                // Handle empty frame -- i.e., we may get a
-                                // Error::Done
-                                // from above since we read everything. In V1, the
-                                // code
-                                // still parse an empty state_buf and then parse
-                                // an empty
-                                // frame (e.g., settings). This copies the
-                                // behavior.
-                                match app_buf.get(stream_id) {
-                                    Some(buf) => {
-                                        if buf.len() > stream.get_state_len() {
-                                            &buf[..stream.get_state_len()]
-                                        } else {
-                                            buf
-                                        }
+                                },
+                            },
+                            // Captures an empty frame, such as an empty settings.
+                            Err(Error::Done) => {
+                                match stream.try_consume_frame_from_buf(&[]) {
+                                    Ok((frame, payload_len)) => {
+                                        stream.mark_state_buffer_consumed(
+                                            conn,
+                                            payload_len as usize,
+                                        )?;
+                                        (frame, payload_len)
                                     },
-                                    None => return Err(e),
+
+                                    Err(Error::Done) => return Err(Error::Done),
+
+                                    Err(e) => {
+                                        conn.close(
+                                            true,
+                                            e.to_wire(),
+                                            b"Error handling frame.",
+                                        )?;
+
+                                        return Err(e);
+                                    },
                                 }
                             },
-                        };
-
-                        match stream.try_consume_frame_from_buf(b) {
-                            Ok((frame, payload_len)) => {
-                                stream.mark_state_buffer_consumed(
-                                    conn,
-                                    payload_len as usize,
-                                    app_buf,
-                                )?;
-                                (frame, payload_len)
-                            },
-
-                            Err(Error::Done) => return Err(Error::Done),
-
-                            Err(e) => {
-                                conn.close(
-                                    true,
-                                    e.to_wire(),
-                                    b"Error handling frame.",
-                                )?;
-
-                                return Err(e);
-                            },
+                            Err(e) => return Err(e),
                         }
                     } else {
                         stream.try_fill_buffer(conn)?;
@@ -2852,13 +2828,8 @@ impl Connection {
                         }
                     };
 
-                    match self.process_frame(
-                        conn,
-                        stream_id,
-                        frame,
-                        payload_len,
-                        app_buf,
-                    ) {
+                    match self.process_frame(conn, stream_id, frame, payload_len)
+                    {
                         Ok(ev) => return Ok(ev),
 
                         Err(Error::Done) => {
@@ -2866,11 +2837,10 @@ impl Connection {
                             // without needing to bubble up to the user as an
                             // event. Check whether the frame has FIN'd by QUIC
                             // to prevent trying to read again on a closed stream.
-                            let is_finished = if conn.version ==
-                                crate::PROTOCOL_VERSION_VREVERSO
+                            let is_finished = if conn.version
+                                == crate::PROTOCOL_VERSION_VREVERSO
                             {
-                                let app_buf = app_buf.as_mut().unwrap();
-                                conn.stream_finished_v3(stream_id, app_buf)
+                                conn.stream_finished_v3(stream_id)
                             } else {
                                 conn.stream_finished(stream_id)
                             };
@@ -2894,12 +2864,13 @@ impl Connection {
                         // event but we then received a
                         // STREAM_RESET. Capture it here tell the app currently
                         // polling.
-                        let app_buf = app_buf.as_mut().unwrap();
-                        if let Err(e) = stream.try_acquire_data(conn, app_buf) {
+                        if let Err(e) = stream.try_acquire_data(conn) {
                             if let Error::TransportError(
                                 crate::Error::StreamReset(..),
                             ) = e
                             {
+                                // cleanup stream.
+                                let _ = conn.stream_consumed(stream_id, 0);
                                 return Err(e);
                             }
                         }
@@ -2916,16 +2887,9 @@ impl Connection {
                 stream::State::QpackInstruction => {
                     if conn.version == crate::PROTOCOL_VERSION_VREVERSO {
                         // Read data from the stream and discard immediately.
-                        let app_buf = app_buf.as_mut().unwrap();
                         loop {
-                            // TODO check whether an error in stremv_rcv_v3 does
-                            // not result
-                            // into a memory leak (ideally, we want to collect the
-                            // stream here,
-                            // and its stream buffer within app_buf
-                            let (_, read, _) =
-                                conn.stream_peek(stream_id, app_buf)?;
-                            conn.stream_consumed(stream_id, read, app_buf)?;
+                            let (_, read, _) = conn.stream_peek(stream_id)?;
+                            conn.stream_consumed(stream_id, read)?;
                         }
                     } else {
                         let mut d = [0; 4096];
@@ -2980,7 +2944,6 @@ impl Connection {
     fn process_frame<F: BufFactory>(
         &mut self, conn: &mut super::Connection<F>, stream_id: u64,
         frame: frame::Frame, payload_len: u64,
-        app_buf: &mut Option<&mut crate::AppRecvBufMap>,
     ) -> Result<(u64, Event)> {
         trace!(
             "{} rx frm {:?} stream={} payload_len={}",
@@ -3066,8 +3029,9 @@ impl Connection {
 
                     Err(e) => {
                         let e = match e {
-                            qpack::Error::HeaderListTooLarge =>
-                                Error::ExcessiveLoad,
+                            qpack::Error::HeaderListTooLarge => {
+                                Error::ExcessiveLoad
+                            },
 
                             _ => Error::QpackDecompressionFailed,
                         };
@@ -3103,16 +3067,18 @@ impl Connection {
                 });
                 let is_finished =
                     if conn.version == crate::PROTOCOL_VERSION_VREVERSO {
-                        let app_buf = app_buf.as_mut().unwrap();
-                        conn.stream_finished_v3(stream_id, app_buf)
+                        conn.stream_finished_v3(stream_id)
                     } else {
                         conn.stream_finished(stream_id)
                     };
 
-                return Ok((stream_id, Event::Headers {
-                    list: headers,
-                    has_body: !is_finished,
-                }));
+                return Ok((
+                    stream_id,
+                    Event::Headers {
+                        list: headers,
+                        has_body: !is_finished,
+                    },
+                ));
             },
 
             frame::Frame::Data { .. } => {
@@ -3273,8 +3239,8 @@ impl Connection {
                     return Err(Error::FrameUnexpected);
                 }
 
-                if prioritized_element_id == 0 &&
-                    conn.version == crate::PROTOCOL_VERSION_VREVERSO
+                if prioritized_element_id == 0
+                    && conn.version == crate::PROTOCOL_VERSION_VREVERSO
                 {
                     conn.close(
                         true,
@@ -3482,36 +3448,12 @@ pub mod testing {
 
             self.advance().ok();
 
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                while self
-                    .client
-                    .poll_v3(
-                        &mut self.pipe.client,
-                        &mut self.pipe.client_app_buffers,
-                    )
-                    .is_ok()
-                {
-                    // Do nothing.
-                }
+            while self.client.poll(&mut self.pipe.client).is_ok() {
+                // Do nothing.
+            }
 
-                while self
-                    .server
-                    .poll_v3(
-                        &mut self.pipe.server,
-                        &mut self.pipe.server_app_buffers,
-                    )
-                    .is_ok()
-                {
-                    // Do nothing
-                }
-            } else {
-                while self.client.poll(&mut self.pipe.client).is_ok() {
-                    // Do nothing.
-                }
-
-                while self.server.poll(&mut self.pipe.server).is_ok() {
-                    // Do nothing.
-                }
+            while self.server.poll(&mut self.pipe.server).is_ok() {
+                // Do nothing.
             }
 
             Ok(())
@@ -3524,26 +3466,12 @@ pub mod testing {
 
         /// Polls the client for events.
         pub fn poll_client(&mut self) -> Result<(u64, Event)> {
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                self.client.poll_v3(
-                    &mut self.pipe.client,
-                    &mut self.pipe.client_app_buffers,
-                )
-            } else {
-                self.client.poll(&mut self.pipe.client)
-            }
+            self.client.poll(&mut self.pipe.client)
         }
 
         /// Polls the server for events.
         pub fn poll_server(&mut self) -> Result<(u64, Event)> {
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                self.server.poll_v3(
-                    &mut self.pipe.server,
-                    &mut self.pipe.server_app_buffers,
-                )
-            } else {
-                self.server.poll(&mut self.pipe.server)
-            }
+            self.server.poll(&mut self.pipe.server)
         }
 
         /// Sends a request from client with default headers.
@@ -3611,23 +3539,15 @@ pub mod testing {
         pub fn body_peek_client(
             &mut self, stream: u64,
         ) -> Result<(&[u8], usize)> {
-            self.client.body_peek(
-                &mut self.pipe.client,
-                stream,
-                &mut self.pipe.client_app_buffers,
-            )
+            self.client.body_peek(&mut self.pipe.client, stream)
         }
 
         /// Tells HTTP/3 module that the client data is consumed
         pub fn body_consumed_client(
             &mut self, stream: u64, consumed: usize,
         ) -> Result<()> {
-            self.client.body_consumed(
-                &mut self.pipe.client,
-                stream,
-                consumed,
-                &mut self.pipe.client_app_buffers,
-            )
+            self.client
+                .body_consumed(&mut self.pipe.client, stream, consumed)
         }
 
         /// Fetches DATA payload from the server.
@@ -3679,23 +3599,15 @@ pub mod testing {
         pub fn body_peek_server(
             &mut self, stream: u64,
         ) -> Result<(&[u8], usize)> {
-            self.server.body_peek(
-                &mut self.pipe.server,
-                stream,
-                &mut self.pipe.server_app_buffers,
-            )
+            self.server.body_peek(&mut self.pipe.server, stream)
         }
 
         /// Tells HTTP/3 module that the server data is consumed
         pub fn body_consumed_server(
             &mut self, stream: u64, consumed: usize,
         ) -> Result<()> {
-            self.server.body_consumed(
-                &mut self.pipe.server,
-                stream,
-                consumed,
-                &mut self.pipe.server_app_buffers,
-            )
+            self.server
+                .body_consumed(&mut self.pipe.server, stream, consumed)
         }
 
         /// Fetches DATA payload from the client.
@@ -3840,7 +3752,6 @@ mod tests {
     use super::testing::*;
     use crate::range_buf::BufFactory;
     use crate::testing::BufTestFactory;
-    use crate::testing::Pipe;
 
     #[test]
     /// Make sure that random GREASE values is within the specified limit.
@@ -3851,6 +3762,8 @@ mod tests {
     #[cfg(not(feature = "openssl"))] // 0-RTT not supported when using openssl/quictls
     #[test]
     fn h3_handshake_0rtt() {
+        use crate::testing::Pipe;
+
         let mut buf = [0; 65535];
 
         let mut config = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
@@ -3908,7 +3821,7 @@ mod tests {
         }];
 
         assert_eq!(
-            pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, Some(6)),
+            pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
             Ok(1200)
         );
 
@@ -3924,16 +3837,10 @@ mod tests {
             assert_eq!(pipe.server.stream_recv(6, &mut b), Ok((5, true)));
             assert_eq!(&b[..5], b"aaaaa");
         } else {
-            let (b, read, fin) = pipe
-                .server
-                .stream_peek(6, &mut pipe.server_app_buffers)
-                .unwrap();
+            let (b, read, fin) = pipe.server.stream_peek(6).unwrap();
             assert_eq!((read, fin), (5, true));
             assert_eq!(&b[..5], b"aaaaa");
-            assert!(pipe
-                .server
-                .stream_consumed(6, read, &mut pipe.server_app_buffers)
-                .is_ok());
+            assert!(pipe.server.stream_consumed(6, read).is_ok());
         }
     }
 
@@ -4300,6 +4207,7 @@ mod tests {
             }
         }
 
+        env_logger::builder().format_timestamp_nanos().init();
         assert_eq!(s.poll_server(), Ok((stream, Event::Finished)));
 
         let resp = s.send_response(stream, true).unwrap();
@@ -6268,12 +6176,7 @@ mod tests {
         let mut buf = [0; 65535];
         let (len, _) = s.pipe.server.send(&mut buf).unwrap();
 
-        let frames = decode_pkt(
-            &mut s.pipe.client,
-            &mut buf[..len],
-            &mut s.pipe.client_app_buffers,
-        )
-        .unwrap();
+        let frames = decode_pkt(&mut s.pipe.client, &mut buf[..len]).unwrap();
 
         let mut iter = frames.iter();
 
@@ -6311,12 +6214,12 @@ mod tests {
         let pkt_type = crate::packet::Type::Short;
         if s.pipe.client.version == crate::PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
                 Ok(48),
             );
         } else {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
                 Ok(39),
             );
         }
@@ -6338,12 +6241,7 @@ mod tests {
 
         let (len, _) = s.pipe.server.send(&mut buf).unwrap();
 
-        let frames = decode_pkt(
-            &mut s.pipe.client,
-            &mut buf[..len],
-            &mut s.pipe.client_app_buffers,
-        )
-        .unwrap();
+        let frames = decode_pkt(&mut s.pipe.client, &mut buf[..len]).unwrap();
 
         let mut iter = frames.iter();
 
@@ -7773,12 +7671,12 @@ mod tests {
         let pkt_type = crate::packet::Type::Short;
         if s.pipe.client.version == crate::PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
                 Ok(48)
             );
         } else {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
                 Ok(39)
             );
         }
@@ -7790,12 +7688,12 @@ mod tests {
         // Sending RESET_STREAM again shouldn't trigger another Reset event.
         if s.pipe.client.version == crate::PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
                 Ok(48)
             );
         } else {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
                 Ok(39)
             );
         }
@@ -7955,12 +7853,12 @@ mod tests {
         let pkt_type = crate::packet::Type::Short;
         if s.pipe.client.version == crate::PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
                 Ok(48)
             );
         } else {
             assert_eq!(
-                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf, None),
+                s.pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
                 Ok(39)
             );
         }

@@ -378,11 +378,9 @@ quiceh_app_recv_buff_map* quiceh_app_recv_buf_map_new(size_t recycled_capacity,
 
 quiceh_app_recv_buff_map* quiceh_app_recv_buf_map_default();
 
-void quiceh_app_recv_buf_map_free(quiceh_app_recv_buff_map* app_buffers);
-
 // Processes QUIC packets received from the peer.
 ssize_t quiceh_conn_recv(quiceh_conn *conn, uint8_t *buf, size_t buf_len,
-                         quiceh_app_recv_buff_map* app_buffers, const quiceh_recv_info *info);
+                         const quiceh_recv_info *info);
 
 typedef struct {
     // The local address the packet should be sent from.
@@ -424,12 +422,11 @@ ssize_t quiceh_conn_stream_recv(quiceh_conn *conn, uint64_t stream_id,
                                 uint8_t *out, size_t buf_len, bool *fin,
                                 uint64_t *out_error_code);
 
-ssize_t quiceh_conn_stream_recv_v3(quiceh_conn *conn, uint64_t stream_id,
-                                quiceh_app_recv_buff_map* app_buffers, const uint8_t** out,
+ssize_t quiceh_conn_stream_recv_peek(quiceh_conn *conn, uint64_t stream_id,
+                                const uint8_t** out,
                                 bool *fin, uint64_t *out_error_code);
 
-ssize_t quiceh_conn_stream_consumed(quiceh_conn *conn, uint64_t stream_id, size_t consumed,
-                                quiceh_app_recv_buff_map* app_buffers);
+ssize_t quiceh_conn_stream_consumed(quiceh_conn *conn, uint64_t stream_id, size_t consumed);
 
 // Writes data to a stream.
 // out_error_code is only set when STREAM_STOPPED or STREAM_RESET are returned.
@@ -1080,7 +1077,7 @@ int64_t quiceh_h3_conn_poll(quiceh_h3_conn *conn, quiceh_conn *quic_conn,
                             quiceh_h3_event **ev);
 
 int64_t quiceh_h3_conn_poll_v3(quiceh_h3_conn *conn, quiceh_conn *quic_conn,
-                               quiceh_app_recv_buff_map* app_buffers, quiceh_h3_event **ev);
+                               quiceh_h3_event **ev);
 
 // Returns the type of the event.
 enum quiceh_h3_event_type quiceh_h3_event_type(quiceh_h3_event *ev);
@@ -1156,12 +1153,11 @@ ssize_t quiceh_h3_recv_body(quiceh_h3_conn *conn, quiceh_conn *quic_conn,
                             uint64_t stream_id, uint8_t *out, size_t out_len);
 
 ssize_t quiceh_h3_body_peek(quiceh_h3_conn *conn, quiceh_conn *quic_conn,
-                            uint64_t stream_id, quiceh_app_recv_buff_map* app_buffers,
+                            uint64_t stream_id, 
                             const uint8_t **out, size_t* expected_bytes);
 
 int quiceh_h3_body_consumed(quiceh_h3_conn *conn, quiceh_conn *quic_conn,
-                            uint64_t stream_id, size_t consumed,
-                            quiceh_app_recv_buff_map* app_buffers);
+                            uint64_t stream_id, size_t consumed);
 
 // Sends a GOAWAY frame to initiate graceful connection closure.
 int quiceh_h3_send_goaway(quiceh_h3_conn *conn, quiceh_conn *quic_conn,

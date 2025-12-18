@@ -35,14 +35,233 @@ use crate::Result;
 
 use crate::flowcontrol;
 
+use super::Chunk;
 use super::RecvBufInfo;
 use super::DEFAULT_STREAM_WINDOW;
+use crate::bufpool::POOL;
 use crate::range_buf::RangeBuf;
+use buffer_pool::Reuse;
 use std::collections::btree_map;
+use std::ops::Index;
+use std::ops::IndexMut;
+use std::ops::Range;
+use std::ops::RangeFrom;
+use std::ops::RangeFull;
+use std::ops::RangeTo;
 
 use likely_stable::if_likely;
 
 const MAX_STREAM_FRAME_LENGTH: usize = 1310;
+
+/// Memory chunk containing contiguous stream frames' data
+#[derive(Eq, PartialEq, Ord, PartialOrd, Default, Debug, Clone)]
+pub struct StreamChunk {
+    /// The offset value beginning this chunk of memory.
+    pub(crate) stream_offset_start: u64,
+    /// Data chunk.
+    pub(crate) inner: Vec<u8>,
+    /// number of bytes already consumed from inner.
+    pub(crate) consumed: usize,
+    /// offset indicating the position of the lowest non-readable byte.
+    pub(crate) contiguous_off: usize,
+}
+
+impl Reuse for StreamChunk {
+    fn reuse(&mut self, _trim: usize) -> bool {
+        self.consumed = 0;
+        self.contiguous_off = 0;
+        self.stream_offset_start = u64::MAX;
+        self.inner.len() > 0
+    }
+}
+
+fn streamchunk_init(
+    chunk: &mut StreamChunk, capacity: usize, stream_offset_start: u64,
+) {
+    let len = chunk.inner.len();
+    if len < capacity {
+        trace!(
+            "Changing inner size. Was {}, now: {}",
+            chunk.inner.len(),
+            capacity
+        );
+        chunk.inner.reserve_exact(capacity - len);
+        unsafe {
+            chunk.inner.set_len(capacity);
+        }
+    } else if len > capacity {
+        chunk.inner.truncate(capacity);
+    }
+    chunk.stream_offset_start = stream_offset_start;
+}
+
+impl StreamChunk {
+    /// How many bytes are available to read in this chunk.
+    pub fn len(&self) -> usize {
+        self.contiguous_off.saturating_sub(self.consumed)
+    }
+
+    #[inline]
+    pub(crate) fn capacity(&self) -> u64 {
+        self.inner.len() as u64
+    }
+
+    #[inline]
+    pub(crate) fn fill_from(&mut self, buf: &[u8], start_off: u64) -> usize {
+        debug_assert!(
+            start_off >= self.stream_offset_start
+                && start_off < self.stream_offset_start + self.capacity(),
+            "start_off is not into the correct range. start_off:{},\
+                      chunk.stream_start_off:{}",
+            start_off,
+            self.stream_offset_start
+        );
+        let from = (start_off - self.stream_offset_start) as usize;
+        let written = std::cmp::min(self.inner.len() - from, buf.len());
+        self.inner[from..from + written].copy_from_slice(&buf[..written]);
+        written
+    }
+
+    /// Tells whether the chunk is fully consumed.
+    pub(crate) fn is_consumed(&self) -> bool {
+        self.consumed == self.capacity() as usize
+    }
+
+    /// Returns the maximum offset this chunk may contain
+    pub(crate) fn max_off(&self) -> u64 {
+        self.stream_offset_start.saturating_add(self.capacity())
+    }
+
+    #[inline]
+    /// provides ready-to-read reference to contiguous bytes.
+    pub fn read<'a>(&'a self) -> &'a [u8] {
+        &self.inner[self.consumed..self.contiguous_off]
+    }
+}
+
+impl Index<usize> for StreamChunk {
+    type Output = u8;
+
+    fn index(&self, idx: usize) -> &Self::Output {
+        let index = self.consumed + idx;
+        if index > self.contiguous_off {
+            panic!("Out of bound access");
+        }
+
+        &self.inner[index]
+    }
+}
+
+impl IndexMut<usize> for StreamChunk {
+    fn index_mut(&mut self, idx: usize) -> &mut Self::Output {
+        let index = self.consumed + idx;
+        if index > self.contiguous_off {
+            panic!("Out of bound access");
+        }
+
+        &mut self.inner[index]
+    }
+}
+
+impl Index<Range<usize>> for StreamChunk {
+    type Output = [u8];
+
+    fn index(&self, range: Range<usize>) -> &Self::Output {
+        let start = range.start + self.consumed;
+        let end = range.end + self.consumed;
+        if start > self.contiguous_off || end > self.contiguous_off {
+            panic!("Out of bound access");
+        }
+
+        &self.inner[start..end]
+    }
+}
+
+impl IndexMut<Range<usize>> for StreamChunk {
+    fn index_mut(&mut self, range: Range<usize>) -> &mut Self::Output {
+        let start = range.start + self.consumed;
+        let end = range.end + self.consumed;
+        if start > self.contiguous_off || end > self.contiguous_off {
+            panic!("Out of bound access");
+        }
+
+        &mut self.inner[start..end]
+    }
+}
+
+impl Index<RangeFrom<usize>> for StreamChunk {
+    type Output = [u8];
+
+    fn index(&self, rangefrom: RangeFrom<usize>) -> &Self::Output {
+        let start = rangefrom.start + self.consumed;
+        if start > self.contiguous_off {
+            panic!("Out of bound access");
+        }
+
+        &self.inner[start..self.contiguous_off]
+    }
+}
+
+impl IndexMut<RangeFrom<usize>> for StreamChunk {
+    fn index_mut(&mut self, rangefrom: RangeFrom<usize>) -> &mut Self::Output {
+        let start = rangefrom.start + self.consumed;
+        if start > self.contiguous_off {
+            panic!("Out of bound access");
+        }
+
+        &mut self.inner[start..self.contiguous_off]
+    }
+}
+
+impl Index<RangeTo<usize>> for StreamChunk {
+    type Output = [u8];
+
+    fn index(&self, rangeto: RangeTo<usize>) -> &Self::Output {
+        let end = rangeto.end + self.consumed;
+        if end > self.contiguous_off {
+            panic!("Out of bound access");
+        }
+
+        &self.inner[self.consumed..end]
+    }
+}
+
+impl IndexMut<RangeTo<usize>> for StreamChunk {
+    fn index_mut(&mut self, rangeto: RangeTo<usize>) -> &mut Self::Output {
+        let end = rangeto.end + self.consumed;
+        if end > self.contiguous_off {
+            panic!("Out of bound access");
+        }
+
+        &mut self.inner[self.consumed..end]
+    }
+}
+
+impl Index<RangeFull> for StreamChunk {
+    type Output = [u8];
+
+    fn index(&self, _rangefull: RangeFull) -> &Self::Output {
+        &self.inner[self.consumed..self.contiguous_off]
+    }
+}
+
+impl IndexMut<RangeFull> for StreamChunk {
+    fn index_mut(&mut self, _rangefull: RangeFull) -> &mut Self::Output {
+        &mut self.inner[self.consumed..self.contiguous_off]
+    }
+}
+
+impl AsRef<[u8]> for StreamChunk {
+    fn as_ref(&self) -> &[u8] {
+        &self.inner[..]
+    }
+}
+
+impl AsMut<[u8]> for StreamChunk {
+    fn as_mut(&mut self) -> &mut [u8] {
+        &mut self.inner[..]
+    }
+}
 
 /// Receive-side stream buffer.
 ///
@@ -57,6 +276,11 @@ pub struct RecvBuf {
     /// Chunks of data received from the peer that have not yet been read by
     /// the application, ordered by offset.
     data: BTreeMap<u64, RangeBuf>,
+
+    /// chunks of the stream buf
+    pub chunks: VecDeque<StreamChunk>,
+    /// Max size of a StreamChunk's buffer
+    max_chunklen: usize,
 
     /// Set of max offsets of stream frames for which the stream is not fin
     /// and we're expecting bytes. Ideally if every frames are received in
@@ -98,13 +322,22 @@ pub struct RecvBuf {
 
 impl RecvBuf {
     /// Creates a new receive buffer.
-    pub fn new(max_data: u64, max_window: u64, version: u32) -> RecvBuf {
+    pub fn new(
+        max_data: u64, max_window: u64, max_chunklen: usize, version: u32,
+    ) -> RecvBuf {
+        let mut chunks = VecDeque::new();
+        let chunk =
+            POOL.get_with(|pooled| streamchunk_init(pooled, max_chunklen, 0));
+
+        chunks.push_back(chunk.into_inner());
         RecvBuf {
             flow_control: flowcontrol::FlowControl::new(
                 max_data,
                 cmp::min(max_data, DEFAULT_STREAM_WINDOW),
                 max_window,
             ),
+            chunks,
+            max_chunklen,
             version,
             ..RecvBuf::default()
         }
@@ -302,6 +535,76 @@ impl RecvBuf {
         Ok(())
     }
 
+    pub(crate) fn advance_contiguous_bytes_if_any(&mut self) -> Result<()> {
+        let mut max_off = self.off;
+        debug_assert!(!self.chunks.is_empty(), "Should never be empty");
+        let mut chunks_iter = self.chunks.iter_mut();
+        // Chunks should never be empty when this function is called
+        let mut chunk = chunks_iter
+            .next()
+            .expect("BUG: self.chunks should not be empty");
+        while let Some((_, value)) = self.heap.first_key_value() {
+            if value.start_off > self.contiguous_off {
+                break;
+            }
+            let (_, recvbufinfo) = self.heap.pop_first().unwrap();
+
+            // packets received not in order created a "full" overlap that we
+            // might simply just safely ignore. I.e., the lower offest
+            // info was last to be decrypted for this entry to be
+            // there.
+            if recvbufinfo.max_off() < max_off {
+                // not <= to allow handling 0bytes FIN
+                continue;
+            }
+            max_off = recvbufinfo.max_off();
+            let mut this_len = recvbufinfo.len as u64;
+            let this_offset = recvbufinfo.start_off;
+            debug_assert!(
+                this_offset > chunk.stream_offset_start,
+                "Current chunk's starting offest is smaller than expected"
+            );
+
+            while chunk.max_off() < this_offset {
+                chunk = chunks_iter.next().unwrap();
+            }
+            // We need to copy in case some out of order packet decryption
+            // happened to avoid data corruption.
+            if let Some(buf) = recvbufinfo.data() {
+                trace!("Packet wasn't received in order; a copy is necessary");
+                let mut written = chunk.fill_from(buf, this_offset);
+                while written < recvbufinfo.len {
+                    // we need to write into the next chunk
+                    trace!("We need copying across chunks");
+                    chunk = chunks_iter.next().expect(
+                        "BUG: we should have available chunk to copy within",
+                    );
+                    let inter_write = chunk
+                        .fill_from(&buf[written..], chunk.stream_offset_start);
+                    written += inter_write;
+                }
+            }
+            if recvbufinfo.start_off < self.contiguous_off {
+                // We have a partial overlap. This could be caused by a
+                // retransmission? Normally this event does not happen;
+                // XXX I believe we reject these packets
+                trace!(
+                    "Partial overlap happened -- Could happen if this packet is\
+                received first"
+                );
+                this_len = this_len
+                    .saturating_sub(self.contiguous_off - recvbufinfo.start_off);
+            }
+            trace!(
+                "Advancing self.contiguous_off to from {} to {}",
+                self.contiguous_off,
+                self.contiguous_off + this_len
+            );
+            self.contiguous_off += this_len;
+        }
+        Ok(())
+    }
+
     /// Writes data from the receive buffer into the given output buffer.
     ///
     /// Only contiguous data is written to the output buffer, starting from
@@ -359,6 +662,297 @@ impl RecvBuf {
         Ok((len, self.is_fin()))
     }
 
+    #[inline]
+    pub fn emit_zc(&mut self) -> Result<(Chunk, bool)> {
+        if let Some(e) = self.has_error() {
+            self.heap.clear();
+            self.deliver_fin = false;
+            return Err(Error::StreamReset(e));
+        }
+
+        let chunk = self.chunks.front_mut().ok_or(Error::Done)?;
+        if self.off < self.contiguous_off {
+            if self.contiguous_off > chunk.max_off() {
+                let len = chunk.capacity() - chunk.consumed as u64;
+                chunk.contiguous_off = chunk.capacity() as usize;
+                self.off += len;
+            } else {
+                let len = self.contiguous_off - self.off;
+                self.off += len;
+                chunk.contiguous_off += len as usize;
+            }
+        }
+
+        if self.contiguous_off < chunk.max_off() && !self.is_fin() {
+            return Err(Error::Done); // Maybe add a new error type to tell how
+                                     // much may be read
+                                     // from stream_peek()?
+        }
+
+        let chunk = self.chunks.pop_front().ok_or(Error::Done)?;
+        // cleanup any hole.
+        while let Some(entry) = self.maxoffs_order.first_entry() {
+            if *entry.key() < self.contiguous_off {
+                entry.remove_entry();
+            } else {
+                break;
+            }
+        }
+
+        self.flow_control.add_consumed(chunk.len() as u64);
+
+        let pooled = POOL.from_owned(chunk);
+
+        Ok((pooled, self.is_fin()))
+    }
+
+    /// Gives contiguous bytes as a mutable slice from the stream buffer's front.
+    ///
+    /// This function also increases self.off, which makes quiceh assumes
+    /// these bytes have been delivered to the app.
+    #[inline]
+    pub fn read<'a>(&'a mut self) -> Result<(&'a [u8], bool)> {
+        // We have received data in order, we can read it right away.
+        let chunk = self.chunks.front_mut().ok_or(Error::Done)?;
+
+        if self.off < self.contiguous_off
+            && chunk.contiguous_off < chunk.capacity() as usize
+        {
+            if self.contiguous_off > chunk.max_off() {
+                let len = chunk.capacity() - chunk.consumed as u64;
+                chunk.contiguous_off = chunk.capacity() as usize;
+                self.off += len;
+            } else {
+                let len = self.contiguous_off - self.off;
+                self.off += len;
+                chunk.contiguous_off =
+                    (self.contiguous_off - chunk.stream_offset_start) as usize;
+            }
+        }
+        // self.is_fin() is &self, but chunk is &mut self borrow
+        let fin = self.fin_off == Some(self.off);
+
+        Ok((chunk.read(), fin))
+    }
+
+    /// This function needs to be called to tell how much of the stream's buffer
+    /// has been consumed by the application. It returns whether the buffer
+    /// can be collected, and how many bytes are available for read.
+    #[inline]
+    pub fn mark_consumed(&mut self, consumed: usize) -> Result<(bool, usize)> {
+        let chunk = self.chunks.front_mut().unwrap();
+        if chunk.stream_offset_start == u64::MAX
+            || chunk.consumed + consumed > chunk.capacity() as usize
+        {
+            return Err(Error::InvalidAPICall(
+                "You may consuming more than what is available to read",
+            ));
+        }
+
+        let checked_sub = chunk
+            .contiguous_off
+            .checked_sub(chunk.consumed + consumed)
+            .ok_or(Error::InvalidAPICall(
+                "Consumed more than what is available",
+            ))?;
+
+        chunk.consumed += consumed;
+
+        trace!(
+            "Consuming {} bytes, we have {} bytes left in chunk",
+            consumed,
+            chunk.len()
+        );
+
+        if consumed > 0 {
+            self.flow_control.add_consumed(consumed as u64);
+        }
+
+        if let Some(entry) = self.maxoffs_order.first_entry() {
+            if *entry.key() < self.contiguous_off {
+                entry.remove_entry();
+            }
+        }
+
+        let is_fully_consumed = chunk.is_consumed();
+        let does_consumed_reach_coff = chunk.consumed == chunk.contiguous_off;
+
+        // Serveral cases:
+        // - did not consume all contiguous_off bytes (is_fin or !is_fin should be same behavior)
+        // - consumed all contiguous_bytes but contiguous_bytes < chunk.capacity() && !is_fin
+        // - consumed all contiguous_bytes and is_fin
+
+        // let's recycle
+        if is_fully_consumed || (does_consumed_reach_coff && self.is_fin()) {
+            trace!("Chunk fully consumed. Sending it back to the pool");
+            POOL.from_owned(
+                self.chunks.pop_front().expect("BUG: Chunks is empty"),
+            );
+        }
+
+        if self.is_fin() && self.deliver_fin {
+            self.deliver_fin = false;
+        }
+
+        Ok((
+            self.heap.is_empty() && does_consumed_reach_coff && self.is_fin(),
+            checked_sub,
+        ))
+
+        // TODO fixme: make sure we can still stream_peek() as long as
+        // stream_consumed() wasn't called up the end of the stream.
+        //else if chunk.contiguous_off == chunk.consumed {
+        //// The stream has been collected, and the application has read
+        //// everything. We can collect the buffer as well.
+        //Ok((true, 0))
+        //} else {
+        //// The stream has been collected but the application didn't fully read
+        //// the available data yet.
+        //Ok((false, chunk.len()))
+        //}
+    }
+
+    #[inline]
+    pub(crate) fn is_contiguous_bytes_consumed(&self) -> bool {
+        if let Some(chunk) = self.chunks.front() {
+            // Should work if this is a recycled chunk too
+            return chunk.contiguous_off == chunk.consumed;
+        }
+        // No more chunks; we delivered all of them.
+        true
+    }
+
+    #[inline]
+    pub(crate) fn insert_stream_chunk(&mut self, chunk: StreamChunk) -> usize {
+        let idx = self.chunks.partition_point(|ch| {
+            ch.stream_offset_start < chunk.stream_offset_start
+        });
+        self.chunks.insert(idx, chunk);
+        idx + 1
+    }
+
+    /// From a given index in `self.chunks`, creates the chunks if it does not
+    /// exist and set the appropriate stream_offset_start value for that
+    /// chunk. If the chunk's capacity isn't large enough to contain `len`
+    /// bytes, create more chunks until we can fit `len` bytes.
+    #[inline]
+    pub fn create_missing_chunks_and_copy(
+        &mut self, idx: usize, buf: &[u8], toffset: u64,
+    ) -> Result<()> {
+        let mut idx = idx;
+        let mut toffset = toffset;
+        let mut written = 0;
+        while written < buf.len() {
+            match self.chunks.get_mut(idx) {
+                Some(chunk) => {
+                    if toffset < chunk.stream_offset_start {
+                        // We have a gap and we need creating and inserting a new
+                        // chunk to fill it (or part of the gap).
+                        trace!(
+                            "Copying across chunks: Adding a chunk to fill a gap"
+                        );
+                        let mut chunk = POOL.get_with(|pooled| {
+                            streamchunk_init(pooled, self.max_chunklen, toffset)
+                        });
+                        written += chunk.fill_from(&buf[written..], toffset);
+                        toffset += chunk.capacity();
+                        self.chunks.insert(idx, chunk.into_inner());
+                    } else {
+                        debug_assert!(
+                            toffset == chunk.stream_offset_start,
+                            "toffset: {}, stream_offset_start: {}",
+                            toffset,
+                            chunk.stream_offset_start
+                        );
+                        written += chunk.fill_from(
+                            &buf[written..],
+                            chunk.stream_offset_start,
+                        );
+                        toffset += chunk.capacity();
+                    }
+                    idx += 1;
+                },
+                None => {
+                    trace!("Creating missing memory chunk at offset {} and {} bytes left to write", toffset, buf.len() - written);
+                    let chunk = POOL.get_with(|pooled| {
+                        streamchunk_init(pooled, self.max_chunklen, toffset)
+                    });
+                    let mut chunk = chunk.into_inner();
+                    written += chunk
+                        .fill_from(&buf[written..], chunk.stream_offset_start);
+                    toffset += chunk.capacity();
+                    self.chunks.push_back(chunk);
+                    idx += 1;
+                },
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Returns a `Chunk` supposed to hold bytes starting at stream_offset % chunk_len
+    #[inline]
+    pub fn get_stream_chunk(&mut self, stream_offset: u64) -> Result<Chunk> {
+        if stream_offset < self.contiguous_off {
+            trace!(
+                "We've received a packet holding an offset {} already \
+                in our contiguous buffer but not yet read by the application.",
+                stream_offset,
+            );
+            // In V3, we do not accept a packet that would overlap a contiguous
+            // range of data already processed but not yet read by the
+            // application. This could happen due to aggressive
+            // retransmission; or intentional duplication. The packet is
+            // dropped before payload decryption.
+            return Err(Error::InvalidOffset);
+        }
+
+        if self.chunks.is_empty() {
+            let chunk = POOL.get_with(|pooled| {
+                streamchunk_init(
+                    pooled,
+                    self.max_chunklen,
+                    stream_offset - (stream_offset % self.max_chunklen as u64),
+                )
+            });
+
+            self.chunks.push_back(chunk.into_inner());
+        }
+
+        let relative_buf_offset = stream_offset % self.max_chunklen as u64;
+
+        if let Ok(index) = self.chunks.binary_search_by(|chunk| {
+            if (chunk.stream_offset_start
+                ..chunk.stream_offset_start.saturating_add(chunk.capacity()))
+                .contains(&stream_offset)
+            {
+                std::cmp::Ordering::Equal
+            } else if chunk.stream_offset_start < stream_offset {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            }
+        }) {
+            // We have found the chunk which should the decrypted data. Does the
+            // data fits within the chunk or is it data across chunks?
+            let chunk = self.chunks.remove(index).unwrap();
+            Ok(POOL.from_owned(chunk))
+        } else {
+            // Not found. We have a hole, so we need a new chunk.
+            let stream_offset_start = stream_offset - relative_buf_offset;
+            trace!("Creating missing memory chunk");
+            Ok(POOL.get_with(|pooled| {
+                streamchunk_init(pooled, self.max_chunklen, stream_offset_start)
+            }))
+        }
+    }
+
+    pub(crate) fn collect(&mut self) {
+        for chunk in self.chunks.drain(..) {
+            let _ = POOL.from_owned(chunk);
+        }
+    }
+
     /// Resets the stream at the given offset.
     pub fn reset(&mut self, error_code: u64, final_size: u64) -> Result<usize> {
         // Stream's size is already known, forbid changing it.
@@ -389,6 +983,14 @@ impl RecvBuf {
         if_likely! { self.version == crate::PROTOCOL_VERSION_VREVERSO => {
             self.contiguous_off = final_size;
             self.heap.clear();
+            // clear all buffered data
+            self.collect();
+            // chunks should always have at least one element as long as
+            // the fin flag is not consumed.
+            let chunk =
+                POOL.get_with(|pooled| streamchunk_init(pooled, self.max_chunklen, 0));
+
+            self.chunks.push_back(chunk.into_inner());
 
             let bufinfo = RecvBufInfo::from(final_size, 0, true);
             self.write_v3(bufinfo)?;
@@ -547,37 +1149,45 @@ impl RecvBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::range_buf::DefaultBufFactory;
-    use crate::stream::app_recv_buf::AppRecvBuf;
+    use crate::DEFAULT_CHUNK_LEN;
 
     #[test]
     fn empty_read() {
         let mut recv = RecvBuf::new(
             u64::MAX,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
         assert_eq!(recv.len, 0);
 
-        let mut buf = [0; 32];
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
+            let mut buf = [0; 32];
 
-        assert_eq!(recv.emit(&mut buf), Err(Error::Done));
+            assert_eq!(recv.emit(&mut buf), Err(Error::Done));
+        } else {
+            assert!(recv.emit_zc().is_err());
+        }
     }
 
     #[test]
     fn empty_stream_frame() {
-        let mut recv =
-            RecvBuf::new(15, DEFAULT_STREAM_WINDOW, crate::PROTOCOL_VERSION);
+        let mut recv = RecvBuf::new(
+            15,
+            DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
+            crate::PROTOCOL_VERSION,
+        );
         assert_eq!(recv.len, 0);
 
         let buf = RangeBuf::from(b"hello", 0, false);
         let bufinfo = RecvBufInfo::from(0, 5, false);
-        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert!(recv.write(buf).is_ok());
             assert_eq!(recv.data.len(), 1);
         } else {
             assert!(recv.write_v3(bufinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 0);
         }
         assert_eq!(recv.len, 5);
@@ -588,11 +1198,8 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert_eq!(recv.emit(&mut buf), Ok((5, false)));
         } else {
-            assert_eq!(
-                (app_buf.read_mut(&mut recv).unwrap().len(), recv.is_fin()),
-                (5, false)
-            );
-            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 5).is_ok());
+            assert_eq!((recv.read().unwrap().0.len(), recv.is_fin()), (5, false));
+            assert!(recv.mark_consumed(5).is_ok());
         }
 
         // Don't store non-fin empty buffer.
@@ -603,6 +1210,7 @@ mod tests {
             assert_eq!(recv.data.len(), 0);
         } else {
             assert!(recv.write_v3(bufinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 0);
         }
         assert_eq!(recv.len, 5);
@@ -627,6 +1235,7 @@ mod tests {
             // In v3 we don't store it if it is in order, but we mark the stream
             // as fin.
             assert!(recv.write_v3(bufinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 0);
         }
         assert_eq!(recv.len, 5);
@@ -640,6 +1249,7 @@ mod tests {
             assert_eq!(recv.data.len(), 1);
         } else {
             assert!(recv.write_v3(bufinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 0);
         }
         assert_eq!(recv.len, 5);
@@ -653,6 +1263,7 @@ mod tests {
             assert_eq!(recv.data.len(), 1);
         } else {
             assert!(recv.write_v3(bufinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 0);
         }
         assert_eq!(recv.len, 5);
@@ -671,10 +1282,7 @@ mod tests {
             assert_eq!(recv.write_v3(bufinfo), Err(Error::FinalSize));
             let bufinfo = RecvBufInfo::from(4, 0, true);
             assert_eq!(recv.write_v3(bufinfo), Err(Error::FinalSize));
-            assert_eq!(
-                (app_buf.read_mut(&mut recv).unwrap().len(), recv.is_fin()),
-                (0, true)
-            );
+            assert_eq!((recv.read().unwrap().0.len(), recv.is_fin()), (0, true));
         }
     }
 
@@ -683,12 +1291,12 @@ mod tests {
         let mut recv = RecvBuf::new(
             u64::MAX,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
-        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
 
         let first = RangeBuf::from(b"hello", 0, false);
         let firstinfo = RecvBufInfo::from(0, 5, false);
@@ -703,7 +1311,8 @@ mod tests {
         } else {
             // If we have nothing to read, we return a 0 length slice
             assert!(recv.write_v3(secondinfo).is_ok());
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 0);
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
+            assert_eq!(recv.read().unwrap().0.len(), 0);
         }
         assert_eq!(recv.len, 10);
         assert_eq!(recv.off, 0);
@@ -715,9 +1324,10 @@ mod tests {
             assert_eq!(recv.emit(&mut buf), Err(Error::Done));
         } else {
             assert!(recv.write_v3(thirdinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.len, 19);
             assert_eq!(recv.off, 0);
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 0);
+            assert_eq!(recv.read().unwrap().0.len(), 0);
         }
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
@@ -731,10 +1341,10 @@ mod tests {
             assert_eq!(&buf[..len], b"helloworldsomething");
         } else {
             assert!(recv.write_v3(firstinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.len, 19);
             assert_eq!(recv.off, 0);
-            assert!(app_buf.advance_if_possible(&mut recv).is_ok());
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 19);
+            assert_eq!(recv.read().unwrap().0.len(), 19);
         }
         assert_eq!(recv.len, 19);
         assert_eq!(recv.off, 19);
@@ -742,11 +1352,13 @@ mod tests {
 
     #[test]
     fn split_read() {
-        // TODO Double check; we don't need split logic in V3.
+        // TODO Double check; we don't need split logic in reverso since
+        // we explicetly disallow overlapping contiguous bytes
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             let mut recv = RecvBuf::new(
                 u64::MAX,
                 DEFAULT_STREAM_WINDOW,
+                DEFAULT_CHUNK_LEN,
                 crate::PROTOCOL_VERSION,
             );
             assert_eq!(recv.len, 0);
@@ -792,12 +1404,12 @@ mod tests {
         let mut recv = RecvBuf::new(
             u64::MAX,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
-        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
 
         let first = RangeBuf::from(b"something", 0, false);
         let firstinfo = RecvBufInfo::from(0, 9, false);
@@ -809,7 +1421,8 @@ mod tests {
             assert_eq!(recv.emit(&mut buf), Err(Error::Done));
         } else {
             assert!(recv.write_v3(secondinfo).is_ok());
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 0);
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
+            assert_eq!(recv.read().unwrap().0.len(), 0);
         }
 
         assert_eq!(recv.len, 19);
@@ -825,10 +1438,10 @@ mod tests {
             assert_eq!(&buf[..len], b"somethinghelloworld");
         } else {
             assert!(recv.write_v3(firstinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.len, 19);
             assert_eq!(recv.off, 0);
-            assert!(app_buf.advance_if_possible(&mut recv).is_ok());
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 19);
+            assert_eq!(recv.read().unwrap().0.len(), 19);
             assert_eq!(recv.is_fin(), true);
         }
         assert_eq!(recv.len, 19);
@@ -840,12 +1453,12 @@ mod tests {
         let mut recv = RecvBuf::new(
             u64::MAX,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
-        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
 
         let first = RangeBuf::from(b"something", 0, false);
         let firstinfo = RecvBufInfo::from(0, 9, false);
@@ -857,6 +1470,7 @@ mod tests {
             assert_eq!(recv.data.len(), 1);
         } else {
             assert!(recv.write_v3(firstinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             // contiguous, hence not stored in the heap.
             assert_eq!(recv.heap.len(), 0);
         }
@@ -868,6 +1482,7 @@ mod tests {
             assert_eq!(recv.data.len(), 1);
         } else {
             assert!(recv.write_v3(secondinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 0);
         }
         assert_eq!(recv.len, 9);
@@ -879,7 +1494,7 @@ mod tests {
             assert_eq!(fin, true);
             assert_eq!(&buf[..len], b"something");
         } else {
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 9);
+            assert_eq!(recv.read().unwrap().0.len(), 9);
             assert_eq!(recv.is_fin(), true);
         }
         assert_eq!(recv.len, 9);
@@ -891,12 +1506,12 @@ mod tests {
         let mut recv = RecvBuf::new(
             u64::MAX,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
-        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
 
         let first = RangeBuf::from(b"something", 0, false);
         let firstinfo = RecvBufInfo::from(0, 9, false);
@@ -918,11 +1533,12 @@ mod tests {
             assert_eq!(&buf[..len], b"something");
         } else {
             assert!(recv.write_v3(firstinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.len, 9);
             assert_eq!(recv.off, 0);
             assert_eq!(recv.heap.len(), 0);
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 9);
-            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 9).is_ok());
+            assert_eq!(recv.read().unwrap().0.len(), 9);
+            assert!(recv.mark_consumed(9).is_ok());
             assert_eq!(recv.is_fin(), false);
         }
 
@@ -934,6 +1550,7 @@ mod tests {
             assert_eq!(recv.data.len(), 0);
         } else {
             assert!(recv.write_v3(secondinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 0);
         }
         assert_eq!(recv.len, 9);
@@ -953,10 +1570,11 @@ mod tests {
             assert_eq!(recv.emit(&mut buf), Err(Error::Done));
         } else {
             assert!(recv.write_v3(fourthinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.len, 9);
             assert_eq!(recv.off, 9);
             assert_eq!(recv.heap.len(), 0);
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 0);
+            assert_eq!(recv.read().unwrap().0.len(), 0);
         }
     }
 
@@ -965,9 +1583,9 @@ mod tests {
         let mut recv = RecvBuf::new(
             u64::MAX,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -982,6 +1600,7 @@ mod tests {
             assert_eq!(recv.data.len(), 1);
         } else {
             assert!(recv.write_v3(firstinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 0);
         }
         assert_eq!(recv.len, 9);
@@ -999,11 +1618,12 @@ mod tests {
             assert_eq!(recv.data.len(), 0);
         } else {
             assert!(recv.write_v3(secondinfo).is_err());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.len, 9);
             assert_eq!(recv.off, 0);
             assert_eq!(recv.heap.len(), 0);
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 9);
-            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 9).is_ok());
+            assert_eq!(recv.read().unwrap().0.len(), 9);
+            assert!(recv.mark_consumed(9).is_ok());
             assert_eq!(recv.heap.len(), 0);
         }
         assert_eq!(recv.len, 9);
@@ -1012,7 +1632,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert_eq!(recv.emit(&mut buf), Err(Error::Done));
         } else {
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 0);
+            assert_eq!(recv.read().unwrap().0.len(), 0);
         }
     }
 
@@ -1021,9 +1641,9 @@ mod tests {
         let mut recv = RecvBuf::new(
             u64::MAX,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1038,6 +1658,7 @@ mod tests {
             assert_eq!(recv.data.len(), 1);
         } else {
             assert!(recv.write_v3(secondinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 1);
         }
         assert_eq!(recv.len, 9);
@@ -1055,11 +1676,11 @@ mod tests {
             assert_eq!(recv.data.len(), 0);
         } else {
             assert!(recv.write_v3(firstinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.len, 9);
             assert_eq!(recv.off, 0);
-            assert!(app_buf.advance_if_possible(&mut recv).is_ok());
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 9);
-            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 9).is_ok());
+            assert_eq!(recv.read().unwrap().0.len(), 9);
+            assert!(recv.mark_consumed(9).is_ok());
             assert!(!recv.is_fin());
             assert_eq!(recv.heap.len(), 0);
         }
@@ -1069,7 +1690,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert_eq!(recv.emit(&mut buf), Err(Error::Done));
         } else {
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 0);
+            assert_eq!(recv.read().unwrap().0.len(), 0);
         }
     }
 
@@ -1078,9 +1699,9 @@ mod tests {
         let mut recv = RecvBuf::new(
             u64::MAX,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1095,6 +1716,7 @@ mod tests {
             assert_eq!(recv.data.len(), 1);
         } else {
             assert!(recv.write_v3(secondinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 1);
         }
 
@@ -1113,13 +1735,12 @@ mod tests {
             assert_eq!(recv.data.len(), 0);
         } else {
             assert!(recv.write_v3(firstinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.len, 9);
             assert_eq!(recv.off, 0);
-            assert_eq!(recv.heap.len(), 1);
-            assert!(app_buf.advance_if_possible(&mut recv).is_ok());
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 9);
-            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 9).is_ok());
             assert_eq!(recv.heap.len(), 0);
+            assert_eq!(recv.read().unwrap().0.len(), 9);
+            assert!(recv.mark_consumed(9).is_ok());
         }
 
         assert_eq!(recv.len, 9);
@@ -1128,7 +1749,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert_eq!(recv.emit(&mut buf), Err(Error::Done));
         } else {
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 0);
+            assert_eq!(recv.read().unwrap().0.len(), 0);
         }
     }
 
@@ -1137,9 +1758,9 @@ mod tests {
         let mut recv = RecvBuf::new(
             u64::MAX,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1156,6 +1777,7 @@ mod tests {
             assert_eq!(recv.data.len(), 1);
         } else {
             assert!(recv.write_v3(secondinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 1);
         }
         assert_eq!(recv.len, 8);
@@ -1166,6 +1788,7 @@ mod tests {
             assert_eq!(recv.data.len(), 2);
         } else {
             assert!(recv.write_v3(thirdinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 2);
         }
         assert_eq!(recv.len, 17);
@@ -1183,14 +1806,15 @@ mod tests {
             assert_eq!(recv.data.len(), 0);
         } else {
             assert!(recv.write_v3(firstinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.len, 18);
             assert_eq!(recv.off, 0);
             // firstinfo is contiguous; it does not go through the heap.
-            assert_eq!(recv.heap.len(), 2);
-            assert!(app_buf.advance_if_possible(&mut recv).is_ok());
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 18);
-            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 18).is_ok());
+            // However it allows to make progress on what was inside
+            // the heap.
             assert_eq!(recv.heap.len(), 0);
+            assert_eq!(recv.read().unwrap().0.len(), 18);
+            assert!(recv.mark_consumed(18).is_ok());
         }
         assert_eq!(recv.len, 18);
         assert_eq!(recv.off, 18);
@@ -1198,7 +1822,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert_eq!(recv.emit(&mut buf), Err(Error::Done));
         } else {
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 0);
+            assert_eq!(recv.read().unwrap().0.len(), 0);
         }
     }
 
@@ -1207,9 +1831,9 @@ mod tests {
         let mut recv = RecvBuf::new(
             u64::MAX,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1224,6 +1848,7 @@ mod tests {
             assert_eq!(recv.data.len(), 1);
         } else {
             assert!(recv.write_v3(firstinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 0);
         }
         assert_eq!(recv.len, 9);
@@ -1244,11 +1869,12 @@ mod tests {
             // That sort of overlap can't happen in v3
             // because the second packet would not be decrypted
             assert!(recv.write_v3(secondinfo).is_err());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.len, 9);
             assert_eq!(recv.off, 0);
             assert_eq!(recv.heap.len(), 0);
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 9);
-            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 9).is_ok());
+            assert_eq!(recv.read().unwrap().0.len(), 9);
+            assert!(recv.mark_consumed(9).is_ok());
             assert!(!recv.is_fin());
             assert_eq!(recv.len, 9);
             assert_eq!(recv.off, 9);
@@ -1256,7 +1882,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert_eq!(recv.emit(&mut buf), Err(Error::Done));
         } else {
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 0);
+            assert_eq!(recv.read().unwrap().0.len(), 0);
         }
     }
 
@@ -1265,9 +1891,9 @@ mod tests {
         let mut recv = RecvBuf::new(
             u64::MAX,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1282,6 +1908,7 @@ mod tests {
             assert_eq!(recv.data.len(), 1);
         } else {
             assert!(recv.write_v3(secondinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 1);
         }
         assert_eq!(recv.len, 12);
@@ -1298,12 +1925,12 @@ mod tests {
             assert_eq!(&buf[..len], b"helsomething");
         } else {
             assert!(recv.write_v3(firstinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.len, 12);
             assert_eq!(recv.off, 0);
-            assert_eq!(recv.heap.len(), 1);
-            assert!(app_buf.advance_if_possible(&mut recv).is_ok());
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 12);
-            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 12).is_ok());
+            assert_eq!(recv.heap.len(), 0);
+            assert_eq!(recv.read().unwrap().0.len(), 12);
+            assert!(recv.mark_consumed(12).is_ok());
             assert!(recv.is_fin());
         }
         assert_eq!(recv.len, 12);
@@ -1312,7 +1939,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert_eq!(recv.emit(&mut buf), Err(Error::Done));
         } else {
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 0);
+            assert_eq!(recv.read(), Err(Error::Done));
         }
     }
 
@@ -1321,9 +1948,9 @@ mod tests {
         let mut recv = RecvBuf::new(
             u64::MAX,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1342,6 +1969,7 @@ mod tests {
             assert_eq!(recv.data.len(), 1);
         } else {
             assert!(recv.write_v3(thirdinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 1);
         }
         assert_eq!(recv.len, 9);
@@ -1352,6 +1980,7 @@ mod tests {
             assert_eq!(recv.data.len(), 2);
         } else {
             assert!(recv.write_v3(secondinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 2);
         }
         assert_eq!(recv.len, 9);
@@ -1362,6 +1991,7 @@ mod tests {
             assert_eq!(recv.data.len(), 3);
         } else {
             assert!(recv.write_v3(firstinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 2);
         }
         assert_eq!(recv.len, 9);
@@ -1380,18 +2010,19 @@ mod tests {
             assert_eq!(recv.off, 10);
         } else {
             assert!(recv.write_v3(fourthinfo).is_err());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.len, 9);
             assert_eq!(recv.off, 0);
             assert_eq!(recv.heap.len(), 2);
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 2);
-            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 2).is_ok());
+            assert_eq!(recv.read().unwrap().0.len(), 2);
+            assert!(recv.mark_consumed(2).is_ok());
             assert!(!recv.is_fin());
         }
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert_eq!(recv.emit(&mut buf), Err(Error::Done));
         } else {
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 0);
+            assert_eq!(recv.read().unwrap().0.len(), 0);
         }
     }
 
@@ -1400,9 +2031,9 @@ mod tests {
         let mut recv = RecvBuf::new(
             u64::MAX,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1431,6 +2062,7 @@ mod tests {
             assert_eq!(recv.data.len(), 2);
         } else {
             assert!(recv.write_v3(secondinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 2);
         }
         assert_eq!(recv.len, 16);
@@ -1441,6 +2073,7 @@ mod tests {
             assert_eq!(recv.data.len(), 3);
         } else {
             assert!(recv.write_v3(firstinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 2);
         }
         assert_eq!(recv.len, 16);
@@ -1459,11 +2092,12 @@ mod tests {
             assert_eq!(recv.off, 16);
         } else {
             assert!(recv.write_v3(fourthinfo).is_err());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.len, 16);
             assert_eq!(recv.off, 0);
             assert_eq!(recv.heap.len(), 2);
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 5);
-            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 5).is_ok());
+            assert_eq!(recv.read().unwrap().0.len(), 5);
+            assert!(recv.mark_consumed(5).is_ok());
             assert!(!recv.is_fin());
             assert_eq!(recv.len, 16);
             assert_eq!(recv.off, 5);
@@ -1472,7 +2106,7 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert_eq!(recv.emit(&mut buf), Err(Error::Done));
         } else {
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 0);
+            assert_eq!(recv.read().unwrap().0.len(), 0);
         }
     }
 
@@ -1481,9 +2115,9 @@ mod tests {
         let mut recv = RecvBuf::new(
             u64::MAX,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1500,6 +2134,7 @@ mod tests {
             assert_eq!(recv.data.len(), 1);
         } else {
             assert!(recv.write_v3(firstinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 1);
         }
         assert_eq!(recv.len, 13);
@@ -1510,7 +2145,8 @@ mod tests {
             assert_eq!(recv.data.len(), 2);
         } else {
             assert!(recv.write_v3(secondinfo).is_ok());
-            assert_eq!(recv.heap.len(), 1);
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
+            assert_eq!(recv.heap.len(), 0);
         }
         assert_eq!(recv.len, 13);
         assert_eq!(recv.off, 0);
@@ -1525,23 +2161,27 @@ mod tests {
             assert_eq!(fin, true);
             assert_eq!(&buf[..len], b"somethinhelloar");
             assert_eq!(recv.data.len(), 0);
-        } else {
-            assert!(recv.write_v3(thirdinfo).is_ok());
             assert_eq!(recv.len, 15);
+            assert_eq!(recv.off, 15);
+        } else {
+            assert_eq!(recv.write_v3(thirdinfo), Err(Error::InvalidOffset));
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
+            assert_eq!(recv.len, 13);
             assert_eq!(recv.off, 0);
-            assert_eq!(recv.heap.len(), 2);
-            assert!(app_buf.advance_if_possible(&mut recv).is_ok());
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 15);
-            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 15).is_ok());
-            assert!(recv.is_fin());
+            assert_eq!(recv.heap.len(), 0);
+            assert_eq!(recv.read().unwrap().0.len(), 13);
+            assert!(recv.mark_consumed(13).is_ok());
+            assert!(!recv.is_fin());
+            assert_eq!(recv.len, 13);
+            assert_eq!(recv.off, 13);
         }
-        assert_eq!(recv.len, 15);
-        assert_eq!(recv.off, 15);
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert_eq!(recv.emit(&mut buf), Err(Error::Done));
         } else {
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 0);
+            // We're not fin yet but we have nothing to read, so read returns 0 bytes.
+            // Should we do Error::Done?
+            assert_eq!(recv.read().unwrap().0.len(), 0);
         }
     }
 
@@ -1550,9 +2190,9 @@ mod tests {
         let mut recv = RecvBuf::new(
             u64::MAX,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert_eq!(recv.len, 0);
 
         let mut buf = [0; 32];
@@ -1575,6 +2215,7 @@ mod tests {
             assert_eq!(recv.data.len(), 1);
         } else {
             assert!(recv.write_v3(secondinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 1);
         }
         assert_eq!(recv.len, 5);
@@ -1585,6 +2226,7 @@ mod tests {
             assert_eq!(recv.data.len(), 2);
         } else {
             assert!(recv.write_v3(fourthinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 2);
         }
         assert_eq!(recv.len, 9);
@@ -1595,6 +2237,7 @@ mod tests {
             assert_eq!(recv.data.len(), 3);
         } else {
             assert!(recv.write_v3(thirdinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.heap.len(), 3);
         }
         assert_eq!(recv.len, 9);
@@ -1605,7 +2248,8 @@ mod tests {
             assert_eq!(recv.data.len(), 4);
         } else {
             assert!(recv.write_v3(firstinfo).is_ok());
-            assert_eq!(recv.heap.len(), 3);
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
+            assert_eq!(recv.heap.len(), 0);
         }
         assert_eq!(recv.len, 9);
         assert_eq!(recv.off, 0);
@@ -1615,7 +2259,8 @@ mod tests {
             assert_eq!(recv.data.len(), 5);
         } else {
             assert!(recv.write_v3(sixthinfo).is_ok());
-            assert_eq!(recv.heap.len(), 4);
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
+            assert_eq!(recv.heap.len(), 1);
         }
         assert_eq!(recv.len, 14);
         assert_eq!(recv.off, 0);
@@ -1632,21 +2277,77 @@ mod tests {
             assert_eq!(recv.data.len(), 0);
         } else {
             assert!(recv.write_v3(fifthinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(recv.len, 14);
             assert_eq!(recv.off, 0);
-            assert_eq!(recv.heap.len(), 5);
-            assert!(app_buf.advance_if_possible(&mut recv).is_ok());
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 14);
-            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 14).is_ok());
-            assert!(!recv.is_fin());
             assert_eq!(recv.heap.len(), 0);
+            assert_eq!(recv.read().unwrap().0.len(), 14);
+            assert!(recv.mark_consumed(14).is_ok());
+            assert!(!recv.is_fin());
         }
         assert_eq!(recv.len, 14);
         assert_eq!(recv.off, 14);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert_eq!(recv.emit(&mut buf), Err(Error::Done));
         } else {
-            assert_eq!(app_buf.read_mut(&mut recv).unwrap().len(), 0);
+            assert_eq!(recv.read().unwrap().0.len(), 0);
+        }
+    }
+
+    #[test]
+    fn indexable_chunks() {
+        let mut chunk = POOL
+            .get_with(|pooled| streamchunk_init(pooled, 42, 0))
+            .into_inner();
+        chunk.inner = vec![0; 42]; // override init
+        chunk.contiguous_off = 42;
+        assert_eq!(chunk.len(), 42);
+        chunk[10] = 66;
+        // consume 1 byte
+        chunk.consumed = 1;
+        assert_eq!(chunk.len(), 41);
+        assert_eq!(chunk[9], 66);
+        assert_eq!(chunk[..10], [0, 0, 0, 0, 0, 0, 0, 0, 0, 66]);
+        chunk.consumed = 2;
+        assert_eq!(chunk[..10], [0, 0, 0, 0, 0, 0, 0, 0, 66, 0]);
+        assert_eq!(chunk[..].len(), 40);
+    }
+
+    #[test]
+    fn empty_stream_frame_emitted() {
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+            let mut recv = RecvBuf::new(
+                15,
+                DEFAULT_STREAM_WINDOW,
+                DEFAULT_CHUNK_LEN,
+                crate::PROTOCOL_VERSION,
+            );
+
+            let bufinfo = RecvBufInfo::from(0, 5, false);
+            assert!(recv.write_v3(bufinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
+            assert_eq!(recv.heap.len(), 0);
+
+            assert_eq!(recv.off, 0);
+            // We have 5 bytes in without the fin bit set, and the chunk is 100
+            // bytes wide, we cannot emit.
+            assert!(recv.emit_zc().is_err());
+
+            // Store fin empty buffer.
+            let bufinfo = RecvBufInfo::from(5, 0, true);
+            assert!(recv.write_v3(bufinfo).is_ok());
+            assert!(recv.advance_contiguous_bytes_if_any().is_ok());
+            assert_eq!(recv.heap.len(), 0);
+
+            assert_eq!(recv.off, 5);
+
+            // An empty stream frame with a fin bit has been received, we should
+            // now be emit the chunk
+            let (chunk, fin) = recv.emit_zc().unwrap();
+            assert_eq!((chunk.len(), fin), (5, true));
+
+            // There is nothing else to emit.
+            assert!(recv.emit_zc().is_err());
         }
     }
 }

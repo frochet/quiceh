@@ -60,10 +60,7 @@ fn bench_h3(
                 to: si.to,
                 from: si.from,
             };
-            s.pipe
-                .client
-                .recv(pkt, &mut s.pipe.client_app_buffers, info)
-                .unwrap();
+            s.pipe.client.recv(pkt, info).unwrap();
         }
         // polling!
         let mut res_count = 0;
@@ -111,19 +108,13 @@ fn bench_h3_quicv3(
                 to: si.to,
                 from: si.from,
             };
-            s.pipe
-                .client
-                .recv(pkt, &mut s.pipe.client_app_buffers, info)
-                .unwrap();
+            s.pipe.client.recv(pkt, info).unwrap();
         }
         // polling!
         let mut res_count = 0;
 
         loop {
-            match s
-                .client
-                .poll_v3(&mut s.pipe.client, &mut s.pipe.client_app_buffers)
-            {
+            match s.client.poll(&mut s.pipe.client) {
                 Ok((stream_id, quiceh::h3::Event::Data)) => {
                     let (b, _) = s.body_peek_client(stream_id).unwrap();
                     let len = b.len();

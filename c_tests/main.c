@@ -113,7 +113,6 @@ int main(int argc, char* argv[])
 
     quiceh_config* config = NULL;
     quiceh_conn* conn = NULL;
-    quiceh_app_recv_buff_map* app_buffers = NULL;
     quiceh_stream_iter* stream_iter = NULL;
 
     if(argc > 1)
@@ -177,12 +176,6 @@ int main(int argc, char* argv[])
         goto FREE;
     }
 
-    app_buffers = quiceh_app_recv_buf_map_default();
-    if(app_buffers == NULL)
-    {
-        goto FREE;
-    }
-
     quiceh_send_info out_info;
 
     n = quiceh_conn_send(conn, (uint8_t*)out, sizeof(out), &out_info);
@@ -220,7 +213,7 @@ int main(int argc, char* argv[])
             {
                 quiceh_recv_info recv_info = {.from = &peer, .from_len = peer_len, .to = &local, .to_len = local_len};
 
-                if(quiceh_conn_recv(conn, (uint8_t*)buffer, n, app_buffers, &recv_info) < 0)
+                if(quiceh_conn_recv(conn, (uint8_t*)buffer, n, &recv_info) < 0)
                 {
                     break;
                 }
@@ -284,7 +277,7 @@ int main(int argc, char* argv[])
             {
                 ssize_t written;
                 const uint8_t* buf;
-                if((n = quiceh_conn_stream_recv_v3(conn, stream_id, app_buffers, &buf, &fin, &error_code)) < 0)
+                if((n = quiceh_conn_stream_peek(conn, stream_id, &buf, &fin, &error_code)) < 0)
                 {
                     fprintf(stderr, "quiceh_conn_stream_recv error\n");
                     goto FREE;
@@ -295,7 +288,7 @@ int main(int argc, char* argv[])
                     perror("stdout write");
                     goto FREE;
                 }
-                quiceh_conn_stream_consumed(conn, stream_id, (size_t)written, app_buffers);
+                quiceh_conn_stream_consumed(conn, stream_id, (size_t)written);
                 if(fin)
                 {
                     quiceh_conn_close(conn, true, 0x0, (uint8_t*)"kthxbye", 7);
@@ -326,7 +319,6 @@ int main(int argc, char* argv[])
     return_code = 0;
 FREE:
     quiceh_stream_iter_free(stream_iter);
-    quiceh_app_recv_buf_map_free(app_buffers);
     quiceh_conn_free(conn);
     quiceh_config_free(config);
     if(fd >= 0)

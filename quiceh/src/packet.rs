@@ -58,8 +58,8 @@ const SAMPLE_LEN: usize = 16;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Epoch {
-    Initial     = 0,
-    Handshake   = 1,
+    Initial = 0,
+    Handshake = 1,
     Application = 2,
 }
 
@@ -169,8 +169,9 @@ impl Type {
 
             Type::ZeroRTT => qlog::events::quic::PacketType::ZeroRtt,
 
-            Type::VersionNegotiation =>
-                qlog::events::quic::PacketType::VersionNegotiation,
+            Type::VersionNegotiation => {
+                qlog::events::quic::PacketType::VersionNegotiation
+            },
 
             Type::Short => qlog::events::quic::PacketType::OneRtt,
         }
@@ -979,12 +980,15 @@ pub fn encode_u64_num_and_nextelem_len(
 ) -> Result<()> {
     match num {
         0..=63 => b.put_u8((num | ((nextelem_len - 1) << 6) as u64) as u8)?,
-        64..=16_383 =>
-            b.put_u16((num | ((nextelem_len - 1) << 14) as u64) as u16)?,
-        16384..=4_194_303 =>
-            b.put_u24((num | ((nextelem_len - 1) << 22) as u64) as u32)?,
-        4_194_304..=1_073_741_823 =>
-            b.put_u32((num | ((nextelem_len - 1) << 30) as u64) as u32)?,
+        64..=16_383 => {
+            b.put_u16((num | ((nextelem_len - 1) << 14) as u64) as u16)?
+        },
+        16384..=4_194_303 => {
+            b.put_u24((num | ((nextelem_len - 1) << 22) as u64) as u32)?
+        },
+        4_194_304..=1_073_741_823 => {
+            b.put_u32((num | ((nextelem_len - 1) << 30) as u64) as u32)?
+        },
         _ => return Err(Error::InvalidPacket),
     };
     Ok(())
@@ -1126,8 +1130,9 @@ fn compute_retry_integrity_tag(
     ];
 
     let (key, nonce) = match version {
-        crate::PROTOCOL_VERSION_V1 =>
-            (&RETRY_INTEGRITY_KEY_V1, RETRY_INTEGRITY_NONCE_V1),
+        crate::PROTOCOL_VERSION_V1 => {
+            (&RETRY_INTEGRITY_KEY_V1, RETRY_INTEGRITY_NONCE_V1)
+        },
 
         _ => (&RETRY_INTEGRITY_KEY_V1, RETRY_INTEGRITY_NONCE_V1),
     };
@@ -1229,6 +1234,7 @@ impl PktNumSpace {
                 true,
                 // FIXME: use the configured stream window instead
                 stream::MAX_STREAM_WINDOW,
+                crate::DEFAULT_CHUNK_LEN,
                 crate::PROTOCOL_VERSION_V1,
             ),
         }
@@ -1242,6 +1248,7 @@ impl PktNumSpace {
             true,
             true,
             stream::MAX_STREAM_WINDOW,
+            crate::DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION_V1,
         );
 
@@ -1303,8 +1310,8 @@ impl PktNumWindow {
 
     fn upper(&self) -> u64 {
         self.lower
-            .saturating_add(std::mem::size_of::<u128>() as u64 * 8) -
-            1
+            .saturating_add(std::mem::size_of::<u128>() as u64 * 8)
+            - 1
     }
 }
 

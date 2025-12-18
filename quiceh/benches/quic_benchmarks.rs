@@ -18,9 +18,7 @@ fn bench_v1_receive(
             to: si.to,
             from: si.from,
         };
-        pipe.client
-            .recv(pkt, &mut pipe.client_app_buffers, info)
-            .unwrap();
+        pipe.client.recv(pkt, info).unwrap();
     }
     let (..) = pipe.client.stream_recv(1, buf).unwrap();
 
@@ -35,14 +33,9 @@ fn bench_v3_receive(
             to: si.to,
             from: si.from,
         };
-        pipe.client
-            .recv(pkt, &mut pipe.client_app_buffers, info)
-            .unwrap();
+        pipe.client.recv(pkt, info).unwrap();
     }
-    let (b, ..) = pipe
-        .client
-        .stream_peek(1, &mut pipe.client_app_buffers)
-        .unwrap();
+    let (b, ..) = pipe.client.stream_peek(1).unwrap();
 
     black_box(b);
 }
@@ -124,18 +117,8 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
                         // initialized as part of the benchmark.
                         pipe_v3.server.stream_send(1, b"init", false).unwrap();
                         pipe_v3.advance().unwrap();
-                        pipe_v3
-                            .client
-                            .stream_peek(1, &mut pipe_v3.client_app_buffers)
-                            .unwrap();
-                        pipe_v3
-                            .client
-                            .stream_consumed(
-                                1,
-                                4,
-                                &mut pipe_v3.client_app_buffers,
-                            )
-                            .unwrap();
+                        pipe_v3.client.stream_peek(1).unwrap();
+                        pipe_v3.client.stream_consumed(1, 4).unwrap();
                         pipe_v3.server.stream_send(1, sendbuf, false).unwrap();
                         let flight =
                             quiceh::testing::emit_flight(&mut pipe_v3.server)

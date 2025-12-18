@@ -40,9 +40,11 @@ use intrusive_collections::RBTreeAtomicLink;
 use smallvec::SmallVec;
 
 use crate::range_buf::DefaultBufFactory;
+pub use crate::stream::recv_buf::StreamChunk;
 use crate::BufFactory;
 use crate::Error;
 use crate::Result;
+use buffer_pool::Pooled;
 
 const DEFAULT_URGENCY: u8 = 127;
 
@@ -51,6 +53,9 @@ const DEFAULT_STREAM_WINDOW: u64 = 32 * 1024;
 
 /// The maximum size of the receiver stream flow control window.
 pub const MAX_STREAM_WINDOW: u64 = 16 * 1024 * 1024;
+
+/// Memory chunk exposed to applications
+pub type Chunk = Pooled<StreamChunk>;
 
 /// A simple no-op hasher for Stream IDs.
 ///
@@ -212,7 +217,7 @@ impl<F: BufFactory> StreamMap<F> {
     pub(crate) fn get_or_create(
         &mut self, id: u64, local_params: &crate::TransportParams,
         peer_params: &crate::TransportParams, local: bool, is_server: bool,
-        version: u32,
+        chunk_len: usize, version: u32,
     ) -> Result<&mut Stream<F>> {
         let (stream, is_new_and_writable) = match self.streams.entry(id) {
             hash_map::Entry::Vacant(v) => {
@@ -242,8 +247,9 @@ impl<F: BufFactory> StreamMap<F> {
                     ),
 
                     // Remotely-initiated unidirectional stream.
-                    (false, false) =>
-                        (local_params.initial_max_stream_data_uni, 0),
+                    (false, false) => {
+                        (local_params.initial_max_stream_data_uni, 0)
+                    },
                 };
 
                 // The two least significant bits from a stream id identify the
@@ -323,6 +329,7 @@ impl<F: BufFactory> StreamMap<F> {
                     is_bidi(id),
                     local,
                     self.max_stream_window,
+                    chunk_len,
                     version,
                 );
 
@@ -559,7 +566,10 @@ impl<F: BufFactory> StreamMap<F> {
             }
         }
 
-        let s = self.streams.remove(&stream_id).unwrap();
+        let mut s = self.streams.remove(&stream_id).unwrap();
+
+        // Collect any chunk and return them to the pool.
+        s.recv.collect();
 
         self.remove_readable(&s.priority_key);
 
@@ -573,7 +583,9 @@ impl<F: BufFactory> StreamMap<F> {
     /// In case a stream is created before the packet could have been
     /// authenticated; we need to collect it without remembering it.
     pub fn collect_on_recv_error(&mut self, stream_id: u64) {
-        let s = self.streams.remove(&stream_id).unwrap();
+        let mut s = self.streams.remove(&stream_id).unwrap();
+
+        s.recv.collect();
 
         self.remove_readable(&s.priority_key);
         self.remove_writable(&s.priority_key);
@@ -655,17 +667,17 @@ impl<F: BufFactory> StreamMap<F> {
     /// Returns true if the max bidirectional streams count needs to be updated
     /// by sending a MAX_STREAMS frame to the peer.
     pub fn should_update_max_streams_bidi(&self) -> bool {
-        self.local_max_streams_bidi_next != self.local_max_streams_bidi &&
-            self.local_max_streams_bidi_next / 2 >
-                self.local_max_streams_bidi - self.peer_opened_streams_bidi
+        self.local_max_streams_bidi_next != self.local_max_streams_bidi
+            && self.local_max_streams_bidi_next / 2
+                > self.local_max_streams_bidi - self.peer_opened_streams_bidi
     }
 
     /// Returns true if the max unidirectional streams count needs to be updated
     /// by sending a MAX_STREAMS frame to the peer.
     pub fn should_update_max_streams_uni(&self) -> bool {
-        self.local_max_streams_uni_next != self.local_max_streams_uni &&
-            self.local_max_streams_uni_next / 2 >
-                self.local_max_streams_uni - self.peer_opened_streams_uni
+        self.local_max_streams_uni_next != self.local_max_streams_uni
+            && self.local_max_streams_uni_next / 2
+                > self.local_max_streams_uni - self.peer_opened_streams_uni
     }
 
     /// Returns the number of active streams in the map.
@@ -704,7 +716,7 @@ impl<F: BufFactory> Stream<F> {
     /// Creates a new stream with the given flow control limits.
     pub fn new(
         id: u64, max_rx_data: u64, max_tx_data: u64, bidi: bool, local: bool,
-        max_window: u64, version: u32,
+        max_window: u64, chunk_len: usize, version: u32,
     ) -> Self {
         let priority_key = Arc::new(StreamPriorityKey {
             id,
@@ -712,7 +724,12 @@ impl<F: BufFactory> Stream<F> {
         });
 
         Stream {
-            recv: recv_buf::RecvBuf::new(max_rx_data, max_window, version),
+            recv: recv_buf::RecvBuf::new(
+                max_rx_data,
+                max_window,
+                chunk_len,
+                version,
+            ),
             send: send_buf::SendBuf::new(max_tx_data),
             send_lowat: 1,
             bidi,
@@ -726,7 +743,14 @@ impl<F: BufFactory> Stream<F> {
     /// Returns true if the stream has data to read.
     pub fn is_readable(&self) -> bool {
         if self.recv.version == crate::PROTOCOL_VERSION_VREVERSO {
-            self.recv.contiguous_off > self.recv.off || self.recv.deliver_fin
+            trace!(
+                "recv.contiguous_off: {}, recv.off: {}",
+                self.recv.contiguous_off,
+                self.recv.off
+            );
+            self.recv.contiguous_off > self.recv.off
+                || !self.is_consumed()
+                || self.recv.deliver_fin
         } else {
             self.recv.ready()
         }
@@ -735,10 +759,10 @@ impl<F: BufFactory> Stream<F> {
     /// Returns true if the stream has enough flow control capacity to be
     /// written to, and is not finished.
     pub fn is_writable(&self) -> bool {
-        !self.send.is_shutdown() &&
-            !self.send.is_fin() &&
-            (self.send.off_back() + self.send_lowat as u64) <
-                self.send.max_off()
+        !self.send.is_shutdown()
+            && !self.send.is_fin()
+            && (self.send.off_back() + self.send_lowat as u64)
+                < self.send.max_off()
     }
 
     /// Returns true if the stream has data to send and is allowed to send at
@@ -746,9 +770,9 @@ impl<F: BufFactory> Stream<F> {
     pub fn is_flushable(&self) -> bool {
         let off_front = self.send.off_front();
 
-        !self.send.is_empty() &&
-            off_front < self.send.off_back() &&
-            off_front < self.send.max_off()
+        !self.send.is_empty()
+            && off_front < self.send.off_back()
+            && off_front < self.send.max_off()
     }
 
     /// Returns true if the stream is complete.
@@ -774,6 +798,26 @@ impl<F: BufFactory> Stream<F> {
             // to check the receive side for completion.
             (false, false) => self.recv.is_fin(),
         }
+    }
+
+    pub(crate) fn get_stream_chunk(
+        &mut self, stream_offset: u64,
+    ) -> Result<Chunk> {
+        self.recv.get_stream_chunk(stream_offset)
+    }
+
+    pub(crate) fn read(&mut self) -> Result<(&[u8], bool)> {
+        self.recv.read()
+    }
+
+    pub(crate) fn mark_consumed(
+        &mut self, consumed: usize,
+    ) -> Result<(bool, usize)> {
+        self.recv.mark_consumed(consumed)
+    }
+
+    pub(crate) fn is_consumed(&self) -> bool {
+        self.recv.is_contiguous_bytes_consumed()
     }
 }
 
@@ -1000,10 +1044,9 @@ impl PartialEq for RecvBufInfo {
 }
 #[cfg(test)]
 mod tests {
-    use crate::range_buf::RangeBuf;
+    use crate::{range_buf::RangeBuf, DEFAULT_CHUNK_LEN};
 
     use super::*;
-    use app_recv_buf::*;
 
     #[test]
     fn recv_flow_control() {
@@ -1014,9 +1057,9 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = <AppRecvBuf>::new(1, 100, 1000);
         assert!(!stream.recv.almost_full());
 
         let mut buf = [0; 32];
@@ -1033,7 +1076,9 @@ mod tests {
             assert_eq!(stream.recv.write(first), Ok(()));
         } else {
             assert_eq!(stream.recv.write_v3(secondinfo), Ok(()));
+            assert!(stream.recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(stream.recv.write_v3(firstinfo), Ok(()));
+            assert!(stream.recv.advance_contiguous_bytes_if_any().is_ok());
         }
         assert!(!stream.recv.almost_full());
 
@@ -1044,9 +1089,9 @@ mod tests {
             assert_eq!(fin, false);
         } else {
             assert_eq!(stream.recv.write_v3(thirdinfo), Err(Error::FlowControl));
-            assert!(app_buf.advance_if_possible(&mut stream.recv).is_ok());
-            assert_eq!(app_buf.read_mut(&mut stream.recv).unwrap().len(), 10);
-            assert!(app_buf.has_consumed::<DefaultBufFactory>(None, 10).is_ok());
+            assert!(stream.recv.advance_contiguous_bytes_if_any().is_ok());
+            assert_eq!(stream.read().unwrap().0.len(), 10);
+            assert!(stream.mark_consumed(10).is_ok());
             assert!(!stream.recv.is_fin());
         }
 
@@ -1062,6 +1107,7 @@ mod tests {
             assert_eq!(stream.recv.write(third), Ok(()));
         } else {
             assert_eq!(stream.recv.write_v3(thirdinfo), Ok(()));
+            assert!(stream.recv.advance_contiguous_bytes_if_any().is_ok());
         }
     }
 
@@ -1074,6 +1120,7 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
         assert!(!stream.recv.almost_full());
@@ -1088,6 +1135,7 @@ mod tests {
             assert_eq!(stream.recv.write(second), Err(Error::FinalSize));
         } else {
             assert_eq!(stream.recv.write_v3(firstinfo), Ok(()));
+            assert!(stream.recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(stream.recv.write_v3(secondinfo), Err(Error::FinalSize));
         }
     }
@@ -1101,9 +1149,9 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert!(!stream.recv.almost_full());
 
         let first = RangeBuf::from(b"hello", 0, true);
@@ -1121,8 +1169,10 @@ mod tests {
             assert_eq!(&buf[..len], b"hello");
         } else {
             assert_eq!(stream.recv.write_v3(firstinfo), Ok(()));
+            assert!(stream.recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(stream.recv.write_v3(secondinfo), Ok(()));
-            assert_eq!(app_buf.read_mut(&mut stream.recv).unwrap().len(), 10);
+            assert!(stream.recv.advance_contiguous_bytes_if_any().is_ok());
+            assert_eq!(stream.read().unwrap().0.len(), 10);
             assert!(stream.recv.is_fin());
         }
     }
@@ -1136,6 +1186,7 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
         assert!(!stream.recv.almost_full());
@@ -1150,7 +1201,9 @@ mod tests {
             assert_eq!(stream.recv.write(first), Err(Error::FinalSize));
         } else {
             assert_eq!(stream.recv.write_v3(secondinfo), Ok(()));
+            assert!(stream.recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(stream.recv.write_v3(firstinfo), Err(Error::FinalSize));
+            assert!(stream.recv.advance_contiguous_bytes_if_any().is_ok());
         }
     }
 
@@ -1163,6 +1216,7 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
         assert!(!stream.recv.almost_full());
@@ -1183,9 +1237,9 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
         assert!(!stream.recv.almost_full());
 
         let mut buf = [0; 32];
@@ -1203,8 +1257,10 @@ mod tests {
             assert_eq!(fin, true);
         } else {
             assert_eq!(stream.recv.write_v3(firstinfo), Ok(()));
+            assert!(stream.recv.advance_contiguous_bytes_if_any().is_ok());
             assert_eq!(stream.recv.write_v3(secondinfo), Ok(()));
-            assert_eq!(app_buf.read_mut(&mut stream.recv).unwrap().len(), 10);
+            assert!(stream.recv.advance_contiguous_bytes_if_any().is_ok());
+            assert_eq!(stream.read().unwrap().0.len(), 10);
             assert!(stream.recv.is_fin());
         }
 
@@ -1220,6 +1276,7 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
         assert!(!stream.recv.almost_full());
@@ -1231,6 +1288,7 @@ mod tests {
             assert_eq!(stream.recv.write(first), Ok(()));
         } else {
             assert_eq!(stream.recv.write_v3(firstinfo), Ok(()));
+            assert!(stream.recv.advance_contiguous_bytes_if_any().is_ok());
         }
         assert_eq!(stream.recv.reset(0, 10), Err(Error::FinalSize));
     }
@@ -1244,6 +1302,7 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
         assert!(!stream.recv.almost_full());
@@ -1255,6 +1314,7 @@ mod tests {
             assert_eq!(stream.recv.write(first), Ok(()));
         } else {
             assert_eq!(stream.recv.write_v3(firstinfo), Ok(()));
+            assert!(stream.recv.advance_contiguous_bytes_if_any().is_ok());
         }
         assert_eq!(stream.recv.reset(0, 5), Ok(0));
         assert_eq!(stream.recv.reset(0, 5), Ok(0));
@@ -1269,6 +1329,7 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
         assert!(!stream.recv.almost_full());
@@ -1280,6 +1341,7 @@ mod tests {
             assert_eq!(stream.recv.write(first), Ok(()));
         } else {
             assert_eq!(stream.recv.write_v3(firstinfo), Ok(()));
+            assert!(stream.recv.advance_contiguous_bytes_if_any().is_ok());
         }
         assert_eq!(stream.recv.reset(0, 5), Ok(0));
         assert_eq!(stream.recv.reset(0, 10), Err(Error::FinalSize));
@@ -1294,6 +1356,7 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
         assert!(!stream.recv.almost_full());
@@ -1305,6 +1368,7 @@ mod tests {
             assert_eq!(stream.recv.write(first), Ok(()));
         } else {
             assert_eq!(stream.recv.write_v3(firstinfo), Ok(()));
+            assert!(stream.recv.advance_contiguous_bytes_if_any().is_ok());
         }
 
         assert_eq!(stream.recv.reset(0, 4), Err(Error::FinalSize));
@@ -1321,6 +1385,7 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
 
@@ -1372,6 +1437,7 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
 
@@ -1396,6 +1462,7 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
 
@@ -1415,6 +1482,7 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
 
@@ -1438,6 +1506,7 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
 
@@ -1462,6 +1531,7 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
 
@@ -1486,6 +1556,7 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
 
@@ -1524,6 +1595,7 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
 
@@ -1576,6 +1648,7 @@ mod tests {
                 true,
                 true,
                 DEFAULT_STREAM_WINDOW,
+                DEFAULT_CHUNK_LEN,
                 crate::PROTOCOL_VERSION,
             );
 
@@ -1607,9 +1680,9 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
-        let mut app_buf = AppRecvBuf::new(1, 100, 1000);
 
         assert_eq!(stream.send.write(b"hello", false), Ok(5));
         assert_eq!(stream.send.write(b"world", false), Ok(5));
@@ -1628,6 +1701,7 @@ mod tests {
             assert!(stream.recv.write(buf).is_ok());
         } else {
             assert!(stream.recv.write_v3(bufinfo).is_ok());
+            assert!(stream.recv.advance_contiguous_bytes_if_any().is_ok());
         }
         assert!(!stream.recv.is_fin());
 
@@ -1654,7 +1728,7 @@ mod tests {
 
             assert!(stream.is_complete());
         } else {
-            app_buf.read_mut(&mut stream.recv).unwrap();
+            assert!(stream.read().is_ok());
 
             stream.send.ack(0, 6);
             assert!(stream.send.is_complete());
@@ -1676,6 +1750,7 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
 
@@ -1699,8 +1774,8 @@ mod tests {
     }
 
     fn stream_send_ready(stream: &Stream) -> bool {
-        !stream.send.is_empty() &&
-            stream.send.off_front() < stream.send.off_back()
+        !stream.send.is_empty()
+            && stream.send.off_front() < stream.send.off_back()
     }
 
     #[test]
@@ -1714,6 +1789,7 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
 
@@ -1774,6 +1850,7 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
 
@@ -1849,6 +1926,7 @@ mod tests {
             true,
             true,
             DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
             crate::PROTOCOL_VERSION,
         );
 
@@ -2093,6 +2171,7 @@ mod tests {
                     &peer_tp,
                     false,
                     true,
+                    DEFAULT_CHUNK_LEN,
                     crate::PROTOCOL_VERSION
                 )
                 .err(),
@@ -2120,6 +2199,7 @@ mod tests {
                     &peer_tp,
                     false,
                     true,
+                    DEFAULT_CHUNK_LEN,
                     crate::PROTOCOL_VERSION
                 )
                 .is_ok());
@@ -2147,6 +2227,7 @@ mod tests {
                 &peer_tp,
                 false,
                 true,
+                DEFAULT_CHUNK_LEN,
                 crate::PROTOCOL_VERSION
             )
             .is_ok());
@@ -2165,6 +2246,7 @@ mod tests {
                     &peer_tp,
                     false,
                     true,
+                    DEFAULT_CHUNK_LEN,
                     crate::PROTOCOL_VERSION
                 )
                 .err(),
@@ -2196,6 +2278,7 @@ mod tests {
                     &peer_tp,
                     false,
                     true,
+                    DEFAULT_CHUNK_LEN,
                     crate::PROTOCOL_VERSION
                 )
                 .is_ok());
@@ -2241,6 +2324,7 @@ mod tests {
                     &peer_tp,
                     false,
                     true,
+                    DEFAULT_CHUNK_LEN,
                     crate::PROTOCOL_VERSION
                 )
                 .is_ok());
@@ -2299,6 +2383,7 @@ mod tests {
                     &peer_tp,
                     false,
                     true,
+                    DEFAULT_CHUNK_LEN,
                     crate::PROTOCOL_VERSION,
                 )
                 .unwrap();
@@ -2334,6 +2419,7 @@ mod tests {
                     &peer_tp,
                     false,
                     true,
+                    DEFAULT_CHUNK_LEN,
                     crate::PROTOCOL_VERSION,
                 )
                 .unwrap();
@@ -2378,6 +2464,7 @@ mod tests {
                 &peer_tp,
                 false,
                 true,
+                DEFAULT_CHUNK_LEN,
                 crate::PROTOCOL_VERSION,
             )
             .unwrap();
@@ -2422,6 +2509,7 @@ mod tests {
                     &peer_tp,
                     false,
                     true,
+                    DEFAULT_CHUNK_LEN,
                     crate::PROTOCOL_VERSION,
                 )
                 .unwrap();
@@ -2504,6 +2592,7 @@ mod tests {
                 &peer_tp,
                 false,
                 true,
+                DEFAULT_CHUNK_LEN,
                 crate::PROTOCOL_VERSION,
             )
             .unwrap();
@@ -2566,6 +2655,5 @@ mod tests {
     }
 }
 
-pub mod app_recv_buf;
 mod recv_buf;
 mod send_buf;
