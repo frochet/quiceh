@@ -1,6 +1,6 @@
 [package]
 name = "quiceh"
-version = "1.0.0"
+version = "2.0.0"
 authors = ["Florentin Rochet <florentin.rochet@unamur.be>"]
 edition = "2018"
 build = "src/build.rs"
@@ -10,7 +10,7 @@ readme = "README.md"
 keywords = ["quic", "http3"]
 categories = ["network-programming"]
 license = "BSD-2-Clause"
-rust-version = "1.66"
+rust-version = "1.82"
 include = [
     "/*.md",
     "/*.toml",
