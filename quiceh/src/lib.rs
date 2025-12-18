@@ -612,10 +612,6 @@ pub enum Error {
     /// associated data.
     StreamReset(u64),
 
-    /// A buffer is storing more chunks than allowed. The caller should
-    /// likely consume them using stream_recv_zc() or stream_peek() and stream_consumed()
-    TooManyChunksBuffered,
-
     /// The received data exceeds the stream's final size.
     FinalSize,
 
@@ -750,7 +746,6 @@ impl Error {
             Error::CryptoBufferExceeded => -21,
             Error::InvalidOffset => -22,
             Error::InvalidAPICall(_) => -23,
-            Error::TooManyChunksBuffered => -24,
         }
     }
 }

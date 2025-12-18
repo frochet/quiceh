@@ -39,10 +39,12 @@ type ClientMap = HashMap<
 const POOL_SHARDS: usize = 8;
 const _MAX_POOL_BUF_SIZE: usize = 64 * 1024;
 const SMALL_POOL_BUF_SIZE: usize = 4096;
+const LARGE_POOL_BUF_SIZE: usize = 65535;
 
 type BufPool = Pool<POOL_SHARDS, ConsumeBuffer>;
 
 static SMALL_POOL: BufPool = BufPool::new(128, SMALL_POOL_BUF_SIZE);
+static LARGE_POOL: BufPool = BufPool::new(16, LARGE_POOL_BUF_SIZE);
 
 #[cfg_attr(feature = "current_thread", tokio::main(flavor = "current_thread"))]
 #[cfg_attr(not(feature = "current_thread"), tokio::main)]
@@ -261,7 +263,7 @@ async fn handle_client(
     tx_garbage_conn: mpsc::Sender<Vec<u8>>, local_addr: net::SocketAddr,
 ) {
     let mut partial_responses: HashMap<u64, PartialResponse> = HashMap::new();
-    let mut out = vec![0; 65535];
+    let mut out = LARGE_POOL.get();
     let mut loss_rate: f64 = 0.0;
     let mut max_send_burst = 65535;
     let send_state = UdpSocketState::new((&socket).into()).unwrap();
