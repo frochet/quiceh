@@ -42,16 +42,21 @@ choice. Other QUIC implementations may obtain lower or higher
 improvement depending on their software architecture choice, but some
 improvement should be expected in all cases.
 
+- [`stream_recv_zc()`] only available for VReverso supports the
+  Application to receive contiguous chunks of memory from underlying
+quiceh buffers in zero-copy in expectation. This is designed for
+concurrent processing of stream data. This function can be used together
+with [`stream_peek()`] and [`stream_consumed()`], although received
+chunks are considered as consumed from the internal QUIC recv stream
+buffer. Dropping the chunk will send the memory allocation back to the
+stream buffer pool.
+
+
 - Support sending in zero-copy for both QUIC v1 and QUIC VReverso using
   [`stream_send_zc()`]. Current server behavior implemented in apps/ for
 sending HTTP/3 responses.
 
 Experimental:
-
-- [`stream_recv_zc()`] only available for VReverso supports the
-  Application to receive contiguous chunks of memory from underlying
-quiceh buffers in zero-copy in expectation. This is designed for
-concurrent processing of stream data.
 
 - QUIC connection [`Config`] may set a flag using
   [`enable_hidden_copy_for_zc_sender()`] to make any data buffered
