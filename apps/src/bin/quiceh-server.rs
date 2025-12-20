@@ -54,6 +54,7 @@ use quinn_udp::UdpSocketState;
 use quiceh::bufpool;
 
 const MAX_BUF_SIZE: usize = 65507;
+const DEFAULT_CHUNK_LEN: usize = 65536;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
@@ -70,7 +71,7 @@ fn main() {
     let args = ServerArgs::with_docopt(&docopt);
 
     if let Some(max_bufpool_size) = conn_args.max_bufpool_size {
-        bufpool::init(max_bufpool_size);
+        bufpool::init(max_bufpool_size, DEFAULT_CHUNK_LEN);
     }
 
     // Setup the event loop.

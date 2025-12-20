@@ -32,6 +32,8 @@ use quiceh_apps::client::*;
 
 use quiceh::bufpool;
 
+const DEFAULT_CHUNK_LEN: usize = 65_536;
+
 fn main() {
     env_logger::builder().format_timestamp_nanos().init();
 
@@ -41,7 +43,7 @@ fn main() {
     let args = ClientArgs::with_docopt(&docopt);
 
     if let Some(max_bufpool_size) = conn_args.max_bufpool_size {
-        bufpool::init(max_bufpool_size);
+        bufpool::init(max_bufpool_size, DEFAULT_CHUNK_LEN);
     }
 
     match connect::<BufResponseFactory>(args, conn_args, stdout_sink) {

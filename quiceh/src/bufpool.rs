@@ -13,8 +13,8 @@
 //! ```
 //! use quiceh::bufpool;
 //!
-//! // Initialize the buffer pool to a maximum of 2 GiB
-//! bufpool::init(2 * 1_073_741_824);
+//! // Initialize the buffer pool to a maximum of 2 GiB with 64KiB buffers
+//! bufpool::init(2 * 1_073_741_824, 65_536);
 //! ```
 //!
 //! If `init` is not called, the buffer pool will be automatically initialized with a default
@@ -53,11 +53,8 @@ static POOL: OnceCell<BufPool> = OnceCell::new();
 /// # Panics
 ///
 /// Panics if the pool is already initialized.
-pub fn init(max_memory: usize) {
-    let pool = BufPool::new(
-        max_memory / DEFAULT_CHUNK_LEN,
-        DEFAULT_CHUNK_LEN as usize,
-    );
+pub fn init(max_memory: usize, chunk_len: usize) {
+    let pool = BufPool::new(max_memory / chunk_len, DEFAULT_CHUNK_LEN as usize);
     POOL.set(pool).expect("pool already initialized");
 }
 
@@ -80,3 +77,4 @@ pub fn pool_or_default() -> &'static BufPool {
         )
     })
 }
+
