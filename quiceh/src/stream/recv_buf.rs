@@ -49,7 +49,7 @@ use std::ops::RangeFrom;
 use std::ops::RangeFull;
 use std::ops::RangeTo;
 
-use likely_stable::if_likely;
+use branches::likely;
 
 const MAX_STREAM_FRAME_LENGTH: usize = 1310;
 
@@ -326,8 +326,8 @@ impl RecvBuf {
         max_data: u64, max_window: u64, max_chunklen: usize, version: u32,
     ) -> RecvBuf {
         let mut chunks = VecDeque::new();
-        let chunk =
-            pool_or_default().get_with(|pooled| streamchunk_init(pooled, max_chunklen, 0));
+        let chunk = pool_or_default()
+            .get_with(|pooled| streamchunk_init(pooled, max_chunklen, 0));
 
         chunks.push_back(chunk.into_inner());
         RecvBuf {
@@ -980,15 +980,16 @@ impl RecvBuf {
         // Clear all data already buffered.
         self.off = final_size;
 
-        if_likely! { self.version == crate::PROTOCOL_VERSION_VREVERSO => {
+        if likely(self.version == crate::PROTOCOL_VERSION_VREVERSO) {
             self.contiguous_off = final_size;
             self.heap.clear();
             // clear all buffered data
             self.collect();
             // chunks should always have at least one element as long as
             // the fin flag is not consumed.
-            let chunk =
-                pool_or_default().get_with(|pooled| streamchunk_init(pooled, self.max_chunklen, 0));
+            let chunk = pool_or_default().get_with(|pooled| {
+                streamchunk_init(pooled, self.max_chunklen, 0)
+            });
 
             self.chunks.push_back(chunk.into_inner());
 
@@ -1001,7 +1002,7 @@ impl RecvBuf {
             // reset, enqueue a zero-length buffer at the final size offset.
             let buf = RangeBuf::from(b"", final_size, true);
             self.write(buf)?;
-        }};
+        }
 
         Ok(max_data_delta as usize)
     }
@@ -1077,13 +1078,13 @@ impl RecvBuf {
 
         self.drain = true;
 
-        if_likely! {self.version == crate::PROTOCOL_VERSION_VREVERSO => {
+        if likely(self.version == crate::PROTOCOL_VERSION_VREVERSO) {
             self.heap.clear();
             self.deliver_fin = false;
             self.contiguous_off = self.max_off();
         } else {
             self.data.clear();
-        }};
+        };
 
         self.off = self.max_off();
 
@@ -1130,7 +1131,7 @@ impl RecvBuf {
 
     /// Returns true if the stream has data to be read.
     pub fn ready(&self) -> bool {
-        let ready = if_likely! {self.version == crate::PROTOCOL_VERSION_VREVERSO => {
+        let ready = if likely(self.version == crate::PROTOCOL_VERSION_VREVERSO) {
             match self.heap.first_key_value() {
                 Some((_, recvinfo)) => recvinfo.start_off <= self.contiguous_off,
                 None => return false,
@@ -1141,7 +1142,7 @@ impl RecvBuf {
                 None => return false,
             };
             buf.off() == self.off
-        }};
+        };
         ready
     }
 }

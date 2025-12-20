@@ -439,7 +439,7 @@ use std::str::FromStr;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 
-use likely_stable::if_likely;
+use branches::likely;
 use smallvec::SmallVec;
 
 use range_buf::DefaultBufFactory;
@@ -2939,7 +2939,9 @@ impl<F: BufFactory> Connection<F> {
         let pn_len = hdr.pkt_num_len;
         let mut enc_hdr_len = pn_len;
         let mut dec_len = payload_len - aead_tag_len - enc_hdr_len;
-        let (mut maybe_chunk, decoded_offset) = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
+        let (mut maybe_chunk, decoded_offset) = if likely(
+            self.version == PROTOCOL_VERSION_VREVERSO,
+        ) {
             // let's use this control flow to also add the true enc_hdr_len
             // on V3.
             // XXX Long Header packets should not have a stream_id and truncated offset bytes
@@ -2948,11 +2950,19 @@ impl<F: BufFactory> Connection<F> {
             enc_hdr_len += hdr.truncated_offset_len;
             dec_len -= enc_hdr_len;
             // A stream_id 0 indicates no stream frame encrypted.
-            if hdr.expected_stream_id > 0 && (hdr.ty == packet::Type::Short || hdr.ty == packet::Type::ZeroRTT) {
+            if hdr.expected_stream_id > 0
+                && (hdr.ty == packet::Type::Short
+                    || hdr.ty == packet::Type::ZeroRTT)
+            {
                 match self.streams.get_mut(hdr.expected_stream_id) {
                     Some(s) => {
-                        let mut offset = s.recv.contiguous_off().saturating_sub(1);
-                        offset = packet::decode_pkt_offset(offset, hdr.truncated_offset, hdr.truncated_offset_len);
+                        let mut offset =
+                            s.recv.contiguous_off().saturating_sub(1);
+                        offset = packet::decode_pkt_offset(
+                            offset,
+                            hdr.truncated_offset,
+                            hdr.truncated_offset_len,
+                        );
                         trace!("Decoded offset={}", offset);
 
                         let chunk = match s.get_stream_chunk(offset) {
@@ -2970,7 +2980,7 @@ impl<F: BufFactory> Connection<F> {
                                         pn,
                                         enc_hdr_len,
                                         payload_len,
-                                        aead
+                                        aead,
                                     ) {
                                         Ok(_v) => {
                                             // XXX Maybe we should process control frames --
@@ -2979,23 +2989,36 @@ impl<F: BufFactory> Connection<F> {
                                             trace!(
                                                 "Dropping a legit packet due to incorrect decoded offset {}", offset,
                                             );
-                                            self.pkt_num_spaces[epoch].recv_pkt_num.insert(pn);
-                                            self.pkt_num_spaces[epoch].recv_pkt_need_ack.push_item(pn);
-                                            self.pkt_num_spaces[epoch].ack_elicited = true;
-                                            self.pkt_num_spaces[epoch].largest_rx_pkt_num =
-                                                cmp::max(self.pkt_num_spaces[epoch].largest_rx_pkt_num, pn);
-
-                                        }
+                                            self.pkt_num_spaces[epoch]
+                                                .recv_pkt_num
+                                                .insert(pn);
+                                            self.pkt_num_spaces[epoch]
+                                                .recv_pkt_need_ack
+                                                .push_item(pn);
+                                            self.pkt_num_spaces[epoch]
+                                                .ack_elicited = true;
+                                            self.pkt_num_spaces[epoch]
+                                                .largest_rx_pkt_num = cmp::max(
+                                                self.pkt_num_spaces[epoch]
+                                                    .largest_rx_pkt_num,
+                                                pn,
+                                            );
+                                        },
                                         Err(_e) => {
                                             trace!(
                                                 "We failed to decrypt a packet for which an incorrect offset has been delivery_rate_check_if_app_limited"
                                             );
-                                        }
+                                        },
                                     }
                                 }
 
-                                return Err(drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id))
-                            }
+                                return Err(drop_pkt_on_err(
+                                    e,
+                                    self.recv_count,
+                                    self.is_server,
+                                    &self.trace_id,
+                                ));
+                            },
                         };
                         (Some(chunk), Some(offset))
                     },
@@ -3005,22 +3028,32 @@ impl<F: BufFactory> Connection<F> {
                         // We should still create a buffer but we should clean it if the
                         // packet happens to be invalid.
                         let s = match self.streams.get_or_create(
-                                        hdr.expected_stream_id,
-                                        &self.local_transport_params,
-                                        &self.peer_transport_params,
-                                        false,
-                                        self.is_server,
-                                        self.chunk_len,
-                                        self.version
-                                ) {
-                              Ok(v) => v,
-                              Err(e) => {
+                            hdr.expected_stream_id,
+                            &self.local_transport_params,
+                            &self.peer_transport_params,
+                            false,
+                            self.is_server,
+                            self.chunk_len,
+                            self.version,
+                        ) {
+                            Ok(v) => v,
+                            Err(e) => {
                                 trace!("Dropping packet due to stream creation issue {}", hdr.expected_stream_id);
-                                return Err(drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id));
-                              },
+                                return Err(drop_pkt_on_err(
+                                    e,
+                                    self.recv_count,
+                                    self.is_server,
+                                    &self.trace_id,
+                                ));
+                            },
                         };
-                        let mut offset = s.recv.contiguous_off().saturating_sub(1);
-                        offset = packet::decode_pkt_offset(offset, hdr.truncated_offset, hdr.truncated_offset_len);
+                        let mut offset =
+                            s.recv.contiguous_off().saturating_sub(1);
+                        offset = packet::decode_pkt_offset(
+                            offset,
+                            hdr.truncated_offset,
+                            hdr.truncated_offset_len,
+                        );
 
                         let chunk = match s.get_stream_chunk(offset) {
                             Ok(v) => v,
@@ -3035,9 +3068,16 @@ impl<F: BufFactory> Connection<F> {
                                 //
                                 // This cannot happen if it is a legit spurious retransmission
                                 // so we don't touch acks.
-                                self.streams.collect_on_recv_error(hdr.expected_stream_id);
-                                return Err(drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id));
-                            }
+                                self.streams.collect_on_recv_error(
+                                    hdr.expected_stream_id,
+                                );
+                                return Err(drop_pkt_on_err(
+                                    e,
+                                    self.recv_count,
+                                    self.is_server,
+                                    &self.trace_id,
+                                ));
+                            },
                         };
                         // We need to remember to collect the stream in case the
                         // authentication of this packet fails.
@@ -3045,13 +3085,12 @@ impl<F: BufFactory> Connection<F> {
                         (Some(chunk), Some(offset))
                     },
                 }
-            }
-            else {
+            } else {
                 (None, None)
             }
         } else {
             (None, None)
-        }};
+        };
 
         trace!(
             "{} rx pkt {:?} len={} pn={} pn_len={} {}",
@@ -3105,83 +3144,108 @@ impl<F: BufFactory> Connection<F> {
         }
 
         // update payload_len too, removing the QUIC AES-ECB header
-        let (mut payload, payload_len) = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
-            if let Some(chunk) = maybe_chunk.as_mut() {
-                let offset = decoded_offset.as_ref().unwrap();
-                let relative_offset: usize = *offset as usize % self.chunk_len;
-                // Do we have enough space to decrypt into the chunk?
-                if chunk.max_off() - offset >= dec_len as u64 {
-                    match packet::decrypt_pkt_v3(
-                        &mut b,
-                        pn,
-                        enc_hdr_len,
-                        payload_len,
-                        Some(&mut chunk.as_mut()[relative_offset..]),
-                        aead
-                    ) {
-                        Ok(v) => v,
-                        Err(e) => {
-
+        let (mut payload, payload_len) =
+            if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
+                if let Some(chunk) = maybe_chunk.as_mut() {
+                    let offset = decoded_offset.as_ref().unwrap();
+                    let relative_offset: usize =
+                        *offset as usize % self.chunk_len;
+                    // Do we have enough space to decrypt into the chunk?
+                    if chunk.max_off() - offset >= dec_len as u64 {
+                        match packet::decrypt_pkt_v3(
+                            &mut b,
+                            pn,
+                            enc_hdr_len,
+                            payload_len,
+                            Some(&mut chunk.as_mut()[relative_offset..]),
+                            aead,
+                        ) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                if collect_stream_on_dec_error {
+                                    self.streams.collect_on_recv_error(
+                                        hdr.expected_stream_id,
+                                    );
+                                } else {
+                                    // The chunk could contain valid data from a previous packet
+                                    // processing. We need to put it back.
+                                    let stream_chunk = chunk.clone();
+                                    if let Some(s) = self
+                                        .streams
+                                        .get_mut(hdr.expected_stream_id)
+                                    {
+                                        s.recv.insert_stream_chunk(stream_chunk);
+                                    }
+                                }
+                                return Err(drop_pkt_on_err(
+                                    e,
+                                    self.recv_count,
+                                    self.is_server,
+                                    &self.trace_id,
+                                ));
+                            },
+                        }
+                    } else {
+                        // We have to decrypt in place and then copy. This happens only at
+                        // chunk boundary.
+                        packet::decrypt_pkt(
+                            &mut b,
+                            pn,
+                            enc_hdr_len,
+                            payload_len,
+                            aead,
+                        )
+                        .map_err(|e| {
                             if collect_stream_on_dec_error {
-                                self.streams.collect_on_recv_error(hdr.expected_stream_id);
+                                self.streams.collect_on_recv_error(
+                                    hdr.expected_stream_id,
+                                );
                             } else {
                                 // The chunk could contain valid data from a previous packet
                                 // processing. We need to put it back.
                                 let stream_chunk = chunk.clone();
-                                if let Some(s) = self.streams.get_mut(hdr.expected_stream_id) {
+                                if let Some(s) =
+                                    self.streams.get_mut(hdr.expected_stream_id)
+                                {
                                     s.recv.insert_stream_chunk(stream_chunk);
                                 }
                             }
-                            return Err(drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id));
-                        },
+                            drop_pkt_on_err(
+                                e,
+                                self.recv_count,
+                                self.is_server,
+                                &self.trace_id,
+                            )
+                        })?
                     }
                 } else {
-
-                    // We have to decrypt in place and then copy. This happens only at
-                    // chunk boundary.
                     packet::decrypt_pkt(
                         &mut b,
                         pn,
                         enc_hdr_len,
                         payload_len,
-                        aead
-                    ).map_err(|e| {
-                        if collect_stream_on_dec_error {
-                            self.streams.collect_on_recv_error(hdr.expected_stream_id);
-                        } else {
-                            // The chunk could contain valid data from a previous packet
-                            // processing. We need to put it back.
-                            let stream_chunk = chunk.clone();
-                            if let Some(s) = self.streams.get_mut(hdr.expected_stream_id) {
-                                s.recv.insert_stream_chunk(stream_chunk);
-                            }
-                        }
-                        drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
+                        aead,
+                    )
+                    .map_err(|e| {
+                        drop_pkt_on_err(
+                            e,
+                            self.recv_count,
+                            self.is_server,
+                            &self.trace_id,
+                        )
                     })?
-                 }
+                }
             } else {
-                packet::decrypt_pkt(
-                    &mut b,
-                    pn,
-                    enc_hdr_len,
-                    payload_len,
-                    aead,
-                ).map_err(|e| {
-                    drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
-                })?
-            }
-        } else {
-            packet::decrypt_pkt(
-                &mut b,
-                pn,
-                enc_hdr_len,
-                payload_len,
-                aead,
-            )
-            .map_err(|e| {
-                drop_pkt_on_err(e, self.recv_count, self.is_server, &self.trace_id)
-            })?
-        }};
+                packet::decrypt_pkt(&mut b, pn, enc_hdr_len, payload_len, aead)
+                    .map_err(|e| {
+                        drop_pkt_on_err(
+                            e,
+                            self.recv_count,
+                            self.is_server,
+                            &self.trace_id,
+                        )
+                    })?
+            };
 
         if self.pkt_num_spaces[epoch].recv_pkt_num.contains(pn) {
             trace!("{} ignored duplicate packet {}", self.trace_id, pn);
@@ -3316,20 +3380,24 @@ impl<F: BufFactory> Connection<F> {
         let mut probing = true;
 
         // Process packet payload.
-        if_likely! { self.version == PROTOCOL_VERSION_VREVERSO => {
-
+        if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
             struct ChunkMetaData {
                 stream_id: u64,
                 start_off: u64,
                 len: usize,
             }
-            let mut smeta = ChunkMetaData { stream_id: 0, start_off: 0, len: 0 };
+            let mut smeta = ChunkMetaData {
+                stream_id: 0,
+                start_off: 0,
+                len: 0,
+            };
             //set the offset at the end
             let payload_start_offset = payload.off();
             payload.skip(payload_len)?;
             // start reverse buffer processing
             while payload.off() > payload_start_offset {
-                let frame = frame::Frame::from_bytes(&mut payload, hdr.ty, self.version)?;
+                let frame =
+                    frame::Frame::from_bytes(&mut payload, hdr.ty, self.version)?;
                 qlog_with_type!(QLOG_PACKET_RX, self.qlog, _q, {
                     qlog_frames.push(frame.to_qlog());
                 });
@@ -3345,7 +3413,8 @@ impl<F: BufFactory> Connection<F> {
                 if let frame::Frame::StreamV3 {
                     stream_id: s,
                     metadata: ref m,
-                } = frame {
+                } = frame
+                {
                     // If this is the stream frame intented for zc.
                     if payload.off() == payload_start_offset {
                         smeta.stream_id = s;
@@ -3354,8 +3423,14 @@ impl<F: BufFactory> Connection<F> {
                     }
                 }
 
-                if let Err(e) = self.process_frame(frame, &hdr, &mut payload, recv_pid, epoch, now)
-                {
+                if let Err(e) = self.process_frame(
+                    frame,
+                    &hdr,
+                    &mut payload,
+                    recv_pid,
+                    epoch,
+                    now,
+                ) {
                     frame_processing_err = Some(e);
                     break;
                 }
@@ -3380,12 +3455,21 @@ impl<F: BufFactory> Connection<F> {
                             // We need rewinding b of payload_len, and start to copy len bits
                             // into until we filled all necessary chunks.
                             b.rewind(dec_len)?;
-                            let written = chunk.fill_from(&b.as_ref()[..smeta.len], smeta.start_off);
+                            let written = chunk.fill_from(
+                                &b.as_ref()[..smeta.len],
+                                smeta.start_off,
+                            );
                             b.skip(written)?;
                             let from_target_offset = chunk.max_off();
 
-                            let idx = stream.recv.insert_stream_chunk(chunk.into_inner());
-                            stream.recv.create_missing_chunks_and_copy(idx, &b.as_ref()[..smeta.len - written], from_target_offset)?;
+                            let idx = stream
+                                .recv
+                                .insert_stream_chunk(chunk.into_inner());
+                            stream.recv.create_missing_chunks_and_copy(
+                                idx,
+                                &b.as_ref()[..smeta.len - written],
+                                from_target_offset,
+                            )?;
                             trace!("We write accross two chunks: stream id: {}, total plaintext len: {}, wrote {} in first chunk. Next starting offest: {}",
                                 smeta.stream_id, smeta.len, written, from_target_offset);
                             // Put the buffer offset back to the right position
@@ -3393,13 +3477,13 @@ impl<F: BufFactory> Connection<F> {
                         }
 
                         stream.recv.advance_contiguous_bytes_if_any()?;
-
                     }
                 }
             }
         } else {
             while payload.cap() > 0 {
-                let frame = frame::Frame::from_bytes(&mut payload, hdr.ty, self.version)?;
+                let frame =
+                    frame::Frame::from_bytes(&mut payload, hdr.ty, self.version)?;
 
                 qlog_with_type!(QLOG_PACKET_RX, self.qlog, _q, {
                     qlog_frames.push(frame.to_qlog());
@@ -3413,13 +3497,19 @@ impl<F: BufFactory> Connection<F> {
                     probing = false;
                 }
 
-                if let Err(e) = self.process_frame(frame, &hdr, &mut payload, recv_pid, epoch, now)
-                {
+                if let Err(e) = self.process_frame(
+                    frame,
+                    &hdr,
+                    &mut payload,
+                    recv_pid,
+                    epoch,
+                    now,
+                ) {
                     frame_processing_err = Some(e);
                     break;
                 }
             }
-        }};
+        }
 
         qlog_with_type!(QLOG_PACKET_RX, self.qlog, q, {
             let packet_size = b.len();
@@ -4012,11 +4102,12 @@ impl<F: BufFactory> Connection<F> {
         &mut self, out: &mut [u8], send_pid: usize, has_initial: bool,
         now: time::Instant,
     ) -> Result<(packet::Type, usize)> {
-        let payload_min_len = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
+        let payload_min_len = if likely(self.version == PROTOCOL_VERSION_VREVERSO)
+        {
             PAYLOAD_MIN_LEN_V3
         } else {
             PAYLOAD_MIN_LEN
-        }};
+        };
 
         if out.is_empty() {
             return Err(Error::BufferTooShort);
@@ -4157,11 +4248,11 @@ impl<F: BufFactory> Connection<F> {
         let pn = pkt_space.next_pkt_num;
         let largest_acked_pkt =
             path.recovery.get_largest_acked_on_epoch(epoch).unwrap_or(0);
-        let pn_len = if_likely! { self.version == crate::PROTOCOL_VERSION_VREVERSO => {
+        let pn_len = if likely(self.version == crate::PROTOCOL_VERSION_VREVERSO) {
             packet::pkt_num_len_v3(pn, largest_acked_pkt)
         } else {
             packet::pkt_num_len(pn, largest_acked_pkt)
-        }};
+        };
 
         // The AEAD overhead at the current encryption level.
         let crypto_overhead = pkt_space.crypto_overhead().ok_or(Error::Done)?;
@@ -4230,11 +4321,11 @@ impl<F: BufFactory> Connection<F> {
         // path.recovery.update_app_limited while we have just the right
         // space left to send this packet. we don't know the length of pn
         // before
-        let mut overhead = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
+        let mut overhead = if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
             b.off() + pn_len + crypto_overhead + 8
         } else {
             b.off() + pn_len + crypto_overhead
-        }};
+        };
 
         // We assume that the payload length, which is only present in long
         // header packets, can always be encoded with a 2-byte varint.
@@ -4288,13 +4379,13 @@ impl<F: BufFactory> Connection<F> {
         // We need to remember this in case we use Protocol Reverso
         let header_offset = b.off();
 
-        if_likely! { self.version == PROTOCOL_VERSION_VREVERSO  => {
+        if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
             packet::encode_pkt_num_v3(pn, pn_len, 1, &mut b)?;
             packet::encode_u64_num_and_nextelem_len(0, 1, &mut b)?;
             packet::encode_offset_num(0, 1, &mut b)?;
         } else {
             packet::encode_pkt_num(pn, pn_len, &mut b)?;
-        }};
+        };
         // We have encoded the quic header in b.
         let mut payload_offset = b.off();
 
@@ -4871,8 +4962,11 @@ impl<F: BufFactory> Connection<F> {
                 length: 0,
                 fin: false,
             };
-            let hdr_off = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => { b.off() } else {
-            b.off() + cumul }};
+            let hdr_off = if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
+                b.off()
+            } else {
+                b.off() + cumul
+            };
             let max_stream_window = self.streams.max_stream_window;
             while let Some(priority_key) = self.streams.peek_flushable() {
                 let stream_id = priority_key.id;
@@ -4901,29 +4995,51 @@ impl<F: BufFactory> Connection<F> {
                 );
                 // if V3, we need to rewind a re-encode the QUIC header.
                 // b.off is currently at payload_offset.
-                let fixed_overhead = if_likely! { self.version == PROTOCOL_VERSION_VREVERSO  => {
-                    b.rewind(payload_offset-header_offset)?;
-                    self.expected_stream_id_len = packet::num_len_to_encode(stream_id) + 1;
-                    packet::encode_pkt_num_v3(pn, pn_len, self.expected_stream_id_len, &mut b)?;
-                    self.truncated_offset_len = packet::truncated_offset_len(stream_off, largest_off_acked);
-                    packet::encode_u64_num_and_nextelem_len(stream_id, self.truncated_offset_len,
-                                                            &mut b)?;
-                    packet::encode_offset_num(stream_off, self.truncated_offset_len, &mut b)?;
+                let fixed_overhead = if likely(
+                    self.version == PROTOCOL_VERSION_VREVERSO,
+                ) {
+                    b.rewind(payload_offset - header_offset)?;
+                    self.expected_stream_id_len =
+                        packet::num_len_to_encode(stream_id) + 1;
+                    packet::encode_pkt_num_v3(
+                        pn,
+                        pn_len,
+                        self.expected_stream_id_len,
+                        &mut b,
+                    )?;
+                    self.truncated_offset_len = packet::truncated_offset_len(
+                        stream_off,
+                        largest_off_acked,
+                    );
+                    packet::encode_u64_num_and_nextelem_len(
+                        stream_id,
+                        self.truncated_offset_len,
+                        &mut b,
+                    )?;
+                    packet::encode_offset_num(
+                        stream_off,
+                        self.truncated_offset_len,
+                        &mut b,
+                    )?;
                     payload_offset = b.off();
                     // adjust left that was computed based on a 8 bytes overhead
-                    let fixed = match 8_usize.checked_sub(self.expected_stream_id_len+self.truncated_offset_len) {
+                    let fixed = match 8_usize.checked_sub(
+                        self.expected_stream_id_len + self.truncated_offset_len,
+                    ) {
                         Some(v) => v,
                         None => {
                             trace!("checked_sub underflow. expected_stream_id_len is {0}, truncated_offset_len is {1}",
                                     self.expected_stream_id_len, self.truncated_offset_len);
                             // Should we panic?
                             panic!("this shouldn't happen");
-                        }
+                        },
                     };
                     left += fixed;
                     has_fixed_overhead = true;
                     fixed
-                } else { 0 }};
+                } else {
+                    0
+                };
 
                 // Encode the frame.
                 //
@@ -4968,54 +5084,51 @@ impl<F: BufFactory> Connection<F> {
                 } else {
                     // We copy the data directly into the buffer. Encryption will
                     // be inplace.
-                    let (len, fin) = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
-                        // Write stream data into the packet buffer; normally right after
-                        // the encrypted header.
-                        let (len, fin) =
-                            stream.send.emit(&mut b.as_mut()[..max_len])?;
-                        // Advance the buffer
-                        b.skip(len)?;
+                    let (len, fin) =
+                        if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
+                            // Write stream data into the packet buffer; normally right after
+                            // the encrypted header.
+                            let (len, fin) =
+                                stream.send.emit(&mut b.as_mut()[..max_len])?;
+                            // Advance the buffer
+                            b.skip(len)?;
 
-                        // Encode the header reversed
-                        frame::encode_stream_footer(
-                            stream_id,
-                            stream_off,
-                            len as u64,
-                            fin,
-                            &mut b,
-                        )?;
+                            // Encode the header reversed
+                            frame::encode_stream_footer(
+                                stream_id, stream_off, len as u64, fin, &mut b,
+                            )?;
 
-                        // back to the initial index.
-                        b.rewind(len+hdr_len)?;
+                            // back to the initial index.
+                            b.rewind(len + hdr_len)?;
 
-                        (len, fin)
-                    } else {
+                            (len, fin)
+                        } else {
+                            let (mut stream_hdr, mut stream_payload) =
+                                b.split_at(hdr_off + hdr_len)?;
 
-                        let (mut stream_hdr, mut stream_payload) =
-                            b.split_at(hdr_off + hdr_len)?;
+                            // Write stream data into the packet buffer.
+                            let (len, fin) = stream
+                                .send
+                                .emit(&mut stream_payload.as_mut()[..max_len])?;
 
-                        // Write stream data into the packet buffer.
-                        let (len, fin) =
-                            stream.send.emit(&mut stream_payload.as_mut()[..max_len])?;
+                            // Encode the frame's header.
+                            //
+                            // Due to how `OctetsMut::split_at()` works, `stream_hdr` starts
+                            // from the initial offset of `b` (rather than the current
+                            // offset), so it needs to be advanced to the initial frame
+                            // offset.
+                            stream_hdr.skip(hdr_off)?;
 
-                        // Encode the frame's header.
-                        //
-                        // Due to how `OctetsMut::split_at()` works, `stream_hdr` starts
-                        // from the initial offset of `b` (rather than the current
-                        // offset), so it needs to be advanced to the initial frame
-                        // offset.
-                        stream_hdr.skip(hdr_off)?;
+                            frame::encode_stream_header(
+                                stream_id,
+                                stream_off,
+                                len as u64,
+                                fin,
+                                &mut stream_hdr,
+                            )?;
 
-                        frame::encode_stream_header(
-                            stream_id,
-                            stream_off,
-                            len as u64,
-                            fin,
-                            &mut stream_hdr,
-                        )?;
-
-                        (len, fin)
-                    }};
+                            (len, fin)
+                        };
 
                     let priority_key = Arc::clone(&stream.priority_key);
                     // If the stream is no longer flushable, remove it from the
@@ -5039,7 +5152,7 @@ impl<F: BufFactory> Connection<F> {
                     fin,
                 };
 
-                if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
+                if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
                     // we already know that left > frame.wire_len()
                     let wire_len = frame.wire_len();
                     left -= wire_len;
@@ -5063,7 +5176,7 @@ impl<F: BufFactory> Connection<F> {
                         in_flight = true;
                         has_data = true;
                     }
-                }};
+                };
 
                 #[cfg(feature = "fuzzing")]
                 // Coalesce STREAM frames when fuzzing
@@ -5122,12 +5235,12 @@ impl<F: BufFactory> Connection<F> {
                    // The overhead depends on whether or not we're going
                    // to include a stream frame in this packet. We assumed yes, but maybe
                    // we don't.
-            if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
+            if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
                 if !has_fixed_overhead {
                     left += 6;
                     has_fixed_overhead = true;
                 }
-            }};
+            };
             if let Some(max_len) = left.checked_sub(hdr_len) {
                 let frame = if self.use_hidden_crypt_copy_for_zc {
                     let (rbvec, length) =
@@ -5139,7 +5252,8 @@ impl<F: BufFactory> Connection<F> {
                         rbvec,
                     }
                 } else {
-                    let len = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
+                    let len = if likely(self.version == PROTOCOL_VERSION_VREVERSO)
+                    {
                         //located potentally after other control frames
                         b.skip(cumul)?;
                         let (len, _) = pkt_space
@@ -5150,15 +5264,12 @@ impl<F: BufFactory> Connection<F> {
                         b.skip(len)?;
                         // Encode the header reversed
                         frame::encode_crypto_footer(
-                            crypto_off,
-                            len as u64,
-                            &mut b,
+                            crypto_off, len as u64, &mut b,
                         )?;
                         // back to the initial index.
-                        b.rewind(len+hdr_len+cumul)?;
+                        b.rewind(len + hdr_len + cumul)?;
                         len
                     } else {
-
                         let (mut crypto_hdr, mut crypto_payload) =
                             b.split_at(hdr_off + hdr_len)?;
                         // Write stream data into the packet buffer.
@@ -5182,7 +5293,7 @@ impl<F: BufFactory> Connection<F> {
                         )?;
 
                         len
-                    }};
+                    };
 
                     frame::Frame::CryptoHeader {
                         offset: crypto_off,
@@ -5198,14 +5309,14 @@ impl<F: BufFactory> Connection<F> {
             }
         }
 
-        if_likely! {self.version == PROTOCOL_VERSION_VREVERSO  => {
+        if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
             // Todo check interplay with CWND availability
             if !has_fixed_overhead && left > 0 {
                 // we only had 2 bytes of overhead for a 0 streamid and 0 offset
                 // if no stream frame, instead of the potential 8 bytes.
                 left += 6;
             }
-        }};
+        }
 
         // If no other ack-eliciting frame is sent, include a PING frame
         // - if PTO probe needed; OR
@@ -5345,11 +5456,16 @@ impl<F: BufFactory> Connection<F> {
 
         // Fill in payload length.
         if pkt_type != packet::Type::Short {
-            let len = if_likely! {self.version == crate::PROTOCOL_VERSION_VREVERSO => {
-                pn_len + self.expected_stream_id_len + self.truncated_offset_len + payload_len + crypto_overhead
+            let len = if likely(self.version == crate::PROTOCOL_VERSION_VREVERSO)
+            {
+                pn_len
+                    + self.expected_stream_id_len
+                    + self.truncated_offset_len
+                    + payload_len
+                    + crypto_overhead
             } else {
                 pn_len + payload_len + crypto_overhead
-            }};
+            };
 
             let (_, mut payload_with_len) =
                 b_start.split_at(header_offset_for_length)?;
@@ -5420,34 +5536,33 @@ impl<F: BufFactory> Connection<F> {
         };
 
         let written = if self.use_hidden_crypt_copy_for_zc {
-            let sentry = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
-                if let Some(frame::Frame::StreamHeader { stream_id, ..}) = frames.first() {
+            let sentry = if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
+                if let Some(frame::Frame::StreamHeader { stream_id, .. }) =
+                    frames.first()
+                {
                     Some(self.streams.entry(*stream_id))
                 } else {
                     None
                 }
             } else {
-                if let Some(frame::Frame::StreamHeader { stream_id, ..}) = frames.last() {
+                if let Some(frame::Frame::StreamHeader { stream_id, .. }) =
+                    frames.last()
+                {
                     Some(self.streams.entry(*stream_id))
                 } else {
                     None
                 }
-            }};
+            };
 
-            let written = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
+            let written = if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
                 // We encrypt with the data in inbuf and the ctrl data in extra_in, starting
                 // with the reversed stream frame
-                let rangebuf = sentry
-                    .as_ref()
-                    .and_then(|v| {
-                        match v {
-                            std::collections::hash_map::Entry::Occupied(v) =>
-                                v.get()
-                                 .send
-                                 .rangebuf_get().map(|rb| &rb[..b_len]),
-                            _ => None,
-                        }
-                    });
+                let rangebuf = sentry.as_ref().and_then(|v| match v {
+                    std::collections::hash_map::Entry::Occupied(v) => {
+                        v.get().send.rangebuf_get().map(|rb| &rb[..b_len])
+                    },
+                    _ => None,
+                });
 
                 if let Some(ctrl) = ctrl {
                     packet::encrypt_pkt(
@@ -5473,17 +5588,12 @@ impl<F: BufFactory> Connection<F> {
                     )?
                 }
             } else {
-                let rangebuf = sentry
-                    .as_ref()
-                    .and_then(|v| {
-                        match v {
-                            std::collections::hash_map::Entry::Occupied(v) =>
-                                v.get()
-                                 .send
-                                 .rangebuf_get().map(|rb| &rb[..b_len]),
-                            _ => None,
-                        }
-                    });
+                let rangebuf = sentry.as_ref().and_then(|v| match v {
+                    std::collections::hash_map::Entry::Occupied(v) => {
+                        v.get().send.rangebuf_get().map(|rb| &rb[..b_len])
+                    },
+                    _ => None,
+                });
                 // We encrypt with the data in extra_in and the ctrl in inbuf, with
                 // the stream header at the end of the ctrl.
                 if let Some(ctrl) = ctrl {
@@ -5509,7 +5619,7 @@ impl<F: BufFactory> Connection<F> {
                         self.use_hidden_crypt_copy_for_zc,
                     )?
                 }
-            }};
+            };
 
             // Update the stream's send buffer and flushable status.
             if let Some(sid) = sentry.as_ref().map(|e| *e.key()) {
@@ -5530,11 +5640,11 @@ impl<F: BufFactory> Connection<F> {
             )?
         };
 
-        let enc_hdr_len = if_likely! {self.version == PROTOCOL_VERSION_VREVERSO => {
+        let enc_hdr_len = if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
             pn_len + self.expected_stream_id_len + self.truncated_offset_len
         } else {
             pn_len
-        }};
+        };
 
         // safe since payload_offset is guaranteed to be < out.len()
         unsafe {
@@ -10464,7 +10574,8 @@ pub mod testing {
 
         let pn_len = hdr.pkt_num_len;
         let mut enc_hdr_len = pn_len;
-        let mut maybe_chunk = if_likely! {conn.version == PROTOCOL_VERSION_VREVERSO => {
+        let mut maybe_chunk = if likely(conn.version == PROTOCOL_VERSION_VREVERSO)
+        {
             // let's use this control flow to also add the true enc_hdr_len
             // on V3.
             enc_hdr_len += hdr.expected_stream_id_len;
@@ -10474,108 +10585,155 @@ pub mod testing {
             if hdr.expected_stream_id > 0 {
                 match conn.streams.get_mut(hdr.expected_stream_id) {
                     Some(s) => {
-                        let mut offset = s.recv.contiguous_off().saturating_sub(1);
-                        offset = packet::decode_pkt_offset(offset, hdr.truncated_offset, hdr.truncated_offset_len);
+                        let mut offset =
+                            s.recv.contiguous_off().saturating_sub(1);
+                        offset = packet::decode_pkt_offset(
+                            offset,
+                            hdr.truncated_offset,
+                            hdr.truncated_offset_len,
+                        );
                         let chunk = match s.get_stream_chunk(offset) {
                             Ok(v) => v,
                             Err(e) => {
-
                                 match e {
                                     // XXX it assumes the sender is not buffering other control
                                     // cells. We should process them if decryption succeeds.
                                     Error::InvalidOffset => {
-                                        conn.pkt_num_spaces[epoch].recv_pkt_num.insert(pn);
-                                        conn.pkt_num_spaces[epoch].recv_pkt_need_ack.push_item(pn);
-                                        conn.pkt_num_spaces[epoch].ack_elicited = true;
-                                        conn.pkt_num_spaces[epoch].largest_rx_pkt_num =
-                                            cmp::max(conn.pkt_num_spaces[epoch].largest_rx_pkt_num, pn);
+                                        conn.pkt_num_spaces[epoch]
+                                            .recv_pkt_num
+                                            .insert(pn);
+                                        conn.pkt_num_spaces[epoch]
+                                            .recv_pkt_need_ack
+                                            .push_item(pn);
+                                        conn.pkt_num_spaces[epoch].ack_elicited =
+                                            true;
+                                        conn.pkt_num_spaces[epoch]
+                                            .largest_rx_pkt_num = cmp::max(
+                                            conn.pkt_num_spaces[epoch]
+                                                .largest_rx_pkt_num,
+                                            pn,
+                                        );
                                     },
                                     _ => (),
                                 };
 
-                                return Err(drop_pkt_on_err(e, conn.recv_count, conn.is_server, &conn.trace_id))
-                            }
+                                return Err(drop_pkt_on_err(
+                                    e,
+                                    conn.recv_count,
+                                    conn.is_server,
+                                    &conn.trace_id,
+                                ));
+                            },
                         };
                         Some(chunk)
-                    }
-                    None =>  {
+                    },
+                    None => {
                         // This could have been touch by someone on the network.
                         // We should not create a stream now, and wait for valid
                         // decryption.
                         let s = match conn.streams.get_or_create(
-                                        hdr.expected_stream_id,
-                                        &conn.local_transport_params,
-                                        &conn.peer_transport_params,
-                                        false,
-                                        conn.is_server,
-                                        DEFAULT_CHUNK_LEN,
-                                        conn.version
-                                ) {
-                              Ok(v) => v,
-                              Err(e) => {
-                                  debug!("No stream {}", hdr.expected_stream_id);
-                                  return Err(drop_pkt_on_err(e, conn.recv_count, conn.is_server, &conn.trace_id));
-                              },
+                            hdr.expected_stream_id,
+                            &conn.local_transport_params,
+                            &conn.peer_transport_params,
+                            false,
+                            conn.is_server,
+                            DEFAULT_CHUNK_LEN,
+                            conn.version,
+                        ) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                debug!("No stream {}", hdr.expected_stream_id);
+                                return Err(drop_pkt_on_err(
+                                    e,
+                                    conn.recv_count,
+                                    conn.is_server,
+                                    &conn.trace_id,
+                                ));
+                            },
                         };
-                        let mut offset = s.recv.contiguous_off().saturating_sub(1);
-                        offset = packet::decode_pkt_offset(offset, hdr.truncated_offset, hdr.truncated_offset_len);
+                        let mut offset =
+                            s.recv.contiguous_off().saturating_sub(1);
+                        offset = packet::decode_pkt_offset(
+                            offset,
+                            hdr.truncated_offset,
+                            hdr.truncated_offset_len,
+                        );
                         let chunk = match s.get_stream_chunk(offset) {
                             Ok(v) => v,
                             Err(e) => {
                                 // This could happen if the network flipped some bits in the
                                 // header.
-                                conn.streams.collect_on_recv_error(hdr.expected_stream_id);
-                                return Err(drop_pkt_on_err(e, conn.recv_count, conn.is_server, &conn.trace_id));
-                            }
+                                conn.streams.collect_on_recv_error(
+                                    hdr.expected_stream_id,
+                                );
+                                return Err(drop_pkt_on_err(
+                                    e,
+                                    conn.recv_count,
+                                    conn.is_server,
+                                    &conn.trace_id,
+                                ));
+                            },
                         };
                         Some(chunk)
                     },
                 }
-            }
-            else {
+            } else {
                 None
             }
         } else {
             None
-        }};
+        };
 
-        let (mut payload, payload_len) = if_likely! {conn.version == PROTOCOL_VERSION_VREVERSO => {
-            if let Some(chunk) = maybe_chunk.as_mut() {
-                packet::decrypt_pkt_v3(&mut b,
-                                       pn,
-                                       enc_hdr_len,
-                                       payload_len,
-                                       Some(chunk.as_mut()),
-                                       aead)
+        let (mut payload, payload_len) =
+            if likely(conn.version == PROTOCOL_VERSION_VREVERSO) {
+                if let Some(chunk) = maybe_chunk.as_mut() {
+                    packet::decrypt_pkt_v3(
+                        &mut b,
+                        pn,
+                        enc_hdr_len,
+                        payload_len,
+                        Some(chunk.as_mut()),
+                        aead,
+                    )
                     .unwrap()
+                } else {
+                    packet::decrypt_pkt_v3(
+                        &mut b,
+                        pn,
+                        enc_hdr_len,
+                        payload_len,
+                        None,
+                        aead,
+                    )
+                    .unwrap()
+                }
             } else {
-                packet::decrypt_pkt_v3(&mut b,
-                                       pn,
-                                       enc_hdr_len,
-                                       payload_len,
-                                       None,
-                                       aead)
-                    .unwrap()
-            }
-        } else {
-            packet::decrypt_pkt(&mut b, pn, hdr.pkt_num_len, payload_len, aead)
+                packet::decrypt_pkt(
+                    &mut b,
+                    pn,
+                    hdr.pkt_num_len,
+                    payload_len,
+                    aead,
+                )
                 .unwrap()
-        }};
+            };
 
         let mut frames = Vec::new();
-        if_likely! { conn.version == PROTOCOL_VERSION_VREVERSO => {
+        if likely(conn.version == PROTOCOL_VERSION_VREVERSO) {
             let payload_start_offset = payload.off();
             payload.skip(payload_len)?;
             while payload.off() > payload_start_offset {
-                let frame = frame::Frame::from_bytes(&mut payload, hdr.ty, conn.version)?;
+                let frame =
+                    frame::Frame::from_bytes(&mut payload, hdr.ty, conn.version)?;
                 frames.push(frame);
             }
         } else {
             while payload.cap() > 0 {
-                let frame = frame::Frame::from_bytes(&mut payload, hdr.ty, conn.version)?;
+                let frame =
+                    frame::Frame::from_bytes(&mut payload, hdr.ty, conn.version)?;
                 frames.push(frame);
             }
-        }};
+        }
 
         debug!("All frames: {:?}", frames);
 
