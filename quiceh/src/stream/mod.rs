@@ -430,6 +430,7 @@ impl<F: BufFactory> StreamMap<F> {
     }
 
     /// Updates the priorities of a stream.
+    #[cfg(test)]
     pub fn update_priority(
         &mut self, old: &Arc<StreamPriorityKey>, new: &Arc<StreamPriorityKey>,
     ) {
@@ -475,6 +476,66 @@ impl<F: BufFactory> StreamMap<F> {
             let key = stream.priority_key.clone();
             self.remove_flushable(&key);
             self.insert_flushable(&key);
+        }
+
+        Ok(())
+    }
+    /// Updates the priority of a stream in-place, avoiding unnecessary allocations.
+    pub fn update_priority_inplace(
+        &mut self, stream_id: u64, urgency: u8, incremental: bool,
+    ) -> Result<()> {
+        let stream = match self.streams.get_mut(&stream_id) {
+            Some(v) => v,
+            None => return Err(Error::Done),
+        };
+
+        if stream.urgency == urgency && stream.incremental == incremental {
+            return Ok(());
+        }
+
+        // 1. Remove from all trees using the current key pointer.
+        // We use unsafe pointer access to avoid cloning the Arc to pass to remove functions.
+        let pk_ptr = Arc::as_ptr(&stream.priority_key);
+
+        // We need to remember which trees it was in.
+        let was_readable = unsafe { (*pk_ptr).readable.is_linked() };
+        let was_writable = unsafe { (*pk_ptr).writable.is_linked() };
+        let was_flushable = unsafe { (*pk_ptr).flushable.is_linked() };
+
+        unsafe {
+            if was_readable {
+                self.readable.cursor_mut_from_ptr(pk_ptr).remove();
+            }
+            if was_writable {
+                self.writable.cursor_mut_from_ptr(pk_ptr).remove();
+            }
+            if was_flushable {
+                self.flushable.cursor_mut_from_ptr(pk_ptr).remove();
+            }
+        }
+
+        // 2. Update the key in-place.
+        stream.urgency = urgency;
+        stream.incremental = incremental;
+
+        // Use make_mut to update the key.
+        let priority_key = Arc::make_mut(&mut stream.priority_key);
+        priority_key.urgency = urgency;
+        priority_key.incremental = incremental;
+
+        // 3. Re-insert into trees.
+        let key = stream.priority_key.clone();
+
+        if was_readable {
+            self.readable.insert(key.clone());
+        }
+
+        if was_writable {
+            self.writable.insert(key.clone());
+        }
+
+        if was_flushable {
+            self.flushable.insert(key);
         }
 
         Ok(())
