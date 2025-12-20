@@ -565,7 +565,7 @@ impl RecvBuf {
                 "Current chunk's starting offest is smaller than expected"
             );
 
-            while chunk.max_off() < this_offset {
+            while chunk.max_off() <= this_offset {
                 chunk = chunks_iter.next().unwrap();
             }
             // We need to copy in case some out of order packet decryption

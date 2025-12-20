@@ -464,18 +464,18 @@ const DEFAULT_CHUNK_LEN: usize = 1024 * 64;
 #[cfg(not(feature = "fuzzing"))]
 const PAYLOAD_MIN_LEN: usize = 4;
 #[cfg(not(feature = "fuzzing"))]
-const PAYLOAD_MIN_LEN_V3: usize = 12;
+const PAYLOAD_MIN_LEN_V3: usize = 9;
 
 // PAYLOAD_MIN_LEN_V3 + tag (16 bytes)
 #[allow(dead_code)]
-const PAYLOAD_MIN_LEN_WITH_TAG: usize = 28;
+const PAYLOAD_MIN_LEN_WITH_TAG: usize = 25;
 #[cfg(feature = "fuzzing")]
 // Due to the fact that in fuzzing mode we use a zero-length AEAD tag (which
 // would normally be 16 bytes), we need to adjust the minimum payload size to
 // account for that.
 const PAYLOAD_MIN_LEN: usize = 20;
 #[cfg(feature = "fuzzing")]
-const PAYLOAD_MIN_LEN_V3: usize = 28;
+const PAYLOAD_MIN_LEN_V3: usize = 25;
 
 // PATH_CHALLENGE (9 bytes) + AEAD tag (16 bytes).
 const MIN_PROBING_SIZE: usize = 25;
@@ -5367,7 +5367,7 @@ impl<F: BufFactory> Connection<F> {
             }
         }
 
-        // Pad payload so that it's always at least 4 bytes if QUIC V1, or 12
+        // Pad payload so that it's always at least 4 bytes if QUIC V1, or 9
         // bytes if QUIC V3.
         if cumul < payload_min_len {
             // let payload_len = b.off() - payload_offset;
@@ -11609,7 +11609,7 @@ mod tests {
             config.set_initial_max_stream_data_bidi_local(100);
             config.set_initial_max_stream_data_bidi_remote(100);
             config.set_initial_max_data(100);
-            config.set_expected_chunklen_to_consume(28);
+            config.set_expected_chunklen_to_consume(25);
 
             let mut pipe = <Pipe>::with_config(&mut config).unwrap();
             assert_eq!(pipe.handshake(), Ok(()));
@@ -11635,13 +11635,13 @@ mod tests {
 
             let (chunk, fin) = pipe.server.stream_recv_zc(4).unwrap();
 
-            assert_eq!((chunk.len(), fin), (16, false));
-            assert_eq!(&chunk[..], b"hello, worldhell");
+            assert_eq!((chunk.len(), fin), (13, false));
+            assert_eq!(&chunk[..], b"hello, worldh");
 
             let (chunk, fin) = pipe.server.stream_recv_zc(4).unwrap();
 
-            assert_eq!((chunk.len(), fin), (8, true));
-            assert_eq!(&chunk[..], b"o, world");
+            assert_eq!((chunk.len(), fin), (11, true));
+            assert_eq!(&chunk[..], b"ello, world");
 
             assert!(pipe.server.stream_finished(4));
 
@@ -11659,10 +11659,10 @@ mod tests {
 
             let (chunk, fin) = pipe.server.stream_recv_zc(8).unwrap();
 
-            assert_eq!((chunk.len(), fin), (28, false));
+            assert_eq!((chunk.len(), fin), (25, false));
 
             let (_, len, is_fin) = pipe.server.stream_peek(8).unwrap();
-            assert_eq!((len, is_fin), (8, true));
+            assert_eq!((len, is_fin), (11, true));
 
             assert!(pipe.server.stream_consumed(8, len).is_ok());
 
@@ -11865,25 +11865,25 @@ mod tests {
             let frames = [
                 frame::Frame::Stream {
                     stream_id: 4,
-                    data: <RangeBuf>::from(b"aaaaaaaaaaaaaa", 0, false),
+                    data: <RangeBuf>::from(b"aaaaaaaaaaaa", 0, false),
                 },
                 frame::Frame::Stream {
                     stream_id: 4,
-                    data: <RangeBuf>::from(b"bbbbbbbbbbbbbb", 14, false),
+                    data: <RangeBuf>::from(b"bbbbbbbbbbbbb", 12, false),
                 },
                 frame::Frame::Stream {
                     stream_id: 4,
                     data: <RangeBuf>::from(
-                        b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                        28,
+                        b"bbbbbbbbbbbbbbbbbbbbbbbbb",
+                        25,
                         false,
                     ),
                 },
                 frame::Frame::Stream {
                     stream_id: 4,
                     data: <RangeBuf>::from(
-                        b"ccccccccccccccccccccccccccccccccccc",
-                        57,
+                        b"cccccccccccccccccccccccccccccccc",
+                        50,
                         true,
                     ),
                 },
@@ -11891,40 +11891,42 @@ mod tests {
 
             let pkt_type = packet::Type::Short;
 
-            // Send first 14 bytes at offset 0 (half a chunk).
+            // Send first 12 bytes at offset 0 (half a chunk).
             assert!(pipe
                 .send_pkt_to_server(pkt_type, &[frames[0].clone()], &mut buf)
                 .is_ok());
 
             let (_, len, is_fin) = pipe.server.stream_peek(4).unwrap();
-            assert_eq!((len, is_fin), (14, false));
+            assert_eq!((len, is_fin), (12, false));
 
-            // Fill the chunk with another 14 bytes at offset 14.
+            // Fill the chunk with another 13 bytes at offset 12.
             assert!(pipe
                 .send_pkt_to_server(pkt_type, &[frames[1].clone()], &mut buf)
                 .is_ok());
 
             let (b, len, is_fin) = pipe.server.stream_peek(4).unwrap();
-            assert_eq!((len, is_fin), (28, false));
+            assert_eq!((len, is_fin), (25, false));
 
-            assert_eq!(&b[..], b"aaaaaaaaaaaaaabbbbbbbbbbbbbb");
+            assert_eq!(&b[..], b"aaaaaaaaaaaabbbbbbbbbbbbb");
 
-            // Send 29 bytes (more than 1 chunk) at offset 28.
+            // Send 25 bytes (more than 1 chunk) at offset 25.
             assert!(pipe
                 .send_pkt_to_server(pkt_type, &[frames[2].clone()], &mut buf)
                 .is_ok());
 
             let (b, len, is_fin) = pipe.server.stream_peek(4).unwrap();
-            assert_eq!((len, is_fin), (28, false));
+            assert_eq!((len, is_fin), (25, false));
 
-            assert_eq!(&b[..], b"aaaaaaaaaaaaaabbbbbbbbbbbbbb");
+            assert_eq!(&b[..], b"aaaaaaaaaaaabbbbbbbbbbbbb");
 
-            // let's consume the first 28 bytes
-            assert!(pipe.server.stream_consumed(4, 28).is_ok());
+            // let's consume the first 25 bytes
+            assert!(pipe.server.stream_consumed(4, 25).is_ok());
 
             let (b, len, is_fin) = pipe.server.stream_peek(4).unwrap();
-            assert_eq!((len, is_fin), (28, false));
-            assert_eq!(&b[..], b"bbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+            assert_eq!((len, is_fin), (25, false));
+            assert_eq!(&b[..], b"bbbbbbbbbbbbbbbbbbbbbbbbb");
+
+            assert!(pipe.server.stream_consumed(4, 25).is_ok());
 
             // let's send a frame that would spill over multiple chunks
             assert!(pipe
@@ -11933,58 +11935,51 @@ mod tests {
 
             let (b, len, is_fin) = pipe.server.stream_peek(4).unwrap();
 
-            assert_eq!((len, is_fin), (28, false));
-            assert_eq!(&b[..], b"bbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+            assert_eq!((len, is_fin), (25, false));
+            assert_eq!(&b[..], b"ccccccccccccccccccccccccc");
 
-            // let's consume 27 bytes
-            assert!(pipe.server.stream_consumed(4, 27).is_ok());
+            // let's consume 24 bytes
+            assert!(pipe.server.stream_consumed(4, 24).is_ok());
 
             let (b, len, is_fin) = pipe.server.stream_peek(4).unwrap();
             // One byte left
             assert_eq!((len, is_fin), (1, false));
-            assert_eq!(&b[..], b"b");
+            assert_eq!(&b[..], b"c");
 
             // let's consume 1 byte to finish the chunk
             assert!(pipe.server.stream_consumed(4, 1).is_ok());
 
             let (b, len, is_fin) = pipe.server.stream_peek(4).unwrap();
 
-            assert_eq!((len, is_fin), (28, false));
-            assert_eq!(&b[..], b"bccccccccccccccccccccccccccc");
+            assert_eq!((len, is_fin), (7, true));
+            assert_eq!(&b[..], b"ccccccc");
 
-            assert!(pipe.server.stream_consumed(4, 28).is_ok());
-
-            let (b, len, is_fin) = pipe.server.stream_peek(4).unwrap();
-            // 8 bytes left
-            assert_eq!((len, is_fin), (8, true));
-            assert_eq!(&b[..], b"cccccccc");
-
-            assert!(pipe.server.stream_consumed(4, 8).is_ok());
+            assert!(pipe.server.stream_consumed(4, 7).is_ok());
 
             // Now let's send into a new stream but not in order
 
             let frames = [
                 frame::Frame::Stream {
                     stream_id: 8,
-                    data: <RangeBuf>::from(b"aaaaaaaaaaaaaa", 0, false),
+                    data: <RangeBuf>::from(b"aaaaaaaaaaaa", 0, false),
                 },
                 frame::Frame::Stream {
                     stream_id: 8,
-                    data: <RangeBuf>::from(b"bbbbbbbbbbbbbb", 14, false),
+                    data: <RangeBuf>::from(b"bbbbbbbbbbbbb", 12, false),
                 },
                 frame::Frame::Stream {
                     stream_id: 8,
                     data: <RangeBuf>::from(
-                        b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                        28,
+                        b"bbbbbbbbbbbbbbbbbbbbbbbbb",
+                        25,
                         false,
                     ),
                 },
                 frame::Frame::Stream {
                     stream_id: 8,
                     data: <RangeBuf>::from(
-                        b"ccccccccccccccccccccccccccccccccccc",
-                        57,
+                        b"cccccccccccccccccccccccccccccccc",
+                        50,
                         true,
                     ),
                 },
@@ -12009,10 +12004,10 @@ mod tests {
             assert!(pipe.server.is_readable());
 
             let (b, len, is_fin) = pipe.server.stream_peek(8).unwrap();
-            assert_eq!((len, is_fin), (28, false));
+            assert_eq!((len, is_fin), (25, false));
 
-            assert_eq!(&b[..], b"aaaaaaaaaaaaaabbbbbbbbbbbbbb");
-            assert!(pipe.server.stream_consumed(8, 28).is_ok());
+            assert_eq!(&b[..], b"aaaaaaaaaaaabbbbbbbbbbbbb");
+            assert!(pipe.server.stream_consumed(8, 25).is_ok());
 
             assert!(!pipe.server.is_readable());
 
@@ -12023,23 +12018,23 @@ mod tests {
             assert!(pipe.server.is_readable());
 
             let (b, len, is_fin) = pipe.server.stream_peek(8).unwrap();
-            assert_eq!((len, is_fin), (28, false));
+            assert_eq!((len, is_fin), (25, false));
 
-            assert_eq!(&b[..], b"bbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-            assert!(pipe.server.stream_consumed(8, 28).is_ok());
-
-            let (b, len, is_fin) = pipe.server.stream_peek(8).unwrap();
-            assert_eq!((len, is_fin), (28, false));
-
-            assert_eq!(&b[..], b"bccccccccccccccccccccccccccc");
-            assert!(pipe.server.stream_consumed(8, 28).is_ok());
+            assert_eq!(&b[..], b"bbbbbbbbbbbbbbbbbbbbbbbbb");
+            assert!(pipe.server.stream_consumed(8, 25).is_ok());
 
             let (b, len, is_fin) = pipe.server.stream_peek(8).unwrap();
-            // 8 bytes left
-            assert_eq!((len, is_fin), (8, true));
-            assert_eq!(&b[..], b"cccccccc");
+            assert_eq!((len, is_fin), (25, false));
 
-            assert!(pipe.server.stream_consumed(8, 8).is_ok());
+            assert_eq!(&b[..], b"ccccccccccccccccccccccccc");
+            assert!(pipe.server.stream_consumed(8, 25).is_ok());
+
+            let (b, len, is_fin) = pipe.server.stream_peek(8).unwrap();
+            // 7 bytes left
+            assert_eq!((len, is_fin), (7, true));
+            assert_eq!(&b[..], b"ccccccc");
+
+            assert!(pipe.server.stream_consumed(8, 7).is_ok());
             assert!(!pipe.server.is_readable());
         }
     }
@@ -12105,14 +12100,14 @@ mod tests {
 
             let (b, len, is_fin) = pipe.server.stream_peek(4).unwrap();
 
-            assert_eq!((len, is_fin), (28, false));
-            assert_eq!(&b[..], b"bbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-            assert!(pipe.server.stream_consumed(4, 28).is_ok());
+            assert_eq!((len, is_fin), (25, false));
+            assert_eq!(&b[..], b"bbbbbbbbbbbbbbbbbbbbbbbbb");
+            assert!(pipe.server.stream_consumed(4, 25).is_ok());
             assert!(pipe.server.is_readable());
             let (b, len, is_fin) = pipe.server.stream_peek(4).unwrap();
-            assert_eq!((len, is_fin), (1, false));
-            assert_eq!(&b[..], b"b");
-            assert!(pipe.server.stream_consumed(4, 1).is_ok());
+            assert_eq!((len, is_fin), (4, false));
+            assert_eq!(&b[..], b"bbbb");
+            assert!(pipe.server.stream_consumed(4, 4).is_ok());
 
             assert!(!pipe.server.is_readable());
         }
@@ -12278,7 +12273,7 @@ mod tests {
         if pipe.client.version == PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
                 pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
-                Ok(48)
+                Ok(45)
             );
         } else {
             assert_eq!(
@@ -12306,7 +12301,7 @@ mod tests {
         if pipe.client.version == PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
                 pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
-                Ok(48)
+                Ok(45)
             );
         } else {
             assert_eq!(
@@ -12653,11 +12648,17 @@ mod tests {
 
         let frames =
             testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
-        let mut iter = frames.iter();
+        let mut iter = frames.iter().peekable();
 
         if pipe.client.version == PROTOCOL_VERSION_VREVERSO {
-            // Ignore ack
-            iter.next().unwrap();
+            while let Some(f) = iter.peek() {
+                match f {
+                    frame::Frame::Padding { .. } | frame::Frame::ACK { .. } => {
+                        iter.next();
+                    },
+                    _ => break,
+                }
+            }
 
             assert_eq!(iter.next(), Some(&frame::Frame::MaxData { max: 61 }));
             assert_eq!(
@@ -12790,11 +12791,13 @@ mod tests {
 
         let frames =
             testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
-        let mut iter = frames.iter();
+        let mut iter = frames.iter().peekable();
 
         if pipe.client.version == PROTOCOL_VERSION_VREVERSO {
-            // Ignore the padding
-            iter.next().unwrap();
+            // Ignore the padding if present
+            if let Some(frame::Frame::Padding { .. }) = iter.peek() {
+                iter.next().unwrap();
+            }
         }
         // Ignore ACK.
         iter.next().unwrap();
@@ -13650,7 +13653,7 @@ mod tests {
         if pipe.client.version == PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
                 pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
-                Ok(48)
+                Ok(45)
             );
         } else {
             assert_eq!(
@@ -13744,7 +13747,7 @@ mod tests {
         if pipe.client.version == PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
                 pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
-                Ok(48)
+                Ok(45)
             );
         } else {
             assert_eq!(
@@ -13777,7 +13780,7 @@ mod tests {
         if pipe.client.version == PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
                 pipe.send_pkt_to_server(pkt_type, &frames, &mut buf),
-                Ok(48)
+                Ok(45)
             );
         } else {
             // There is 2 more bytes for the MAX_STREAM_BIDI Frame since we're
@@ -14166,9 +14169,20 @@ mod tests {
         let frames =
             testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
 
-        let mut iter = frames.iter();
-        // Skip ACK frame on V1. Skip Padding on V3.
-        iter.next();
+        let mut iter = frames.iter().peekable();
+        if pipe.client.version == PROTOCOL_VERSION_VREVERSO {
+            while let Some(f) = iter.peek() {
+                match f {
+                    frame::Frame::Padding { .. } | frame::Frame::ACK { .. } => {
+                        iter.next();
+                    },
+                    _ => break,
+                }
+            }
+        } else {
+            // Skip ACK frame on V1.
+            iter.next();
+        }
 
         assert_eq!(
             iter.next(),
@@ -14179,12 +14193,10 @@ mod tests {
             })
         );
 
-        if pipe.client.version == PROTOCOL_VERSION_VREVERSO {
-            // Skip Ack frame
-            iter.next().unwrap();
+        if pipe.client.version != PROTOCOL_VERSION_VREVERSO {
+            // No more frames are sent by the server.
+            assert_eq!(iter.next(), None);
         }
-        // No more frames are sent by the server.
-        assert_eq!(iter.next(), None);
     }
 
     #[test]
@@ -14304,7 +14316,7 @@ mod tests {
         // Stop Sending frame consumes 3 bytes. We need a payload of 12 bytes min
         // on V3; so we should expect 9 bytes of padding.
         if pipe.client.version == PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(iter.next(), Some(&frame::Frame::Padding { len: 9 }));
+            assert_eq!(iter.next(), Some(&frame::Frame::Padding { len: 6 }));
         }
 
         assert_eq!(
@@ -14532,10 +14544,10 @@ mod tests {
             testing::decode_pkt(&mut pipe.client, &mut dummy[..len]).unwrap();
         let mut iter = frames.iter();
 
-        // ResetStream frame consumes 4 bytes. We need a payload of 12 bytes min
-        // on V3; so we should expect 8 bytes of padding.
+        // ResetStream frame consumes 4 bytes. We need a payload of 9 bytes min
+        // on V3; so we should expect 5 bytes of padding.
         if pipe.client.version == PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(iter.next(), Some(&frame::Frame::Padding { len: 8 }));
+            assert_eq!(iter.next(), Some(&frame::Frame::Padding { len: 5 }));
         }
 
         assert_eq!(
@@ -17316,8 +17328,8 @@ mod tests {
         let mut iter = frames.iter();
 
         if pipe.client.version == PROTOCOL_VERSION_VREVERSO {
-            // A minimum QUIC packet should have 12 bytes in the payload in V3.
-            assert_eq!(iter.next(), Some(&frame::Frame::Padding { len: 6 }));
+            // A minimum QUIC packet should have 9 bytes in the payload in V3.
+            assert_eq!(iter.next(), Some(&frame::Frame::Padding { len: 3 }));
             assert_eq!(
                 iter.next(),
                 Some(&frame::Frame::StreamV3 {
@@ -17342,7 +17354,7 @@ mod tests {
         let mut iter = frames.iter();
 
         if pipe.server.version == PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(iter.next(), Some(&frame::Frame::Padding { len: 6 }));
+            assert_eq!(iter.next(), Some(&frame::Frame::Padding { len: 3 }));
             assert_eq!(
                 iter.next(),
                 Some(&frame::Frame::StreamV3 {
@@ -17368,7 +17380,7 @@ mod tests {
         let mut iter = frames.iter();
 
         if pipe.server.version == PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(iter.next(), Some(&frame::Frame::Padding { len: 6 }));
+            assert_eq!(iter.next(), Some(&frame::Frame::Padding { len: 3 }));
             assert_eq!(
                 iter.next(),
                 Some(&frame::Frame::StreamV3 {
@@ -17393,7 +17405,7 @@ mod tests {
         let mut iter = frames.iter();
 
         if pipe.server.version == PROTOCOL_VERSION_VREVERSO {
-            assert_eq!(iter.next(), Some(&frame::Frame::Padding { len: 6 }));
+            assert_eq!(iter.next(), Some(&frame::Frame::Padding { len: 3 }));
             assert_eq!(
                 iter.next(),
                 Some(&frame::Frame::StreamV3 {
@@ -18331,11 +18343,10 @@ mod tests {
         let frames =
             testing::decode_pkt(&mut pipe.server, &mut buf[..len]).unwrap();
         if pipe.server.version == PROTOCOL_VERSION_VREVERSO {
-            // Since we need 12 bytes min on V3 payload,
-            // this test generates 2 padding bytes on V3.
-            assert_eq!(frames[0], frame::Frame::Padding { len: 1 });
+            // Since we need 9 bytes min on V3 payload,
+            // this test generates no padding bytes on V3 (frame is 11 bytes).
             assert_eq!(
-                frames[1],
+                frames[0],
                 frame::Frame::ConnectionClose {
                     error_code: 0x1234,
                     frame_type: 0,
@@ -18371,11 +18382,10 @@ mod tests {
             testing::decode_pkt(&mut pipe.server, &mut buf[..len]).unwrap();
 
         if pipe.server.version == PROTOCOL_VERSION_VREVERSO {
-            // Since we need 12 bytes min on V3 payload,
-            // this test generates 2 padding bytes on V3.
-            assert_eq!(frames[0], frame::Frame::Padding { len: 2 });
+            // Since we need 9 bytes min on V3 payload,
+            // this test generates no padding bytes on V3 (frame is 10 bytes).
             assert_eq!(
-                frames[1],
+                frames[0],
                 frame::Frame::ApplicationClose {
                     error_code: 0x1234,
                     reason: b"hello!".to_vec(),
