@@ -12648,39 +12648,23 @@ mod tests {
 
         let frames =
             testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
-        let mut iter = frames.iter().peekable();
+        let mut iter: Box<dyn Iterator<Item = _>> =
+            if pipe.client.version == PROTOCOL_VERSION_VREVERSO {
+                Box::new(frames.iter().rev())
+            } else {
+                Box::new(frames.iter())
+            };
+        // Ignore ACK.
+        iter.next().unwrap();
 
-        if pipe.client.version == PROTOCOL_VERSION_VREVERSO {
-            while let Some(f) = iter.peek() {
-                match f {
-                    frame::Frame::Padding { .. } | frame::Frame::ACK { .. } => {
-                        iter.next();
-                    },
-                    _ => break,
-                }
-            }
-
-            assert_eq!(iter.next(), Some(&frame::Frame::MaxData { max: 61 }));
-            assert_eq!(
-                iter.next(),
-                Some(&frame::Frame::MaxStreamData {
-                    stream_id: 4,
-                    max: 30
-                })
-            );
-        } else {
-            // Ignore ACK.
-            iter.next().unwrap();
-
-            assert_eq!(
-                iter.next(),
-                Some(&frame::Frame::MaxStreamData {
-                    stream_id: 4,
-                    max: 30
-                })
-            );
-            assert_eq!(iter.next(), Some(&frame::Frame::MaxData { max: 61 }));
-        }
+        assert_eq!(
+            iter.next(),
+            Some(&frame::Frame::MaxStreamData {
+                stream_id: 4,
+                max: 30
+            })
+        );
+        assert_eq!(iter.next(), Some(&frame::Frame::MaxData { max: 61 }));
     }
 
     #[test]
