@@ -62,8 +62,8 @@ Experimental:
   [`enable_hidden_copy_for_zc_sender()`] to make any data buffered
 through either [`stream_send()`] or [`stream_send_zc()`] assembled in
 zero-copy in a QUIC packet using BoringSSL's scatter encryption. This
-has a currently a negative performance impact and is disabled by
-default.
+has a currently limited performance improvement for large blobs of data
+and much lower performance for sending small blobs of data.
 
 Using quiceh 
 ------------
