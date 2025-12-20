@@ -6430,13 +6430,19 @@ impl<F: BufFactory> Connection<F> {
     ) -> Result<()> {
         // Get existing stream or create a new one, but if the stream
         // has already been closed and collected, ignore the prioritization.
-        match self.get_or_create_stream(stream_id, true) {
-            Ok(_) => (),
+        {
+            let stream = match self.get_or_create_stream(stream_id, true) {
+                Ok(v) => v,
 
-            Err(Error::Done) => return Ok(()),
+                Err(Error::Done) => return Ok(()),
 
-            Err(e) => return Err(e),
-        };
+                Err(e) => return Err(e),
+            };
+
+            if stream.urgency == urgency && stream.incremental == incremental {
+                return Ok(());
+            }
+        }
 
         self.streams
             .update_priority_inplace(stream_id, urgency, incremental)
