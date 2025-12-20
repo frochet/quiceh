@@ -449,6 +449,37 @@ impl<F: BufFactory> StreamMap<F> {
         }
     }
 
+    /// Updates the stream's send buffer and flushable status after sending data.
+    pub fn on_stream_data_sent(
+        &mut self, stream_id: u64, len: usize,
+    ) -> Result<()> {
+        let stream = self.streams.get_mut(&stream_id).ok_or(Error::Done)?;
+
+        stream.send.rangebuf_consume(len);
+
+        let is_flushable = stream.is_flushable();
+        let is_incremental = stream.incremental;
+
+        // Optimization: If the stream is no longer flushable, we can remove it
+        // from the queue without cloning the Arc, by using the raw pointer.
+        if !is_flushable {
+            let pk_ptr = Arc::as_ptr(&stream.priority_key);
+            unsafe {
+                if (*pk_ptr).flushable.is_linked() {
+                    self.flushable.cursor_mut_from_ptr(pk_ptr).remove();
+                }
+            }
+        } else if is_incremental {
+            // If it's still flushable and incremental, shuffle it to the back.
+            // We need to clone the key for insertion.
+            let key = stream.priority_key.clone();
+            self.remove_flushable(&key);
+            self.insert_flushable(&key);
+        }
+
+        Ok(())
+    }
+
     /// Adds the stream ID to the almost full streams set.
     ///
     /// If the stream was already in the list, this does nothing.

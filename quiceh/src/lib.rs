@@ -5511,23 +5511,9 @@ impl<F: BufFactory> Connection<F> {
                 }
             }};
 
-            if let Some(sentry) = sentry {
-                let mut is_flushable = false;
-                let mut is_incremental = false;
-                let mut priority_key = Default::default();
-                sentry.and_modify(|s| {
-                    s.send.rangebuf_consume(b_len);
-                    is_flushable = s.is_flushable();
-                    is_incremental = s.incremental;
-                    priority_key = Arc::clone(&s.priority_key);
-                });
-
-                if !is_flushable {
-                    self.streams.remove_flushable(&priority_key);
-                } else if is_incremental {
-                    self.streams.remove_flushable(&priority_key);
-                    self.streams.insert_flushable(&priority_key);
-                }
+            // Update the stream's send buffer and flushable status.
+            if let Some(sid) = sentry.as_ref().map(|e| *e.key()) {
+                self.streams.on_stream_data_sent(sid, b_len).ok();
             }
 
             written
