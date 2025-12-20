@@ -424,7 +424,6 @@ use qlog::events::EventImportance;
 use qlog::events::EventType;
 #[cfg(feature = "qlog")]
 use qlog::events::RawInfo;
-use stream::StreamPriorityKey;
 
 use std::cmp;
 use std::convert::TryInto;
@@ -5063,7 +5062,6 @@ impl<F: BufFactory> Connection<F> {
                 let max_len = match left.checked_sub(hdr_len) {
                     Some(v) => v,
                     None => {
-                        let priority_key = Arc::clone(&stream.priority_key);
                         self.streams.remove_flushable(&priority_key);
                         if has_fixed_overhead {
                             left -= fixed_overhead;
@@ -5130,7 +5128,6 @@ impl<F: BufFactory> Connection<F> {
                             (len, fin)
                         };
 
-                    let priority_key = Arc::clone(&stream.priority_key);
                     // If the stream is no longer flushable, remove it from the
                     // queue
                     if !stream.is_flushable() {
@@ -6433,35 +6430,22 @@ impl<F: BufFactory> Connection<F> {
     ) -> Result<()> {
         // Get existing stream or create a new one, but if the stream
         // has already been closed and collected, ignore the prioritization.
-        let stream = match self.get_or_create_stream(stream_id, true) {
-            Ok(v) => v,
+        {
+            let stream = match self.get_or_create_stream(stream_id, true) {
+                Ok(v) => v,
 
-            Err(Error::Done) => return Ok(()),
+                Err(Error::Done) => return Ok(()),
 
-            Err(e) => return Err(e),
-        };
+                Err(e) => return Err(e),
+            };
 
-        if stream.urgency == urgency && stream.incremental == incremental {
-            return Ok(());
+            if stream.urgency == urgency && stream.incremental == incremental {
+                return Ok(());
+            }
         }
 
-        stream.urgency = urgency;
-        stream.incremental = incremental;
-
-        let new_priority_key = Arc::new(StreamPriorityKey {
-            urgency: stream.urgency,
-            incremental: stream.incremental,
-            id: stream_id,
-            ..Default::default()
-        });
-
-        let old_priority_key =
-            std::mem::replace(&mut stream.priority_key, new_priority_key.clone());
-
         self.streams
-            .update_priority(&old_priority_key, &new_priority_key);
-
-        Ok(())
+            .update_priority_inplace(stream_id, urgency, incremental)
     }
 
     /// Shuts down reading or writing from/to the specified stream.

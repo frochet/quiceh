@@ -429,27 +429,7 @@ impl<F: BufFactory> StreamMap<F> {
         self.flushable.front().clone_pointer()
     }
 
-    /// Updates the priorities of a stream.
-    pub fn update_priority(
-        &mut self, old: &Arc<StreamPriorityKey>, new: &Arc<StreamPriorityKey>,
-    ) {
-        if old.readable.is_linked() {
-            self.remove_readable(old);
-            self.readable.insert(Arc::clone(new));
-        }
-
-        if old.writable.is_linked() {
-            self.remove_writable(old);
-            self.writable.insert(Arc::clone(new));
-        }
-
-        if old.flushable.is_linked() {
-            self.remove_flushable(old);
-            self.flushable.insert(Arc::clone(new));
-        }
-    }
-
-    /// Updates the stream's send buffer and flushable status after sending data.
+    /// Adds the stream ID to the almost full streams set.
     pub fn on_stream_data_sent(
         &mut self, stream_id: u64, len: usize,
     ) -> Result<()> {
@@ -475,6 +455,61 @@ impl<F: BufFactory> StreamMap<F> {
             let key = stream.priority_key.clone();
             self.remove_flushable(&key);
             self.insert_flushable(&key);
+        }
+
+        Ok(())
+    }
+    /// Updates the priority of a stream in-place, avoiding unnecessary allocations.
+    pub fn update_priority_inplace(
+        &mut self, stream_id: u64, urgency: u8, incremental: bool,
+    ) -> Result<()> {
+        let stream = match self.streams.get_mut(&stream_id) {
+            Some(v) => v,
+            None => return Err(Error::Done),
+        };
+
+        // Remove from all trees using the current key pointer.
+        // We use unsafe pointer access to avoid cloning the Arc to pass to remove functions.
+        let pk_ptr = Arc::as_ptr(&stream.priority_key);
+
+        // We need to remember which trees it was in.
+        let was_readable = unsafe { (*pk_ptr).readable.is_linked() };
+        let was_writable = unsafe { (*pk_ptr).writable.is_linked() };
+        let was_flushable = unsafe { (*pk_ptr).flushable.is_linked() };
+
+        unsafe {
+            if was_readable {
+                self.readable.cursor_mut_from_ptr(pk_ptr).remove();
+            }
+            if was_writable {
+                self.writable.cursor_mut_from_ptr(pk_ptr).remove();
+            }
+            if was_flushable {
+                self.flushable.cursor_mut_from_ptr(pk_ptr).remove();
+            }
+        }
+
+        // Update the key in-place.
+        stream.urgency = urgency;
+        stream.incremental = incremental;
+
+        // Use make_mut to update the key.
+        let priority_key = Arc::make_mut(&mut stream.priority_key);
+        priority_key.urgency = urgency;
+        priority_key.incremental = incremental;
+
+        let key = stream.priority_key.clone();
+
+        if was_readable {
+            self.readable.insert(key.clone());
+        }
+
+        if was_writable {
+            self.writable.insert(key.clone());
+        }
+
+        if was_flushable {
+            self.flushable.insert(key);
         }
 
         Ok(())
@@ -2286,8 +2321,13 @@ mod tests {
     }
 
     fn cycle_stream_priority(stream_id: u64, streams: &mut StreamMap) {
-        let key = streams.get(stream_id).unwrap().priority_key.clone();
-        streams.update_priority(&key.clone(), &key);
+        let (urgency, incremental) = {
+            let s = streams.get(stream_id).unwrap();
+            (s.urgency, s.incremental)
+        };
+        streams
+            .update_priority_inplace(stream_id, urgency, incremental)
+            .unwrap();
     }
 
     #[test]
@@ -2407,7 +2447,7 @@ mod tests {
         for (id, urgency) in input.clone() {
             // this duplicates some code from stream_priority in order to access
             // streams and the collection they're in
-            let stream = streams
+            let incremental = streams
                 .get_or_create(
                     id,
                     &local_tp,
@@ -2417,23 +2457,12 @@ mod tests {
                     DEFAULT_CHUNK_LEN,
                     crate::PROTOCOL_VERSION,
                 )
+                .unwrap()
+                .incremental;
+
+            streams
+                .update_priority_inplace(id, urgency, incremental)
                 .unwrap();
-
-            stream.urgency = urgency;
-
-            let new_priority_key = Arc::new(StreamPriorityKey {
-                urgency: stream.urgency,
-                incremental: stream.incremental,
-                id,
-                ..Default::default()
-            });
-
-            let old_priority_key = std::mem::replace(
-                &mut stream.priority_key,
-                new_priority_key.clone(),
-            );
-
-            streams.update_priority(&old_priority_key, &new_priority_key);
         }
 
         let walk_1: Vec<u64> = streams.writable().collect();
@@ -2443,7 +2472,7 @@ mod tests {
         for (id, urgency) in input {
             // this duplicates some code from stream_priority in order to access
             // streams and the collection they're in
-            let stream = streams
+            let incremental = streams
                 .get_or_create(
                     id,
                     &local_tp,
@@ -2453,23 +2482,12 @@ mod tests {
                     DEFAULT_CHUNK_LEN,
                     crate::PROTOCOL_VERSION,
                 )
+                .unwrap()
+                .incremental;
+
+            streams
+                .update_priority_inplace(id, urgency, incremental)
                 .unwrap();
-
-            stream.urgency = urgency;
-
-            let new_priority_key = Arc::new(StreamPriorityKey {
-                urgency: stream.urgency,
-                incremental: stream.incremental,
-                id,
-                ..Default::default()
-            });
-
-            let old_priority_key = std::mem::replace(
-                &mut stream.priority_key,
-                new_priority_key.clone(),
-            );
-
-            streams.update_priority(&old_priority_key, &new_priority_key);
         }
 
         let walk_2: Vec<u64> = streams.writable().collect();
@@ -2533,7 +2551,7 @@ mod tests {
         for (id, urgency) in input.clone() {
             // this duplicates some code from stream_priority in order to access
             // streams and the collection they're in
-            let stream = streams
+            let incremental = streams
                 .get_or_create(
                     id,
                     &local_tp,
@@ -2543,23 +2561,12 @@ mod tests {
                     DEFAULT_CHUNK_LEN,
                     crate::PROTOCOL_VERSION,
                 )
+                .unwrap()
+                .incremental;
+
+            streams
+                .update_priority_inplace(id, urgency, incremental)
                 .unwrap();
-
-            stream.urgency = urgency;
-
-            let new_priority_key = Arc::new(StreamPriorityKey {
-                urgency: stream.urgency,
-                incremental: stream.incremental,
-                id,
-                ..Default::default()
-            });
-
-            let old_priority_key = std::mem::replace(
-                &mut stream.priority_key,
-                new_priority_key.clone(),
-            );
-
-            streams.update_priority(&old_priority_key, &new_priority_key);
         }
 
         let walk_1: Vec<u64> = streams.writable().collect();
@@ -2616,7 +2623,7 @@ mod tests {
         assert_eq!(walk_10, vec![44, 8, 16, 40, 24, 32, 36, 28, 12, 4]);
 
         // Adding streams doesn't break expected ordering.
-        let stream = streams
+        streams
             .get_or_create(
                 48,
                 &local_tp,
@@ -2628,20 +2635,7 @@ mod tests {
             )
             .unwrap();
 
-        stream.urgency = 20;
-        stream.incremental = true;
-
-        let new_priority_key = Arc::new(StreamPriorityKey {
-            urgency: stream.urgency,
-            incremental: stream.incremental,
-            id: 48,
-            ..Default::default()
-        });
-
-        let old_priority_key =
-            std::mem::replace(&mut stream.priority_key, new_priority_key.clone());
-
-        streams.update_priority(&old_priority_key, &new_priority_key);
+        streams.update_priority_inplace(48, 20, true).unwrap();
 
         let walk_11: Vec<u64> = streams.writable().collect();
         assert_eq!(walk_11, vec![44, 8, 16, 40, 48, 24, 32, 36, 28, 12, 4]);
