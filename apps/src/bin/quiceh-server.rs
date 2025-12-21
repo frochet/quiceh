@@ -49,12 +49,12 @@ use quiceh_apps::common::*;
 
 use quinn_udp::Transmit;
 
-use quinn_udp::UdpSocketState;
 use quinn_udp::RecvMeta;
+use quinn_udp::UdpSocketState;
 use quinn_udp::BATCH_SIZE;
 
-use std::io::IoSliceMut;
 use bytes::BytesMut;
+use std::io::IoSliceMut;
 
 use quiceh::bufpool;
 
@@ -191,6 +191,11 @@ fn main() {
     let mut continue_write = false;
 
     let local_addr = socket.local_addr().unwrap();
+    let mut iovs: [IoSliceMut; BATCH_SIZE] = {
+        let mut bufs = buf.chunks_mut(u16::MAX.into()).map(IoSliceMut::new);
+
+        std::array::from_fn(|_| bufs.next().expect("BATCH_SIZE elements"))
+    };
 
     loop {
         // Find the shorter timeout from all the active connections.
@@ -226,13 +231,6 @@ fn main() {
                 break 'read;
             }
 
-            let mut iovs: [IoSliceMut; BATCH_SIZE] = {
-                let mut bufs =
-                    buf.chunks_mut(u16::MAX.into()).map(IoSliceMut::new);
-
-                std::array::from_fn(|_| bufs.next().expect("BATCH_SIZE elements"))
-            };
-
             let len = match socket_state.recv(
                 (&socket_std).into(),
                 &mut iovs,
@@ -259,10 +257,12 @@ fn main() {
                 let mut data: BytesMut = buf[0..meta.len].into();
 
                 while !data.is_empty() {
-                    let mut pkt_buf_chunk = data.split_to(meta.stride.min(data.len()));
+                    let mut pkt_buf_chunk =
+                        data.split_to(meta.stride.min(data.len()));
                     let pkt_buf = &mut pkt_buf_chunk[..];
 
-                    if let Some(target_path) = conn_args.dump_packet_path.as_ref() {
+                    if let Some(target_path) = conn_args.dump_packet_path.as_ref()
+                    {
                         let path = format!("{target_path}/{pkt_count}.pkt");
 
                         if let Ok(f) = std::fs::File::create(path) {
@@ -290,7 +290,8 @@ fn main() {
 
                     let conn_id = if !cfg!(feature = "fuzzing") {
                         let conn_id = ring::hmac::sign(&conn_id_seed, &hdr.dcid);
-                        let conn_id = &conn_id.as_ref()[..quiceh::MAX_CONN_ID_LEN];
+                        let conn_id =
+                            &conn_id.as_ref()[..quiceh::MAX_CONN_ID_LEN];
                         conn_id.to_vec().into()
                     } else {
                         // When fuzzing use an all zero connection ID.
@@ -310,9 +311,10 @@ fn main() {
                         if !quiceh::version_is_supported(hdr.version) {
                             warn!("Doing version negotiation");
 
-                            let len =
-                                quiceh::negotiate_version(&hdr.scid, &hdr.dcid, &mut out)
-                                    .unwrap();
+                            let len = quiceh::negotiate_version(
+                                &hdr.scid, &hdr.dcid, &mut out,
+                            )
+                            .unwrap();
 
                             let out = &out[..len];
 
@@ -356,7 +358,8 @@ fn main() {
                                 let out = &out[..len];
 
                                 if let Err(e) = socket.send_to(out, from) {
-                                    if e.kind() == std::io::ErrorKind::WouldBlock {
+                                    if e.kind() == std::io::ErrorKind::WouldBlock
+                                    {
                                         trace!("send() would block");
                                         break 'read;
                                     }
@@ -387,7 +390,10 @@ fn main() {
 
                         let scid = quiceh::ConnectionId::from_vec(scid.to_vec());
 
-                        debug!("New connection: dcid={:?} scid={:?}", hdr.dcid, scid);
+                        debug!(
+                            "New connection: dcid={:?} scid={:?}",
+                            hdr.dcid, scid
+                        );
 
                         #[allow(unused_mut)]
                         let mut conn = quiceh::accept_with_buf_factory(
@@ -410,7 +416,8 @@ fn main() {
                         {
                             if let Some(dir) = std::env::var_os("QLOGDIR") {
                                 let id = format!("{:?}", &scid);
-                                let writer = make_qlog_writer(&dir, "server", &id);
+                                let writer =
+                                    make_qlog_writer(&dir, "server", &id);
 
                                 conn.set_qlog(
                                     std::boxed::Box::new(writer),
@@ -460,7 +467,11 @@ fn main() {
                         Ok(v) => v,
 
                         Err(e) => {
-                            error!("{} recv failed: {:?}", client.conn.trace_id(), e);
+                            error!(
+                                "{} recv failed: {:?}",
+                                client.conn.trace_id(),
+                                e
+                            );
                             continue;
                         },
                     };
@@ -529,7 +540,11 @@ fn main() {
 
                         // Handle writable streams.
                         for stream_id in conn.writable() {
-                            http_conn.handle_writable(conn, partial_responses, stream_id);
+                            http_conn.handle_writable(
+                                conn,
+                                partial_responses,
+                                stream_id,
+                            );
                         }
 
                         if conn.version() == quiceh::PROTOCOL_VERSION_VREVERSO {
@@ -562,15 +577,21 @@ fn main() {
                     handle_path_events(client);
 
                     // See whether source Connection IDs have been retired.
-                    while let Some(retired_scid) = client.conn.retired_scid_next() {
+                    while let Some(retired_scid) = client.conn.retired_scid_next()
+                    {
                         info!("Retiring source CID {:?}", retired_scid);
                         clients_ids.remove(&retired_scid);
                     }
 
                     // Provides as many CIDs as possible.
                     while client.conn.scids_left() > 0 {
-                        let (scid, reset_token) = generate_cid_and_reset_token(&rng);
-                        if client.conn.new_scid(&scid, reset_token, false).is_err() {
+                        let (scid, reset_token) =
+                            generate_cid_and_reset_token(&rng);
+                        if client
+                            .conn
+                            .new_scid(&scid, reset_token, false)
+                            .is_err()
+                        {
                             break;
                         }
 
