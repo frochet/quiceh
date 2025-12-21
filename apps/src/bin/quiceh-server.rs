@@ -50,6 +50,11 @@ use quiceh_apps::common::*;
 use quinn_udp::Transmit;
 
 use quinn_udp::UdpSocketState;
+use quinn_udp::RecvMeta;
+use quinn_udp::BATCH_SIZE;
+
+use std::io::IoSliceMut;
+use bytes::BytesMut;
 
 use quiceh::bufpool;
 
@@ -59,7 +64,7 @@ const DEFAULT_CHUNK_LEN: usize = 65536;
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
 fn main() {
-    let mut buf = [0; MAX_BUF_SIZE];
+    let mut buf = [0; 65536 * BATCH_SIZE];
     let mut out = [0; MAX_BUF_SIZE];
     let mut pacing = false;
 
@@ -79,7 +84,12 @@ fn main() {
     let mut events = mio::Events::with_capacity(1024);
 
     let socket_std = std::net::UdpSocket::bind(&args.listen).unwrap();
-    let send_state = UdpSocketState::new((&socket_std).into()).unwrap();
+    let socket_state = UdpSocketState::new((&socket_std).into()).unwrap();
+    socket_state
+        .set_recv_buffer_size((&socket_std).into(), 2097152)
+        .unwrap();
+    let mut metainfos = [RecvMeta::default(); BATCH_SIZE];
+
     // Create the UDP listening socket, and register it with the event loop.
     let mut socket =
         mio::net::UdpSocket::from_std(socket_std.try_clone().unwrap());
@@ -216,7 +226,18 @@ fn main() {
                 break 'read;
             }
 
-            let (len, from) = match socket.recv_from(&mut buf) {
+            let mut iovs: [IoSliceMut; BATCH_SIZE] = {
+                let mut bufs =
+                    buf.chunks_mut(u16::MAX.into()).map(IoSliceMut::new);
+
+                std::array::from_fn(|_| bufs.next().expect("BATCH_SIZE elements"))
+            };
+
+            let len = match socket_state.recv(
+                (&socket_std).into(),
+                &mut iovs,
+                &mut metainfos,
+            ) {
                 Ok(v) => v,
 
                 Err(e) => {
@@ -231,323 +252,331 @@ fn main() {
                 },
             };
 
-            trace!("got {} bytes", len);
+            trace!("got {} datagrams", len);
 
-            let pkt_buf = &mut buf[..len];
+            for (meta, buf) in metainfos.iter().zip(iovs.iter_mut()).take(len) {
+                let from = meta.addr;
+                let mut data: BytesMut = buf[0..meta.len].into();
 
-            if let Some(target_path) = conn_args.dump_packet_path.as_ref() {
-                let path = format!("{target_path}/{pkt_count}.pkt");
+                while !data.is_empty() {
+                    let mut pkt_buf_chunk = data.split_to(meta.stride.min(data.len()));
+                    let pkt_buf = &mut pkt_buf_chunk[..];
 
-                if let Ok(f) = std::fs::File::create(path) {
-                    let mut f = std::io::BufWriter::new(f);
-                    f.write_all(pkt_buf).ok();
-                }
-            }
+                    if let Some(target_path) = conn_args.dump_packet_path.as_ref() {
+                        let path = format!("{target_path}/{pkt_count}.pkt");
 
-            pkt_count += 1;
-
-            // Parse the QUIC packet's header.
-            let hdr = match quiceh::Header::from_slice(
-                pkt_buf,
-                quiceh::MAX_CONN_ID_LEN,
-            ) {
-                Ok(v) => v,
-
-                Err(e) => {
-                    error!("Parsing packet header failed: {:?}", e);
-                    continue 'read;
-                },
-            };
-
-            trace!("got packet {:?}", hdr);
-
-            let conn_id = if !cfg!(feature = "fuzzing") {
-                let conn_id = ring::hmac::sign(&conn_id_seed, &hdr.dcid);
-                let conn_id = &conn_id.as_ref()[..quiceh::MAX_CONN_ID_LEN];
-                conn_id.to_vec().into()
-            } else {
-                // When fuzzing use an all zero connection ID.
-                [0; quiceh::MAX_CONN_ID_LEN].to_vec().into()
-            };
-
-            // Lookup a connection based on the packet's connection ID. If there
-            // is no connection matching, create a new one.
-            let client = if !clients_ids.contains_key(&hdr.dcid)
-                && !clients_ids.contains_key(&conn_id)
-            {
-                if hdr.ty != quiceh::Type::Initial {
-                    error!("Packet is not Initial");
-                    continue 'read;
-                }
-
-                if !quiceh::version_is_supported(hdr.version) {
-                    warn!("Doing version negotiation");
-
-                    let len =
-                        quiceh::negotiate_version(&hdr.scid, &hdr.dcid, &mut out)
-                            .unwrap();
-
-                    let out = &out[..len];
-
-                    if let Err(e) = socket.send_to(out, from) {
-                        if e.kind() == std::io::ErrorKind::WouldBlock {
-                            trace!("send() would block");
-                            break;
+                        if let Ok(f) = std::fs::File::create(path) {
+                            let mut f = std::io::BufWriter::new(f);
+                            f.write_all(pkt_buf).ok();
                         }
-
-                        panic!("send() failed: {:?}", e);
-                    }
-                    continue 'read;
-                }
-
-                let mut scid = [0; quiceh::MAX_CONN_ID_LEN];
-                scid.copy_from_slice(&conn_id);
-
-                let mut odcid = None;
-
-                if !args.no_retry {
-                    // Token is always present in Initial packets.
-                    let token = hdr.token.as_ref().unwrap();
-
-                    // Do stateless retry if the client didn't send a token.
-                    if token.is_empty() {
-                        warn!("Doing stateless retry");
-
-                        let scid = quiceh::ConnectionId::from_ref(&scid);
-                        let new_token = mint_token(&hdr, &from);
-
-                        let len = quiceh::retry(
-                            &hdr.scid,
-                            &hdr.dcid,
-                            &scid,
-                            &new_token,
-                            hdr.version,
-                            &mut out,
-                        )
-                        .unwrap();
-
-                        let out = &out[..len];
-
-                        if let Err(e) = socket.send_to(out, from) {
-                            if e.kind() == std::io::ErrorKind::WouldBlock {
-                                trace!("send() would block");
-                                break;
-                            }
-
-                            panic!("send() failed: {:?}", e);
-                        }
-                        continue 'read;
                     }
 
-                    odcid = validate_token(&from, token);
+                    pkt_count += 1;
 
-                    // The token was not valid, meaning the retry failed, so
-                    // drop the packet.
-                    if odcid.is_none() {
-                        error!("Invalid address validation token");
-                        continue;
-                    }
-
-                    if scid.len() != hdr.dcid.len() {
-                        error!("Invalid destination connection ID");
-                        continue 'read;
-                    }
-
-                    // Reuse the source connection ID we sent in the Retry
-                    // packet, instead of changing it again.
-                    scid.copy_from_slice(&hdr.dcid);
-                }
-
-                let scid = quiceh::ConnectionId::from_vec(scid.to_vec());
-
-                debug!("New connection: dcid={:?} scid={:?}", hdr.dcid, scid);
-
-                #[allow(unused_mut)]
-                let mut conn = quiceh::accept_with_buf_factory(
-                    &scid,
-                    odcid.as_ref(),
-                    local_addr,
-                    from,
-                    &mut config,
-                )
-                .unwrap();
-
-                if let Some(keylog) = &mut keylog {
-                    if let Ok(keylog) = keylog.try_clone() {
-                        conn.set_keylog(Box::new(keylog));
-                    }
-                }
-
-                // Only bother with qlog if the user specified it.
-                #[cfg(feature = "qlog")]
-                {
-                    if let Some(dir) = std::env::var_os("QLOGDIR") {
-                        let id = format!("{:?}", &scid);
-                        let writer = make_qlog_writer(&dir, "server", &id);
-
-                        conn.set_qlog(
-                            std::boxed::Box::new(writer),
-                            "quiceh-server qlog".to_string(),
-                            format!("{} id={}", "quiceh-server qlog", id),
-                        );
-                    }
-                }
-
-                let client_id = next_client_id;
-
-                let client = Client {
-                    conn,
-                    http_conn: None,
-                    client_id,
-                    partial_requests: HashMap::new(),
-                    partial_responses: HashMap::new(),
-                    app_proto_selected: false,
-                    max_datagram_size,
-                    loss_rate: 0.0,
-                    max_send_burst: MAX_BUF_SIZE,
-                };
-
-                clients.insert(client_id, client);
-                clients_ids.insert(scid.clone(), client_id);
-
-                next_client_id += 1;
-
-                clients.get_mut(&client_id).unwrap()
-            } else {
-                let cid = match clients_ids.get(&hdr.dcid) {
-                    Some(v) => v,
-
-                    None => clients_ids.get(&conn_id).unwrap(),
-                };
-
-                clients.get_mut(cid).unwrap()
-            };
-
-            let recv_info = quiceh::RecvInfo {
-                to: local_addr,
-                from,
-            };
-
-            // Process potentially coalesced packets.
-            let read = match client.conn.recv(pkt_buf, recv_info) {
-                Ok(v) => v,
-
-                Err(e) => {
-                    error!("{} recv failed: {:?}", client.conn.trace_id(), e);
-                    continue 'read;
-                },
-            };
-
-            trace!("{} processed {} bytes", client.conn.trace_id(), read);
-
-            // Create a new application protocol session as soon as the QUIC
-            // connection is established.
-            if !client.app_proto_selected
-                && (client.conn.is_in_early_data()
-                    || client.conn.is_established())
-            {
-                // At this stage the ALPN negotiation succeeded and selected a
-                // single application protocol name. We'll use this to construct
-                // the correct type of HttpConn but `application_proto()`
-                // returns a slice, so we have to convert it to a str in order
-                // to compare to our lists of protocols. We `unwrap()` because
-                // we need the value and if something fails at this stage, there
-                // is not much anyone can do to recover.
-                let app_proto = client.conn.application_proto();
-
-                #[allow(clippy::box_default)]
-                if alpns::HTTP_09.contains(&app_proto) {
-                    client.http_conn = Some(Box::<Http09Conn>::default());
-
-                    client.app_proto_selected = true;
-                } else if alpns::HTTP_3.contains(&app_proto) {
-                    let dgram_sender = if conn_args.dgrams_enabled {
-                        Some(Http3DgramSender::new(
-                            conn_args.dgram_count,
-                            conn_args.dgram_data.clone(),
-                            1,
-                        ))
-                    } else {
-                        None
-                    };
-
-                    client.http_conn = match Http3Conn::with_conn(
-                        &mut client.conn,
-                        conn_args.max_field_section_size,
-                        conn_args.qpack_max_table_capacity,
-                        conn_args.qpack_blocked_streams,
-                        dgram_sender,
-                        Rc::new(RefCell::new(stdout_sink)),
+                    // Parse the QUIC packet's header.
+                    let hdr = match quiceh::Header::from_slice(
+                        pkt_buf,
+                        quiceh::MAX_CONN_ID_LEN,
                     ) {
-                        Ok(v) => Some(v),
+                        Ok(v) => v,
 
                         Err(e) => {
-                            trace!("{} {}", client.conn.trace_id(), e);
-                            None
+                            error!("Parsing packet header failed: {:?}", e);
+                            continue;
                         },
                     };
 
-                    client.app_proto_selected = true;
-                }
+                    trace!("got packet {:?}", hdr);
 
-                // Update max_datagram_size after connection established.
-                client.max_datagram_size =
-                    client.conn.max_send_udp_payload_size();
-            }
+                    let conn_id = if !cfg!(feature = "fuzzing") {
+                        let conn_id = ring::hmac::sign(&conn_id_seed, &hdr.dcid);
+                        let conn_id = &conn_id.as_ref()[..quiceh::MAX_CONN_ID_LEN];
+                        conn_id.to_vec().into()
+                    } else {
+                        // When fuzzing use an all zero connection ID.
+                        [0; quiceh::MAX_CONN_ID_LEN].to_vec().into()
+                    };
 
-            if client.http_conn.is_some() {
-                let conn = &mut client.conn;
-                let http_conn = client.http_conn.as_mut().unwrap();
-                let partial_responses = &mut client.partial_responses;
-
-                // Handle writable streams.
-                for stream_id in conn.writable() {
-                    http_conn.handle_writable(conn, partial_responses, stream_id);
-                }
-
-                if conn.version() == quiceh::PROTOCOL_VERSION_VREVERSO {
-                    if http_conn
-                        .handle_requests_on_quic_v3(
-                            conn,
-                            partial_responses,
-                            &args.root,
-                            &args.index,
-                        )
-                        .is_err()
+                    // Lookup a connection based on the packet's connection ID. If there
+                    // is no connection matching, create a new one.
+                    let client = if !clients_ids.contains_key(&hdr.dcid)
+                        && !clients_ids.contains_key(&conn_id)
                     {
-                        continue 'read;
+                        if hdr.ty != quiceh::Type::Initial {
+                            error!("Packet is not Initial");
+                            continue;
+                        }
+
+                        if !quiceh::version_is_supported(hdr.version) {
+                            warn!("Doing version negotiation");
+
+                            let len =
+                                quiceh::negotiate_version(&hdr.scid, &hdr.dcid, &mut out)
+                                    .unwrap();
+
+                            let out = &out[..len];
+
+                            if let Err(e) = socket.send_to(out, from) {
+                                if e.kind() == std::io::ErrorKind::WouldBlock {
+                                    trace!("send() would block");
+                                    break 'read;
+                                }
+
+                                panic!("send() failed: {:?}", e);
+                            }
+                            continue;
+                        }
+
+                        let mut scid = [0; quiceh::MAX_CONN_ID_LEN];
+                        scid.copy_from_slice(&conn_id);
+
+                        let mut odcid = None;
+
+                        if !args.no_retry {
+                            // Token is always present in Initial packets.
+                            let token = hdr.token.as_ref().unwrap();
+
+                            // Do stateless retry if the client didn't send a token.
+                            if token.is_empty() {
+                                warn!("Doing stateless retry");
+
+                                let scid = quiceh::ConnectionId::from_ref(&scid);
+                                let new_token = mint_token(&hdr, &from);
+
+                                let len = quiceh::retry(
+                                    &hdr.scid,
+                                    &hdr.dcid,
+                                    &scid,
+                                    &new_token,
+                                    hdr.version,
+                                    &mut out,
+                                )
+                                .unwrap();
+
+                                let out = &out[..len];
+
+                                if let Err(e) = socket.send_to(out, from) {
+                                    if e.kind() == std::io::ErrorKind::WouldBlock {
+                                        trace!("send() would block");
+                                        break 'read;
+                                    }
+
+                                    panic!("send() failed: {:?}", e);
+                                }
+                                continue;
+                            }
+
+                            odcid = validate_token(&from, token);
+
+                            // The token was not valid, meaning the retry failed, so
+                            // drop the packet.
+                            if odcid.is_none() {
+                                error!("Invalid address validation token");
+                                continue;
+                            }
+
+                            if scid.len() != hdr.dcid.len() {
+                                error!("Invalid destination connection ID");
+                                continue;
+                            }
+
+                            // Reuse the source connection ID we sent in the Retry
+                            // packet, instead of changing it again.
+                            scid.copy_from_slice(&hdr.dcid);
+                        }
+
+                        let scid = quiceh::ConnectionId::from_vec(scid.to_vec());
+
+                        debug!("New connection: dcid={:?} scid={:?}", hdr.dcid, scid);
+
+                        #[allow(unused_mut)]
+                        let mut conn = quiceh::accept_with_buf_factory(
+                            &scid,
+                            odcid.as_ref(),
+                            local_addr,
+                            from,
+                            &mut config,
+                        )
+                        .unwrap();
+
+                        if let Some(keylog) = &mut keylog {
+                            if let Ok(keylog) = keylog.try_clone() {
+                                conn.set_keylog(Box::new(keylog));
+                            }
+                        }
+
+                        // Only bother with qlog if the user specified it.
+                        #[cfg(feature = "qlog")]
+                        {
+                            if let Some(dir) = std::env::var_os("QLOGDIR") {
+                                let id = format!("{:?}", &scid);
+                                let writer = make_qlog_writer(&dir, "server", &id);
+
+                                conn.set_qlog(
+                                    std::boxed::Box::new(writer),
+                                    "quiceh-server qlog".to_string(),
+                                    format!("{} id={}", "quiceh-server qlog", id),
+                                );
+                            }
+                        }
+
+                        let client_id = next_client_id;
+
+                        let client = Client {
+                            conn,
+                            http_conn: None,
+                            client_id,
+                            partial_requests: HashMap::new(),
+                            partial_responses: HashMap::new(),
+                            app_proto_selected: false,
+                            max_datagram_size,
+                            loss_rate: 0.0,
+                            max_send_burst: MAX_BUF_SIZE,
+                        };
+
+                        clients.insert(client_id, client);
+                        clients_ids.insert(scid.clone(), client_id);
+
+                        next_client_id += 1;
+
+                        clients.get_mut(&client_id).unwrap()
+                    } else {
+                        let cid = match clients_ids.get(&hdr.dcid) {
+                            Some(v) => v,
+
+                            None => clients_ids.get(&conn_id).unwrap(),
+                        };
+
+                        clients.get_mut(cid).unwrap()
+                    };
+
+                    let recv_info = quiceh::RecvInfo {
+                        to: local_addr,
+                        from,
+                    };
+
+                    // Process potentially coalesced packets.
+                    let read = match client.conn.recv(pkt_buf, recv_info) {
+                        Ok(v) => v,
+
+                        Err(e) => {
+                            error!("{} recv failed: {:?}", client.conn.trace_id(), e);
+                            continue;
+                        },
+                    };
+
+                    trace!("{} processed {} bytes", client.conn.trace_id(), read);
+
+                    // Create a new application protocol session as soon as the QUIC
+                    // connection is established.
+                    if !client.app_proto_selected
+                        && (client.conn.is_in_early_data()
+                            || client.conn.is_established())
+                    {
+                        // At this stage the ALPN negotiation succeeded and selected a
+                        // single application protocol name. We'll use this to construct
+                        // the correct type of HttpConn but `application_proto()`
+                        // returns a slice, so we have to convert it to a str in order
+                        // to compare to our lists of protocols. We `unwrap()` because
+                        // we need the value and if something fails at this stage, there
+                        // is not much anyone can do to recover.
+                        let app_proto = client.conn.application_proto();
+
+                        #[allow(clippy::box_default)]
+                        if alpns::HTTP_09.contains(&app_proto) {
+                            client.http_conn = Some(Box::<Http09Conn>::default());
+
+                            client.app_proto_selected = true;
+                        } else if alpns::HTTP_3.contains(&app_proto) {
+                            let dgram_sender = if conn_args.dgrams_enabled {
+                                Some(Http3DgramSender::new(
+                                    conn_args.dgram_count,
+                                    conn_args.dgram_data.clone(),
+                                    1,
+                                ))
+                            } else {
+                                None
+                            };
+
+                            client.http_conn = match Http3Conn::with_conn(
+                                &mut client.conn,
+                                conn_args.max_field_section_size,
+                                conn_args.qpack_max_table_capacity,
+                                conn_args.qpack_blocked_streams,
+                                dgram_sender,
+                                Rc::new(RefCell::new(stdout_sink)),
+                            ) {
+                                Ok(v) => Some(v),
+
+                                Err(e) => {
+                                    trace!("{} {}", client.conn.trace_id(), e);
+                                    None
+                                },
+                            };
+
+                            client.app_proto_selected = true;
+                        }
+
+                        // Update max_datagram_size after connection established.
+                        client.max_datagram_size =
+                            client.conn.max_send_udp_payload_size();
                     }
-                } else if http_conn
-                    .handle_requests(
-                        conn,
-                        &mut client.partial_requests,
-                        partial_responses,
-                        &args.root,
-                        &args.index,
-                        &mut buf,
-                    )
-                    .is_err()
-                {
-                    continue 'read;
+
+                    if client.http_conn.is_some() {
+                        let conn = &mut client.conn;
+                        let http_conn = client.http_conn.as_mut().unwrap();
+                        let partial_responses = &mut client.partial_responses;
+
+                        // Handle writable streams.
+                        for stream_id in conn.writable() {
+                            http_conn.handle_writable(conn, partial_responses, stream_id);
+                        }
+
+                        if conn.version() == quiceh::PROTOCOL_VERSION_VREVERSO {
+                            if http_conn
+                                .handle_requests_on_quic_v3(
+                                    conn,
+                                    partial_responses,
+                                    &args.root,
+                                    &args.index,
+                                )
+                                .is_err()
+                            {
+                                continue;
+                            }
+                        } else if http_conn
+                            .handle_requests(
+                                conn,
+                                &mut client.partial_requests,
+                                partial_responses,
+                                &args.root,
+                                &args.index,
+                                buf,
+                            )
+                            .is_err()
+                        {
+                            continue;
+                        }
+                    }
+
+                    handle_path_events(client);
+
+                    // See whether source Connection IDs have been retired.
+                    while let Some(retired_scid) = client.conn.retired_scid_next() {
+                        info!("Retiring source CID {:?}", retired_scid);
+                        clients_ids.remove(&retired_scid);
+                    }
+
+                    // Provides as many CIDs as possible.
+                    while client.conn.scids_left() > 0 {
+                        let (scid, reset_token) = generate_cid_and_reset_token(&rng);
+                        if client.conn.new_scid(&scid, reset_token, false).is_err() {
+                            break;
+                        }
+
+                        clients_ids.insert(scid, client.client_id);
+                    }
                 }
-            }
-
-            handle_path_events(client);
-
-            // See whether source Connection IDs have been retired.
-            while let Some(retired_scid) = client.conn.retired_scid_next() {
-                info!("Retiring source CID {:?}", retired_scid);
-                clients_ids.remove(&retired_scid);
-            }
-
-            // Provides as many CIDs as possible.
-            while client.conn.scids_left() > 0 {
-                let (scid, reset_token) = generate_cid_and_reset_token(&rng);
-                if client.conn.new_scid(&scid, reset_token, false).is_err() {
-                    break;
-                }
-
-                clients_ids.insert(scid, client.client_id);
             }
         }
 
@@ -617,7 +646,7 @@ fn main() {
                 src_ip: Some(local_addr.ip()),
             };
 
-            if let Err(e) = send_state.send((&socket_std).into(), &transmit) {
+            if let Err(e) = socket_state.send((&socket_std).into(), &transmit) {
                 if e.kind() == std::io::ErrorKind::WouldBlock {
                     trace!("send() would block");
                     break;
