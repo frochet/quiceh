@@ -2482,7 +2482,18 @@ impl Connection {
                         let b = stream.try_acquire_state_buffer(conn)?;
 
                         let varint = match stream.try_consume_varint_from_buf(b) {
-                            Ok(v) => v,
+                            Ok((varint, consumed)) => {
+                                if consumed == 0 {
+                                    varint.unwrap()
+                                } else {
+                                    conn.stream_consumed(stream_id, consumed)?;
+                                    if let Some(varint) = varint {
+                                        varint
+                                    } else {
+                                        return Err(Error::Done);
+                                    }
+                                }
+                            },
 
                             Err(_) => {
                                 return Err(Error::Done);
@@ -2492,6 +2503,7 @@ impl Connection {
                             conn,
                             stream.get_state_len(),
                         )?;
+
                         varint
                     } else {
                         stream.try_fill_buffer(conn)?;
@@ -2613,7 +2625,18 @@ impl Connection {
                         let b = stream.try_acquire_state_buffer(conn)?;
 
                         let varint = match stream.try_consume_varint_from_buf(b) {
-                            Ok(v) => v,
+                            Ok((varint, consumed)) => {
+                                if consumed == 0 {
+                                    varint.unwrap()
+                                } else {
+                                    conn.stream_consumed(stream_id, consumed)?;
+                                    if let Some(varint) = varint {
+                                        varint
+                                    } else {
+                                        return Err(Error::Done);
+                                    }
+                                }
+                            },
 
                             Err(_) => return Err(Error::Done),
                         };
@@ -2644,7 +2667,18 @@ impl Connection {
                         let b = stream.try_acquire_state_buffer(conn)?;
 
                         let varint = match stream.try_consume_varint_from_buf(b) {
-                            Ok(v) => v,
+                            Ok((varint, consumed)) => {
+                                if consumed == 0 {
+                                    varint.unwrap()
+                                } else {
+                                    conn.stream_consumed(stream_id, consumed)?;
+                                    if let Some(varint) = varint {
+                                        varint
+                                    } else {
+                                        return Err(Error::Done);
+                                    }
+                                }
+                            },
 
                             Err(_) => {
                                 return Err(Error::Done);
@@ -2698,7 +2732,18 @@ impl Connection {
                         let b = stream.try_acquire_state_buffer(conn)?;
 
                         let varint = match stream.try_consume_varint_from_buf(b) {
-                            Ok(v) => v,
+                            Ok((varint, consumed)) => {
+                                if consumed == 0 {
+                                    varint.unwrap()
+                                } else {
+                                    conn.stream_consumed(stream_id, consumed)?;
+                                    if let Some(varint) = varint {
+                                        varint
+                                    } else {
+                                        return Err(Error::Done);
+                                    }
+                                }
+                            },
 
                             Err(_) => {
                                 return Err(Error::Done);
@@ -4112,6 +4157,7 @@ mod tests {
                 assert_eq!(b.len(), body.len());
                 assert!(s.body_consumed_client(stream, body.len() - 1).is_ok());
                 assert!(s.body_consumed_client(stream, 1).is_ok());
+                assert_eq!(s.poll_client(), Ok((stream, Event::Data)));
             }
             // Read and consume body.len()-1
             let (b, _) = s.body_peek_client(stream).unwrap();
@@ -4121,6 +4167,92 @@ mod tests {
             let (b, _) = s.body_peek_client(stream).unwrap();
             assert_eq!(b.len(), 1);
             assert!(s.body_consumed_client(stream, 1).is_ok());
+            assert_eq!(s.poll_client(), Ok((4, Event::Finished)));
+        }
+    }
+
+    #[test]
+    /// Send a request with no body, respond with 2 DATA frames which the
+    /// second's header happens to be written across two StreamChunks whose
+    /// lengths are 100 bytes
+    fn request_no_body_resonses_two_data_with_header_across_stream_chunk() {
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+            let mut config = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+            config
+                .load_cert_chain_from_pem_file("examples/cert.crt")
+                .unwrap();
+            config
+                .load_priv_key_from_pem_file("examples/cert.key")
+                .unwrap();
+            config.set_application_protos(&[b"h3"]).unwrap();
+            config.set_initial_max_data(1500);
+            config.set_initial_max_stream_data_bidi_local(500);
+            config.set_initial_max_stream_data_bidi_remote(500);
+            config.set_initial_max_stream_data_uni(500);
+            config.set_initial_max_streams_bidi(5);
+            config.set_initial_max_streams_uni(5);
+            config.verify_peer(false);
+            config.grease(false);
+            config.set_ack_delay_exponent(8);
+            config.set_expected_chunklen_to_consume(100);
+
+            let h3_config = Config::new().expect("h3 config creation");
+            let mut s =
+                Session::<BufTestFactory>::with_configs(&mut config, &h3_config)
+                    .unwrap();
+            s.handshake().unwrap();
+            // Send 32 bytes -- client to server
+            let (stream, req) = s.send_request(true).unwrap();
+
+            let ev_headers = Event::Headers {
+                list: req,
+                has_body: false,
+            };
+
+            assert_eq!(s.poll_server(), Ok((stream, ev_headers)));
+            assert_eq!(s.poll_server(), Ok((stream, Event::Finished)));
+
+            let body = vec![42; 79];
+            // Send headers; 16 bytes
+            let resp = s.send_response(stream, false).unwrap();
+            // Send a first Data frame of 79 bytes. We'll be consume 98 bytes
+            // of the 100-bytes chunk.
+            s.send_body_server_zc(
+                stream,
+                BufTestFactory::buf_from_slice(&body),
+                false,
+            )
+            .unwrap();
+            // We need two bytes to encode the length of the data frame with 64 bytes
+            let body = vec![42; 64];
+            // The second Data frame should have its header across two StreamChunks.
+            s.send_body_server_zc(
+                stream,
+                BufTestFactory::buf_from_slice(&body),
+                true,
+            )
+            .unwrap();
+
+            let ev_headers = Event::Headers {
+                list: resp,
+                has_body: true,
+            };
+
+            assert_eq!(s.poll_client(), Ok((stream, ev_headers)));
+            // The first data cell
+            assert_eq!(s.poll_client(), Ok((stream, Event::Data)));
+            // We consume the first bytes.
+            let (b, tot_exp_len) = s.body_peek_client(stream).unwrap();
+            assert_eq!(b.len(), 79);
+            assert_eq!(tot_exp_len, 79);
+            assert!(s.body_consumed_client(stream, 79).is_ok());
+            // Now we should be able to poll the next data frame
+            assert_eq!(s.poll_client(), Ok((stream, Event::Data)));
+            let (b, _) = s.body_peek_client(stream).unwrap();
+            let len = b.len();
+            assert_eq!(len, body.len());
+            assert!(s.body_consumed_client(stream, len).is_ok());
+            assert_eq!(s.poll_client(), Ok((stream, Event::Finished)));
         }
     }
 
@@ -4207,7 +4339,6 @@ mod tests {
             }
         }
 
-        env_logger::builder().format_timestamp_nanos().init();
         assert_eq!(s.poll_server(), Ok((stream, Event::Finished)));
 
         let resp = s.send_response(stream, true).unwrap();
