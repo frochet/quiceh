@@ -1281,6 +1281,10 @@ impl Config {
     ///
     /// Default value is 1024 * 64.
     pub fn set_expected_chunklen_to_consume(&mut self, v: usize) {
+        // TODO Confirm with benchmark
+        if v < 2048 {
+            warn!("chunklen of {} bytes is likely too low; it may reduce performance or cause unexpected bugs within the h3 modules", v);
+        }
         self.chunk_len = v;
     }
 
@@ -5416,7 +5420,7 @@ impl<F: BufFactory> Connection<F> {
                 // The StreamHeader frame should be last.
                 if let Some(frame) = maybe_stream_header {
                     let frame_len = frame.wire_len();
-                    cumul -= frame_len;
+                    //cumul -= frame_len;
                     left += frame_len;
                     let len = if let frame::Frame::StreamHeader {
                         length, ..
