@@ -43,7 +43,7 @@ const LARGE_POOL_BUF_SIZE: usize = 65535;
 
 type BufPool = Pool<POOL_SHARDS, ConsumeBuffer>;
 
-static SMALL_POOL: BufPool = BufPool::new(128, SMALL_POOL_BUF_SIZE);
+static SMALL_POOL: BufPool = BufPool::new(128, LARGE_POOL_BUF_SIZE);
 static LARGE_POOL: BufPool = BufPool::new(16, LARGE_POOL_BUF_SIZE);
 
 #[cfg_attr(feature = "current_thread", tokio::main(flavor = "current_thread"))]
@@ -263,7 +263,7 @@ async fn handle_client(
     tx_garbage_conn: mpsc::Sender<Vec<u8>>, local_addr: net::SocketAddr,
 ) {
     let mut partial_responses: HashMap<u64, PartialResponse> = HashMap::new();
-    let mut out = LARGE_POOL.get();
+    let mut out = LARGE_POOL.get_with(|d| d.expand(LARGE_POOL_BUF_SIZE));
     let mut loss_rate: f64 = 0.0;
     let mut max_send_burst = 65535;
     let send_state = UdpSocketState::new((&socket).into()).unwrap();
@@ -410,13 +410,15 @@ async fn handle_client(
                 src_ip: Some(local_addr.ip()),
             };
 
-            if let Err(e) = send_state.send((&socket).into(), &transmit) {
-                if e.kind() == std::io::ErrorKind::WouldBlock {
-                    trace!("send() would block");
-                    continue;
+            loop {
+                socket.writable().await.unwrap();
+                match socket.try_io(tokio::io::Interest::WRITABLE, || {
+                    send_state.send((&socket).into(), &transmit)
+                }) {
+                    Ok(()) => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(e) => panic!("send_to() failed: {:?}", e),
                 }
-
-                panic!("send_to() failed: {:?}", e);
             }
         }
 

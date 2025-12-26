@@ -573,7 +573,6 @@ where
         req_start: &std::time::Instant,
     ) {
         for s in conn.readable() {
-            info!("{} is readable on stream {}", conn.trace_id(), s);
             let (len, fin) = match conn.stream_peek(s) {
                 Ok((b, len, fin)) => {
                     trace!(
@@ -736,7 +735,6 @@ where
         index: &str,
     ) -> quiceh::h3::Result<()> {
         for s in conn.readable() {
-            info!("{} is readable", conn.trace_id());
             let (peek_len, body, bodylen) = match conn.stream_peek(s) {
                 Ok((b, len, fin)) => {
                     trace!(
