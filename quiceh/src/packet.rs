@@ -639,7 +639,7 @@ pub fn decrypt_hdr(
         first_buf.as_ref()[0]
     };
 
-    if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
+    if likely(version == crate::PROTOCOL_VERSION_VREVERSO && !Header::is_long(first)) {
         let mut pn_stream_and_sample = b.peek_bytes_mut(MAX_PKT_NUM_STREAMID_OFFSET_LEN + SAMPLE_LEN)?;
 
         let (mut ciphertext, sample) = pn_stream_and_sample.split_at(MAX_PKT_NUM_STREAMID_OFFSET_LEN)?;
@@ -648,11 +648,7 @@ pub fn decrypt_hdr(
 
         let mask = aead.new_mask_13(sample.as_ref())?;
 
-        if Header::is_long(first) {
-            first ^= mask[0] & 0x0f;
-        } else {
-            first ^= mask[0] & 0x1f;
-        }
+        first ^= mask[0] & 0x1f;
 
         let pn_len = usize::from((first & PKT_NUM_MASK) + 1);
 
@@ -895,17 +891,15 @@ fn encrypt_hdr_inner(
     if enc_len > rest.len() {
         return Err(Error::BufferTooShort);
     }
-    if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
+    if likely(version == crate::PROTOCOL_VERSION_VREVERSO && !Header::is_long(first[0])) {
         // considering max 4 bytes for the streamid and 4 bytes for the buffer offset.
         // for which the encoding/decoding would work in a similar fashion than for the packet number.
         let sample = &payload
             [MAX_PKT_NUM_STREAMID_OFFSET_LEN - enc_len..SAMPLE_LEN + (MAX_PKT_NUM_STREAMID_OFFSET_LEN - enc_len)];
         let mask = aead.new_mask_13(sample)?;
-        if Header::is_long(first[0]) {
-            first[0] ^= mask[0] & 0x0f;
-        } else {
-            first[0] ^= mask[0] & 0x1f;
-        }
+
+        first[0] ^= mask[0] & 0x1f;
+
         let len = rest.len();
         let buf = &mut rest[len - enc_len..];
 

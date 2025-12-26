@@ -2925,7 +2925,7 @@ impl<F: BufFactory> Connection<F> {
             },
         )?;
 
-        let pn = if self.version == crate::PROTOCOL_VERSION_VREVERSO {
+        let pn = if self.version == crate::PROTOCOL_VERSION_VREVERSO && (hdr.ty == packet::Type::Short || hdr.ty == packet::Type::ZeroRTT) {
             packet::decode_pkt_num_v3(
                 self.pkt_num_spaces[epoch].largest_rx_pkt_num,
                 hdr.pkt_num,
@@ -2947,16 +2947,16 @@ impl<F: BufFactory> Connection<F> {
         ) {
             // let's use this control flow to also add the true enc_hdr_len
             // on V3.
-            // XXX Long Header packets should not have a stream_id and truncated offset bytes
-            dec_len += enc_hdr_len;
-            enc_hdr_len += hdr.expected_stream_id_len;
-            enc_hdr_len += hdr.truncated_offset_len;
-            dec_len -= enc_hdr_len;
-            // A stream_id 0 indicates no stream frame encrypted.
             if hdr.expected_stream_id > 0
                 && (hdr.ty == packet::Type::Short
                     || hdr.ty == packet::Type::ZeroRTT)
             {
+                // Long Header packets should not have a stream_id and truncated offset bytes
+                // A stream_id 0 indicates no stream frame encrypted.
+                dec_len += enc_hdr_len;
+                enc_hdr_len += hdr.expected_stream_id_len;
+                enc_hdr_len += hdr.truncated_offset_len;
+                dec_len -= enc_hdr_len;
                 match self.streams.get_mut(hdr.expected_stream_id) {
                     Some(s) => {
                         let mut offset =
@@ -4324,7 +4324,7 @@ impl<F: BufFactory> Connection<F> {
         // path.recovery.update_app_limited while we have just the right
         // space left to send this packet. we don't know the length of pn
         // before
-        let mut overhead = if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
+        let mut overhead = if likely(self.version == PROTOCOL_VERSION_VREVERSO && (hdr_ty == packet::Type::Short || hdr_ty == packet::Type::ZeroRTT)) {
             b.off() + pn_len + crypto_overhead + 8
         } else {
             b.off() + pn_len + crypto_overhead
@@ -4382,7 +4382,7 @@ impl<F: BufFactory> Connection<F> {
         // We need to remember this in case we use Protocol Reverso
         let header_offset = b.off();
 
-        if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
+        if likely(self.version == PROTOCOL_VERSION_VREVERSO && (pkt_type == packet::Type::Short || pkt_type == packet::Type::ZeroRTT)) {
             packet::encode_pkt_num_v3(pn, pn_len, 1, &mut b)?;
             packet::encode_u64_num_and_nextelem_len(0, 1, &mut b)?;
             packet::encode_offset_num(0, 1, &mut b)?;
@@ -5236,12 +5236,6 @@ impl<F: BufFactory> Connection<F> {
                    // The overhead depends on whether or not we're going
                    // to include a stream frame in this packet. We assumed yes, but maybe
                    // we don't.
-            if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
-                if !has_fixed_overhead {
-                    left += 6;
-                    has_fixed_overhead = true;
-                }
-            };
             if let Some(max_len) = left.checked_sub(hdr_len) {
                 let frame = if self.use_hidden_crypt_copy_for_zc {
                     let (rbvec, length) =
@@ -5310,7 +5304,7 @@ impl<F: BufFactory> Connection<F> {
             }
         }
 
-        if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
+        if likely(self.version == PROTOCOL_VERSION_VREVERSO && (pkt_type == packet::Type::ZeroRTT || pkt_type == packet::Type::Short)) {
             // Todo check interplay with CWND availability
             if !has_fixed_overhead && left > 0 {
                 // we only had 2 bytes of overhead for a 0 streamid and 0 offset
@@ -5457,7 +5451,7 @@ impl<F: BufFactory> Connection<F> {
 
         // Fill in payload length.
         if pkt_type != packet::Type::Short {
-            let len = if likely(self.version == crate::PROTOCOL_VERSION_VREVERSO)
+            let len = if self.version == crate::PROTOCOL_VERSION_VREVERSO && pkt_type == packet::Type::ZeroRTT
             {
                 pn_len
                     + self.expected_stream_id_len
@@ -5641,7 +5635,7 @@ impl<F: BufFactory> Connection<F> {
             )?
         };
 
-        let enc_hdr_len = if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
+        let enc_hdr_len = if likely(self.version == PROTOCOL_VERSION_VREVERSO && (pkt_type == packet::Type::Short || pkt_type == packet::Type::ZeroRTT)) {
             pn_len + self.expected_stream_id_len + self.truncated_offset_len
         } else {
             pn_len
@@ -10453,7 +10447,7 @@ pub mod testing {
 
         let payload_len = frames.iter().fold(0, |acc, x| acc + x.wire_len());
 
-        let hdr_enc_len = if conn.version == PROTOCOL_VERSION_VREVERSO {
+        let hdr_enc_len = if conn.version == PROTOCOL_VERSION_VREVERSO && (pkt_type == packet::Type::Short || pkt_type == packet::Type::ZeroRTT) {
             12
         } else {
             4
@@ -10465,7 +10459,7 @@ pub mod testing {
             b.put_varint(len as u64)?;
         }
 
-        if conn.version == PROTOCOL_VERSION_VREVERSO {
+        if conn.version == PROTOCOL_VERSION_VREVERSO && (pkt_type == packet::Type::Short || pkt_type == packet::Type::ZeroRTT) {
             // We need to encode the streamid if any; and the offset
             let (stream_id, offset) = match frames
                 .iter()
@@ -10546,7 +10540,7 @@ pub mod testing {
 
         packet::decrypt_hdr(&mut b, &mut hdr, aead, conn.version).unwrap();
 
-        let pn = if conn.version == crate::PROTOCOL_VERSION_VREVERSO {
+        let pn = if conn.version == crate::PROTOCOL_VERSION_VREVERSO && (hdr.ty == packet::Type::Short || hdr.ty == packet::Type::ZeroRTT) {
             packet::decode_pkt_num_v3(
                 conn.pkt_num_spaces[epoch].largest_rx_pkt_num,
                 hdr.pkt_num,
@@ -10562,15 +10556,15 @@ pub mod testing {
 
         let pn_len = hdr.pkt_num_len;
         let mut enc_hdr_len = pn_len;
-        let mut maybe_chunk = if likely(conn.version == PROTOCOL_VERSION_VREVERSO)
+        let mut maybe_chunk = if likely(conn.version == PROTOCOL_VERSION_VREVERSO && (hdr.ty == packet::Type::Short || hdr.ty == packet::Type::ZeroRTT))
         {
-            // let's use this control flow to also add the true enc_hdr_len
-            // on V3.
-            enc_hdr_len += hdr.expected_stream_id_len;
-            enc_hdr_len += hdr.truncated_offset_len;
 
             // A stream_id 0 indicates no stream frame encrypted.
             if hdr.expected_stream_id > 0 {
+                // let's use this control flow to also add the true enc_hdr_len
+                // on V3.
+                enc_hdr_len += hdr.expected_stream_id_len;
+                enc_hdr_len += hdr.truncated_offset_len;
                 match conn.streams.get_mut(hdr.expected_stream_id) {
                     Some(s) => {
                         let mut offset =
