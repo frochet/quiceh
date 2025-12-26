@@ -33,7 +33,7 @@ struct Args {
 
 type ClientMap = HashMap<
     quiceh::ConnectionId<'static>,
-    mpsc::Sender<(Pooled<ConsumeBuffer>, net::SocketAddr)>,
+    mpsc::UnboundedSender<(Pooled<ConsumeBuffer>, net::SocketAddr)>,
 >;
 
 const POOL_SHARDS: usize = 8;
@@ -43,7 +43,7 @@ const LARGE_POOL_BUF_SIZE: usize = 65535;
 
 type BufPool = Pool<POOL_SHARDS, ConsumeBuffer>;
 
-static SMALL_POOL: BufPool = BufPool::new(128, LARGE_POOL_BUF_SIZE);
+static SMALL_POOL: BufPool = BufPool::new(10_000, LARGE_POOL_BUF_SIZE);
 static LARGE_POOL: BufPool = BufPool::new(16, LARGE_POOL_BUF_SIZE);
 
 #[cfg_attr(feature = "current_thread", tokio::main(flavor = "current_thread"))]
@@ -229,7 +229,7 @@ async fn main() {
                         )
                         .unwrap();
 
-                        let (tx, rx) = mpsc::channel(128);
+                        let (tx, rx) = mpsc::unbounded_channel();
 
                         tokio::spawn(handle_client(
                             socket.clone(),
@@ -246,7 +246,7 @@ async fn main() {
                     };
 
                     if let Some(client_sender) = client_sender {
-                        if let Err(e) = client_sender.send((buf, from)).await {
+                        if let Err(e) = client_sender.send((buf, from)) {
                             error!("Failed to send packet to client handler: {}", e);
                         }
                     }
@@ -259,7 +259,7 @@ async fn main() {
 
 async fn handle_client(
     socket: Arc<tokio::net::UdpSocket>, mut conn: quiceh::Connection,
-    mut rx: mpsc::Receiver<(Pooled<ConsumeBuffer>, net::SocketAddr)>,
+    mut rx: mpsc::UnboundedReceiver<(Pooled<ConsumeBuffer>, net::SocketAddr)>,
     tx_garbage_conn: mpsc::Sender<Vec<u8>>, local_addr: net::SocketAddr,
 ) {
     let mut partial_responses: HashMap<u64, PartialResponse> = HashMap::new();
@@ -416,7 +416,9 @@ async fn handle_client(
                     send_state.send((&socket).into(), &transmit)
                 }) {
                     Ok(()) => break,
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        continue
+                    },
                     Err(e) => panic!("send_to() failed: {:?}", e),
                 }
             }
