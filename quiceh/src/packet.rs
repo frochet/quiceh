@@ -39,7 +39,6 @@ use crate::crypto;
 use crate::rand;
 use crate::ranges;
 use crate::stream;
-use branches::likely;
 
 const FORM_BIT: u8 = 0x80;
 const FIXED_BIT: u8 = 0x40;
@@ -536,6 +535,13 @@ impl<'a> Header<'a> {
     fn is_long(b: u8) -> bool {
         b & FORM_BIT != 0
     }
+
+    /// Return true if the packet is a ZeroRTT packet
+    ///
+    /// The `b` parameter represents the first byte of the QUIC header.
+    fn is_zerortt(b: u8) -> bool {
+        (b & TYPE_MASK) >> 4 == 0x01
+    }
 }
 
 impl<'a> std::fmt::Debug for Header<'a> {
@@ -639,7 +645,13 @@ pub fn decrypt_hdr(
         first_buf.as_ref()[0]
     };
 
-    if likely(version == crate::PROTOCOL_VERSION_VREVERSO && !Header::is_long(first)) {
+    let is_vreverso_special = if version == crate::PROTOCOL_VERSION_VREVERSO {
+        !Header::is_long(first) || Header::is_zerortt(first)
+    } else {
+        false
+    };
+
+    if is_vreverso_special {
         let mut pn_stream_and_sample = b.peek_bytes_mut(MAX_PKT_NUM_STREAMID_OFFSET_LEN + SAMPLE_LEN)?;
 
         let (mut ciphertext, sample) = pn_stream_and_sample.split_at(MAX_PKT_NUM_STREAMID_OFFSET_LEN)?;
@@ -648,7 +660,11 @@ pub fn decrypt_hdr(
 
         let mask = aead.new_mask_13(sample.as_ref())?;
 
-        first ^= mask[0] & 0x1f;
+        if Header::is_long(first) {
+            first ^= mask[0] & 0x0f;
+        } else {
+            first ^= mask[0] & 0x1f;
+        }
 
         let pn_len = usize::from((first & PKT_NUM_MASK) + 1);
 
@@ -891,14 +907,24 @@ fn encrypt_hdr_inner(
     if enc_len > rest.len() {
         return Err(Error::BufferTooShort);
     }
-    if likely(version == crate::PROTOCOL_VERSION_VREVERSO && !Header::is_long(first[0])) {
+    let is_vreverso_special = if version == crate::PROTOCOL_VERSION_VREVERSO {
+        !Header::is_long(first[0]) || Header::is_zerortt(first[0])
+    } else {
+        false
+    };
+
+    if is_vreverso_special {
         // considering max 4 bytes for the streamid and 4 bytes for the buffer offset.
         // for which the encoding/decoding would work in a similar fashion than for the packet number.
         let sample = &payload
             [MAX_PKT_NUM_STREAMID_OFFSET_LEN - enc_len..SAMPLE_LEN + (MAX_PKT_NUM_STREAMID_OFFSET_LEN - enc_len)];
         let mask = aead.new_mask_13(sample)?;
 
-        first[0] ^= mask[0] & 0x1f;
+        if Header::is_long(first[0]) {
+            first[0] ^= mask[0] & 0x0f;
+        } else {
+            first[0] ^= mask[0] & 0x1f;
+        }
 
         let len = rest.len();
         let buf = &mut rest[len - enc_len..];

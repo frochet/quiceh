@@ -2656,6 +2656,8 @@ impl<F: BufFactory> Connection<F> {
                     &self.trace_id,
                 )
             })?;
+
+        trace!("{} rx got packet type {:?}", self.trace_id(), hdr.ty);
         if hdr.ty == packet::Type::VersionNegotiation {
             // Version negotiation packets can only be sent by the server.
             if self.is_server {
@@ -2947,16 +2949,18 @@ impl<F: BufFactory> Connection<F> {
         ) {
             // let's use this control flow to also add the true enc_hdr_len
             // on V3.
-            if hdr.expected_stream_id > 0
-                && (hdr.ty == packet::Type::Short
-                    || hdr.ty == packet::Type::ZeroRTT)
-            {
-                // Long Header packets should not have a stream_id and truncated offset bytes
-                // A stream_id 0 indicates no stream frame encrypted.
+            // Long Header packets except ZeroRTT should not have a stream_id and truncated offset
+            // bytes A stream_id 0 indicates no stream frame encrypted.
+            if hdr.ty == packet::Type::Short
+                    || hdr.ty == packet::Type::ZeroRTT {
                 dec_len += enc_hdr_len;
                 enc_hdr_len += hdr.expected_stream_id_len;
                 enc_hdr_len += hdr.truncated_offset_len;
                 dec_len -= enc_hdr_len;
+            }
+
+            if hdr.expected_stream_id > 0
+            {
                 match self.streams.get_mut(hdr.expected_stream_id) {
                     Some(s) => {
                         let mut offset =
@@ -10556,15 +10560,15 @@ pub mod testing {
 
         let pn_len = hdr.pkt_num_len;
         let mut enc_hdr_len = pn_len;
-        let mut maybe_chunk = if likely(conn.version == PROTOCOL_VERSION_VREVERSO && (hdr.ty == packet::Type::Short || hdr.ty == packet::Type::ZeroRTT))
+        let mut maybe_chunk = if conn.version == PROTOCOL_VERSION_VREVERSO && (hdr.ty == packet::Type::Short || hdr.ty == packet::Type::ZeroRTT)
         {
 
+            // let's use this control flow to also add the true enc_hdr_len
+            // on V3.
+            enc_hdr_len += hdr.expected_stream_id_len;
+            enc_hdr_len += hdr.truncated_offset_len;
             // A stream_id 0 indicates no stream frame encrypted.
             if hdr.expected_stream_id > 0 {
-                // let's use this control flow to also add the true enc_hdr_len
-                // on V3.
-                enc_hdr_len += hdr.expected_stream_id_len;
-                enc_hdr_len += hdr.truncated_offset_len;
                 match conn.streams.get_mut(hdr.expected_stream_id) {
                     Some(s) => {
                         let mut offset =
@@ -12482,12 +12486,7 @@ mod tests {
             .paths
             .get_active()
             .expect("initial path not found");
-        if pipe.server.version == PROTOCOL_VERSION_VREVERSO {
-            // + 8 bytes * MAX_AMPLIFICATION_FACTOR for V3.
-            assert_eq!(initial_path.max_send_bytes, 219);
-        } else {
-            assert_eq!(initial_path.max_send_bytes, 195);
-        }
+        assert_eq!(initial_path.max_send_bytes, 195);
 
         // Force server to send a single PING frame.
         pipe.server
@@ -12621,7 +12620,7 @@ mod tests {
             stream_id: 8,
             data: <RangeBuf>::from(b"a", 1, false),
         }];
-
+    
         let len = pipe
             .send_pkt_to_server(pkt_type, &frames, &mut buf)
             .unwrap();
@@ -15079,13 +15078,7 @@ mod tests {
         buf[written - 1] = !buf[written - 1];
 
         // Client will ignore invalid packet.
-        if pipe.client.version == PROTOCOL_VERSION_VREVERSO {
-            // 8 more bytes pushed by encode_pkt() for 4 bytes stream_id and
-            // 4 bytes offset
-            assert_eq!(pipe.client_recv(&mut buf[..written]), Ok(79));
-        } else {
-            assert_eq!(pipe.client_recv(&mut buf[..written]), Ok(71));
-        }
+        assert_eq!(pipe.client_recv(&mut buf[..written]), Ok(71));
 
         // The connection should be alive...
         assert!(!pipe.client.is_closed());
