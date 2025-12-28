@@ -194,11 +194,7 @@ impl Args for CommonArgs {
             .unwrap();
 
         let max_bufpool_size = if !args.get_str("--max-bufpool-size").is_empty() {
-            Some(
-                args.get_str("--max-bufpool-size")
-                    .parse::<usize>()
-                    .unwrap(),
-            )
+            Some(args.get_str("--max-bufpool-size").parse::<usize>().unwrap())
         } else {
             None
         };
@@ -303,7 +299,7 @@ Options:
   --session-file PATH      File used to cache a TLS session for resumption.
   --source-port PORT       Source port to use when connecting to the server [default: 0].
   --initial-cwnd-packets PACKETS   The initial congestion window size in terms of packet count [default: 10].
-  --max-bufpool-size BYTES   The maximum number of bytes the buffer pool can allocate. If not specified, a default will be used.
+  --max-bufpool-size BYTES   The maximum number of bytes the buffer pool can allocate. If not specified, a default of 2GiB is used.
   -h --help                Show this screen.
 ";
 

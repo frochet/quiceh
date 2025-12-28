@@ -106,7 +106,7 @@ type ClientMap = HashMap<
 const POOL_SHARDS: usize = 8;
 const _MAX_POOL_BUF_SIZE: usize = 64 * 1024;
 const SMALL_POOL_BUF_SIZE: usize = 4096;
-const LARGE_POOL_BUF_SIZE: usize = 1024 * 64;
+const LARGE_POOL_BUF_SIZE: usize = 1024 * 80;
 
 type BufPool = Pool<POOL_SHARDS, ConsumeBuffer>;
 
@@ -161,7 +161,7 @@ async fn main() {
     config.set_initial_max_streams_uni(100);
     config.set_disable_active_migration(true);
 
-    config.set_initial_congestion_window_packets(10);
+    config.set_initial_congestion_window_packets(20);
     config.set_max_connection_window(25_165_824);
     config.set_max_stream_window(16_777_216);
     config.enable_early_data();
