@@ -653,6 +653,8 @@ impl Stream {
             let varint =
                 octets_rev::Octets::with_slice(&self.state_buf).get_varint()?;
 
+            self.reset_data_event();
+
             Ok((Some(varint), consumed))
         } else {
             let varint = octets_rev::Octets::with_slice(buf).get_varint()?;
@@ -797,6 +799,12 @@ impl Stream {
         self.state_off += consumed;
 
         let (_, len, _) = conn.stream_peek(self.id)?;
+
+        trace!(
+            "mark_data_consumed: peeking stream len: {}, consumed is {}",
+            len,
+            consumed
+        );
 
         // Tell the underlying QUIC stream that we consumed part of the data.
         conn.stream_consumed(self.id, consumed)?;

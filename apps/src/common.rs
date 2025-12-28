@@ -572,71 +572,73 @@ where
         &mut self, conn: &mut quiceh::Connection<F>,
         req_start: &std::time::Instant,
     ) {
-        for s in conn.readable() {
-            let (len, fin) = match conn.stream_peek(s) {
-                Ok((b, len, fin)) => {
-                    trace!(
-                        "received {}  bytes available to consume, fin is {}",
-                        len,
-                        fin
+        'readable: for s in conn.readable() {
+            loop {
+                let (len, fin) = match conn.stream_peek(s) {
+                    Ok((b, len, fin)) => {
+                        trace!(
+                            "received {} bytes available to consume, fin is {}",
+                            len,
+                            fin
+                        );
+
+                        let req = self
+                            .reqs
+                            .iter_mut()
+                            .find(|r| r.stream_id == Some(s))
+                            .unwrap();
+
+                        match &mut req.response_writer {
+                            Some(rw) => {
+                                rw.write_all(b).ok();
+                            },
+
+                            None => {
+                                self.output_sink.borrow_mut()(unsafe {
+                                    String::from_utf8_unchecked(b.to_vec())
+                                });
+                            },
+                        };
+
+                        (len, fin)
+                    },
+                    Err(_) => continue 'readable,
+                };
+
+                conn.stream_consumed(s, len)
+                    .expect("Could not consume buffer");
+
+                // The server reported that it has no more data to send on
+                // a client-initiated
+                // bidirectional stream, which means
+                // we got the full response. If all responses are received
+                // then close the connection.
+                if &s % 4 == 0 && fin {
+                    self.reqs_complete += 1;
+                    let reqs_count = self.reqs.len();
+
+                    debug!(
+                        "{}/{} responses received",
+                        self.reqs_complete, reqs_count
                     );
 
-                    let req = self
-                        .reqs
-                        .iter_mut()
-                        .find(|r| r.stream_id == Some(s))
-                        .unwrap();
+                    if self.reqs_complete == reqs_count {
+                        info!(
+                            "{}/{} response(s) received in {:?}, closing...",
+                            self.reqs_complete,
+                            reqs_count,
+                            req_start.elapsed()
+                        );
 
-                    match &mut req.response_writer {
-                        Some(rw) => {
-                            rw.write_all(b).ok();
-                        },
+                        match conn.close(true, 0x00, b"kthxbye") {
+                            // Already closed.
+                            Ok(_) | Err(quiceh::Error::Done) => (),
 
-                        None => {
-                            self.output_sink.borrow_mut()(unsafe {
-                                String::from_utf8_unchecked(b.to_vec())
-                            });
-                        },
-                    };
+                            Err(e) => panic!("error closing conn: {:?}", e),
+                        }
 
-                    (len, fin)
-                },
-                Err(_) => continue,
-            };
-
-            conn.stream_consumed(s, len)
-                .expect("Could not consume buffer");
-
-            // The server reported that it has no more data to send on
-            // a client-initiated
-            // bidirectional stream, which means
-            // we got the full response. If all responses are received
-            // then close the connection.
-            if &s % 4 == 0 && fin {
-                self.reqs_complete += 1;
-                let reqs_count = self.reqs.len();
-
-                debug!(
-                    "{}/{} responses received",
-                    self.reqs_complete, reqs_count
-                );
-
-                if self.reqs_complete == reqs_count {
-                    info!(
-                        "{}/{} response(s) received in {:?}, closing...",
-                        self.reqs_complete,
-                        reqs_count,
-                        req_start.elapsed()
-                    );
-
-                    match conn.close(true, 0x00, b"kthxbye") {
-                        // Already closed.
-                        Ok(_) | Err(quiceh::Error::Done) => (),
-
-                        Err(e) => panic!("error closing conn: {:?}", e),
+                        break 'readable;
                     }
-
-                    break;
                 }
             }
         }
