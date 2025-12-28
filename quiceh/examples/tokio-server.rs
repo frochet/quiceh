@@ -7,6 +7,9 @@ use std::sync::Arc;
 
 use ring::rand::*;
 
+use quiceh::BufFactory;
+use quiceh::BufSplit;
+
 use quinn_udp::Transmit;
 use quinn_udp::UdpSocketState;
 use tokio::sync::mpsc;
@@ -17,10 +20,74 @@ use buffer_pool::ConsumeBuffer;
 use buffer_pool::Pool;
 use buffer_pool::Pooled;
 
+use rustc_hash::FxHashMap;
+
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
+#[derive(Debug, Clone, Default)]
+struct MyBufFactory;
+
+#[derive(Debug, Clone, Default)]
+struct MyBuf {
+    inner: Arc<Box<[u8]>>,
+    start: usize,
+    end: usize,
+}
+
+impl MyBuf {
+    fn new(inner: Arc<Box<[u8]>>, start: usize, end: usize) -> Self {
+        Self { inner, start, end }
+    }
+
+    fn len(&self) -> usize {
+        self.end - self.start
+    }
+}
+
+impl From<Vec<u8>> for MyBuf {
+    fn from(value: Vec<u8>) -> Self {
+        MyBuf {
+            start: 0,
+            end: value.len(),
+            inner: Arc::new(value.into_boxed_slice()),
+        }
+    }
+}
+
+impl BufFactory for MyBufFactory {
+    type Buf = MyBuf;
+
+    fn buf_from_slice(buf: &[u8]) -> Self::Buf {
+        MyBuf {
+            start: 0,
+            end: buf.len(),
+            inner: Arc::new(buf.into()),
+        }
+    }
+}
+
+impl BufSplit for MyBuf {
+    fn split_at(&mut self, at: usize) -> Self {
+        assert!(at <= self.len(), "split_at index out of bounds");
+
+        let newend = self.start + at;
+        let buf = MyBuf::new(self.inner.clone(), newend, self.end);
+
+        self.end = newend;
+
+        buf
+    }
+}
+
+impl AsRef<[u8]> for MyBuf {
+    fn as_ref(&self) -> &[u8] {
+        &self.inner[self.start..self.end]
+    }
+}
+
 struct PartialResponse {
-    body: Vec<u8>,
+    chunk: MyBuf,
+    remaining_chunk: Option<MyBuf>,
     written: usize,
     tot_size: usize,
 }
@@ -39,12 +106,12 @@ type ClientMap = HashMap<
 const POOL_SHARDS: usize = 8;
 const _MAX_POOL_BUF_SIZE: usize = 64 * 1024;
 const SMALL_POOL_BUF_SIZE: usize = 4096;
-const LARGE_POOL_BUF_SIZE: usize = 65535;
+const LARGE_POOL_BUF_SIZE: usize = 1024 * 64;
 
 type BufPool = Pool<POOL_SHARDS, ConsumeBuffer>;
 
 static SMALL_POOL: BufPool = BufPool::new(10_000, LARGE_POOL_BUF_SIZE);
-static LARGE_POOL: BufPool = BufPool::new(16, LARGE_POOL_BUF_SIZE);
+static LARGE_POOL: BufPool = BufPool::new(100, LARGE_POOL_BUF_SIZE);
 
 #[cfg_attr(feature = "current_thread", tokio::main(flavor = "current_thread"))]
 #[cfg_attr(not(feature = "current_thread"), tokio::main)]
@@ -101,9 +168,9 @@ async fn main() {
     config.enable_pacing(pacing);
     config.enable_hidden_copy_for_zc_sender(false);
 
+    let mut scid = [0; quiceh::MAX_CONN_ID_LEN];
     let rng = SystemRandom::new();
-    let conn_id_seed =
-        ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap();
+    rng.fill(&mut scid).expect("Initiating random bytes");
 
     let mut clients = ClientMap::new();
     let (tx_garbage_conn, mut rx_garbage_conn) = mpsc::channel(128);
@@ -135,12 +202,7 @@ async fn main() {
 
                     trace!("got packet {:?}", hdr);
 
-                    let conn_id = ring::hmac::sign(&conn_id_seed, &hdr.dcid);
-                    let conn_id = &conn_id.as_ref()[..quiceh::MAX_CONN_ID_LEN];
-                    let conn_id = conn_id.to_vec().into();
-
-                    let client_sender = if !clients.contains_key(&hdr.dcid) &&
-                        !clients.contains_key(&conn_id)
+                    let client_sender = if !clients.contains_key(&hdr.dcid)
                     {
                         if hdr.ty != quiceh::Type::Initial {
                             error!("Packet is not Initial");
@@ -165,12 +227,10 @@ async fn main() {
                             continue;
                         }
 
-                        let mut scid = [0; quiceh::MAX_CONN_ID_LEN];
-                        scid.copy_from_slice(&conn_id);
+                        rng.fill(&mut scid).expect("Filling random bytes");
 
                         let mut odcid = None;
 
-                        // TODO add CLAP and CLAP param
                         if args.with_retry {
                             let token = hdr.token.as_ref().unwrap();
 
@@ -220,7 +280,7 @@ async fn main() {
 
                         debug!("New connection: dcid={:?} scid={:?}", hdr.dcid, scid);
 
-                        let conn = quiceh::accept(
+                        let conn = quiceh::accept_with_buf_factory::<MyBufFactory>(
                             &scid,
                             odcid.as_ref(),
                             socket.local_addr().unwrap(),
@@ -236,13 +296,12 @@ async fn main() {
                             conn,
                             rx,
                             tx_garbage_conn.clone(),
-                            socket.local_addr().unwrap(),
                         ));
 
                         clients.insert(scid.clone(), tx.clone());
                         Some(tx)
                     } else {
-                        clients.get(&hdr.dcid).or_else(|| clients.get(&conn_id)).cloned()
+                        clients.get(&hdr.dcid).cloned()
                     };
 
                     if let Some(client_sender) = client_sender {
@@ -258,14 +317,16 @@ async fn main() {
 }
 
 async fn handle_client(
-    socket: Arc<tokio::net::UdpSocket>, mut conn: quiceh::Connection,
+    socket: Arc<tokio::net::UdpSocket>,
+    mut conn: quiceh::Connection<MyBufFactory>,
     mut rx: mpsc::UnboundedReceiver<(Pooled<ConsumeBuffer>, net::SocketAddr)>,
-    tx_garbage_conn: mpsc::Sender<Vec<u8>>, local_addr: net::SocketAddr,
+    tx_garbage_conn: mpsc::Sender<Vec<u8>>,
 ) {
-    let mut partial_responses: HashMap<u64, PartialResponse> = HashMap::new();
+    let mut partial_responses: FxHashMap<u64, PartialResponse> =
+        FxHashMap::default();
     let mut out = LARGE_POOL.get_with(|d| d.expand(LARGE_POOL_BUF_SIZE));
     let mut loss_rate: f64 = 0.0;
-    let mut max_send_burst = 65535;
+    let mut max_send_burst = LARGE_POOL_BUF_SIZE;
     let send_state = UdpSocketState::new((&socket).into()).unwrap();
     send_state
         .set_send_buffer_size((&socket).into(), 2097152)
@@ -329,9 +390,11 @@ async fn handle_client(
                             let response = handle_stream(&chunk[..], ".").await;
                             let fin = response.body.len() == response.tot_size;
                             debug!("Starting sending body part of {} for total size {}, fin is {}", response.body.len(), response.tot_size, fin);
-                            let written = match conn.stream_send(s, &response.body, fin) {
+
+                            let body_len = response.body.len();
+                            let (written, remaining) = match conn.stream_send_zc(s, response.body.clone(), Some(body_len), fin) {
                                 Ok(v) => v,
-                                Err(quiceh::Error::Done) => 0,
+                                Err(quiceh::Error::Done) => (0, None),
                                 Err(e) => {
                                     error!("{} stream send failed {:?}", conn.trace_id(), e);
                                     break;
@@ -341,7 +404,8 @@ async fn handle_client(
                             if written < response.tot_size {
                                 debug!("{} written partially on stream {} bytes", conn.trace_id(), written);
                                 partial_responses.insert(s, PartialResponse {
-                                    body: response.body,
+                                    chunk: response.body,
+                                    remaining_chunk: remaining,
                                     written,
                                     tot_size: response.tot_size,
                                 });
@@ -356,8 +420,8 @@ async fn handle_client(
             }
         }
         continue_write = false;
-        let mut total_write = 0;
         let mut dst_info = None;
+        let mut total_write = 0;
         let new_max_send_burst = {
             // Reduce max_send_burst by 25% if loss is increasing more than 0.1%.
             let new_loss_rate =
@@ -369,10 +433,10 @@ async fn handle_client(
                 loss_rate = new_loss_rate;
             }
 
-            let new_max_send_burst = conn.send_quantum().min(max_send_burst)
-                / MAX_DATAGRAM_SIZE
-                * MAX_DATAGRAM_SIZE;
-
+            //let new_max_send_burst = conn.send_quantum().min(max_send_burst)
+            // MAX_DATAGRAM_SIZE
+            //* MAX_DATAGRAM_SIZE;
+            let new_max_send_burst = max_send_burst;
             'send: while total_write < new_max_send_burst {
                 let (write, send_info) =
                     match conn.send(&mut out[total_write..new_max_send_burst]) {
@@ -407,7 +471,7 @@ async fn handle_client(
                 ecn: None,
                 contents: &out[..total_write],
                 segment_size: Some(MAX_DATAGRAM_SIZE),
-                src_ip: Some(local_addr.ip()),
+                src_ip: None,
             };
 
             loop {
@@ -415,9 +479,17 @@ async fn handle_client(
                 match socket.try_io(tokio::io::Interest::WRITABLE, || {
                     send_state.send((&socket).into(), &transmit)
                 }) {
-                    Ok(()) => break,
+                    Ok(()) => {
+                        debug!(
+                            "{} wrote {} on socket",
+                            conn.trace_id(),
+                            total_write
+                        );
+                        break;
+                    },
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        continue
+                        debug!("Blocked");
+                        continue;
                     },
                     Err(e) => panic!("send_to() failed: {:?}", e),
                 }
@@ -485,7 +557,7 @@ fn validate_token<'a>(
 }
 
 struct Response {
-    body: Vec<u8>,
+    body: MyBuf,
     tot_size: usize,
 }
 
@@ -520,14 +592,14 @@ async fn handle_stream(buf: &[u8], root: &str) -> Response {
                     (vec![42; 1024 * 1024], val)
                 };
                 Response {
-                    body: res,
+                    body: res.into(),
                     tot_size,
                 }
             } else {
                 let res = b"Invalid download request!\r\n".to_vec();
                 let len = res.len();
                 Response {
-                    body: res,
+                    body: res.into(),
                     tot_size: len,
                 }
             }
@@ -538,7 +610,7 @@ async fn handle_stream(buf: &[u8], root: &str) -> Response {
             info!("sending response of size {} on stream", body.len(),);
             let len = body.len();
             Response {
-                body,
+                body: body.into(),
                 tot_size: len,
             }
         }
@@ -546,45 +618,56 @@ async fn handle_stream(buf: &[u8], root: &str) -> Response {
         let res = b"Not a GET request!\r\n".to_vec();
         let len = res.len();
         Response {
-            body: res,
+            body: res.into(),
             tot_size: len,
         }
     }
 }
 
 fn handle_writable(
-    conn: &mut quiceh::Connection, stream_id: u64,
-    partial_responses: &mut HashMap<u64, PartialResponse>,
+    conn: &mut quiceh::Connection<MyBufFactory>, stream_id: u64,
+    partial_responses: &mut FxHashMap<u64, PartialResponse>,
 ) {
     debug!("{} stream {} is writable", conn.trace_id(), stream_id);
     if !partial_responses.contains_key(&stream_id) {
         return;
     }
     let resp = partial_responses.get_mut(&stream_id).unwrap();
-    let body = if resp.written < resp.body.len() {
-        &resp.body[resp.written..]
+
+    let body = if let Some(rem) = resp.remaining_chunk.take() {
+        rem
     } else {
-        let upper = (resp.tot_size - resp.written).min(resp.body.len());
-        &resp.body[..upper]
+        let upper = (resp.tot_size - resp.written).min(resp.chunk.len());
+        let mut b = resp.chunk.clone();
+        if upper < b.len() {
+            b.split_at(upper);
+        }
+        b
     };
 
-    let fin = body.len() >= resp.tot_size - resp.written;
+    let fin = resp.written + body.len() >= resp.tot_size;
     debug!("fin bit is {}", fin);
-    let written = match conn.stream_send(stream_id, body, fin) {
-        Ok(v) => v,
-        Err(quiceh::Error::Done) => 0,
-        Err(e) => {
-            partial_responses.remove(&stream_id);
-            error!("{} stream send failed {:?}", conn.trace_id(), e);
-            return;
-        },
-    };
+
+    let body_len = body.len();
+    let (written, remaining) =
+        match conn.stream_send_zc(stream_id, body, Some(body_len), fin) {
+            Ok(v) => v,
+            Err(quiceh::Error::Done) => (0, None),
+            Err(e) => {
+                partial_responses.remove(&stream_id);
+                error!("{} stream send failed {:?}", conn.trace_id(), e);
+                return;
+            },
+        };
+
     debug!(
         "{} written partially on stream {} bytes",
         conn.trace_id(),
         written
     );
     resp.written += written;
+    resp.remaining_chunk = remaining;
+
     if resp.written == resp.tot_size {
         partial_responses.remove(&stream_id);
     }

@@ -566,7 +566,9 @@ impl RecvBuf {
             );
 
             while chunk.max_off() <= this_offset {
-                chunk = chunks_iter.next().unwrap();
+                chunk = chunks_iter
+                    .next()
+                    .expect("BUG: we should have a memory chunk");
             }
             // We need to copy in case some out of order packet decryption
             // happened to avoid data corruption.
