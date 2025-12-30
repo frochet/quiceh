@@ -240,10 +240,10 @@ impl<F: BufFactory> SendBuf<F> {
 
         while let Some(buf) = self.data.get(self.pos) {
             let off_front = self.off_front();
-            if self.is_empty() ||
-                off_front >= self.off ||
-                off_front != next_off ||
-                off_front >= self.max_data
+            if self.is_empty()
+                || off_front >= self.off
+                || off_front != next_off
+                || off_front >= self.max_data
             {
                 break;
             }
@@ -301,10 +301,10 @@ impl<F: BufFactory> SendBuf<F> {
         while out_len > 0 {
             let off_front = self.off_front();
 
-            if self.is_empty() ||
-                off_front >= self.off ||
-                off_front != next_off ||
-                off_front >= self.max_data
+            if self.is_empty()
+                || off_front >= self.off
+                || off_front != next_off
+                || off_front >= self.max_data
             {
                 break;
             }
@@ -348,10 +348,10 @@ impl<F: BufFactory> SendBuf<F> {
         while out_len > 0 {
             let off_front = self.off_front();
 
-            if self.is_empty() ||
-                off_front >= self.off ||
-                off_front != next_off ||
-                off_front >= self.max_data
+            if self.is_empty()
+                || off_front >= self.off
+                || off_front != next_off
+                || off_front >= self.max_data
             {
                 break;
             }
@@ -451,6 +451,8 @@ impl<F: BufFactory> SendBuf<F> {
             // Highest contiguous acked range falls within newly acked range,
             // so we can't drop it.
             if buf.off < ack_off && ack_off < buf.max_off() {
+                trace!("Highest contiguous acked range falls within newly acked range: ack_off: {},
+                    buf.off: {}", ack_off, buf.off);
                 break;
             }
 
@@ -468,7 +470,7 @@ impl<F: BufFactory> SendBuf<F> {
         }
     }
 
-    pub fn retransmit(&mut self, off: u64, len: usize) {
+    pub fn retransmit(&mut self, mut off: u64, len: usize) {
         let max_off = off + len as u64;
         let ack_off = self.ack_off();
 
@@ -478,6 +480,16 @@ impl<F: BufFactory> SendBuf<F> {
 
         if max_off <= ack_off {
             return;
+        }
+
+        if off < ack_off && max_off >= ack_off {
+            trace!(
+                "We are trying retransmit bytes that were partially acked. off: {}, ack_off: {}, max_off: {}",
+                off,
+                ack_off,
+                max_off,
+            );
+            off = ack_off;
         }
 
         for i in 0..self.data.len() {

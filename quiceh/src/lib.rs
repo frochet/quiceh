@@ -1585,12 +1585,6 @@ where
     /// The negotiated ALPN protocol.
     alpn: Vec<u8>,
 
-    /// The length of the expected stream_id in the packet being sent
-    expected_stream_id_len: usize,
-
-    /// The length of the expected offset in the packet being sent
-    truncated_offset_len: usize,
-
     /// Whether this is a server-side connection.
     is_server: bool,
 
@@ -2192,10 +2186,6 @@ impl<F: BufFactory> Connection<F> {
             alpn: Vec::new(),
 
             is_server,
-
-            expected_stream_id_len: 1,
-
-            truncated_offset_len: 1,
 
             derived_initial_secrets: false,
 
@@ -4138,6 +4128,10 @@ impl<F: BufFactory> Connection<F> {
             None
         };
 
+        // Overhead calculations are first made based on these expectations.
+        let mut expected_stream_id_len = 1;
+        let mut truncated_offset_len = 1;
+
         let epoch = pkt_type.to_epoch()?;
         let pkt_space = &mut self.pkt_num_spaces[epoch];
         // Process lost frames. There might be several paths having lost frames.
@@ -4982,7 +4976,6 @@ impl<F: BufFactory> Connection<F> {
             } else {
                 b.off() + cumul
             };
-            let max_stream_window = self.streams.max_stream_window;
             while let Some(priority_key) = self.streams.peek_flushable() {
                 let stream_id = priority_key.id;
                 let stream = match self.streams.get_mut(stream_id) {
@@ -4998,13 +4991,13 @@ impl<F: BufFactory> Connection<F> {
                 };
 
                 let stream_off = stream.send.off_front();
-                // let largest_off_acked =
-                // stream.send.ack_off().
-                // saturating_sub(crate::stream::MAX_STREAM_WINDOW);
-                let largest_off_acked =
-                    stream.send.ack_off().saturating_sub(max_stream_window);
+                let largest_off_acked = path
+                    .recovery
+                    .get_largest_stream_off_acked_on_epoch(stream_id, epoch)
+                    .saturating_sub(1);
+
                 trace!(
-                    "stream_off: {}, Largest_acked-1:{}",
+                    "stream_off: {}, Largest_off_acked:{}",
                     stream_off,
                     largest_off_acked
                 );
@@ -5014,37 +5007,37 @@ impl<F: BufFactory> Connection<F> {
                     self.version == PROTOCOL_VERSION_VREVERSO,
                 ) {
                     b.rewind(payload_offset - header_offset)?;
-                    self.expected_stream_id_len =
+                    expected_stream_id_len =
                         packet::num_len_to_encode(stream_id) + 1;
                     packet::encode_pkt_num_v3(
                         pn,
                         pn_len,
-                        self.expected_stream_id_len,
+                        expected_stream_id_len,
                         &mut b,
                     )?;
-                    self.truncated_offset_len = packet::truncated_offset_len(
+                    truncated_offset_len = packet::truncated_offset_len(
                         stream_off,
                         largest_off_acked,
                     );
                     packet::encode_u64_num_and_nextelem_len(
                         stream_id,
-                        self.truncated_offset_len,
+                        truncated_offset_len,
                         &mut b,
                     )?;
                     packet::encode_offset_num(
                         stream_off,
-                        self.truncated_offset_len,
+                        truncated_offset_len,
                         &mut b,
                     )?;
                     payload_offset = b.off();
                     // adjust left that was computed based on a 8 bytes overhead
                     let fixed = match 8_usize.checked_sub(
-                        self.expected_stream_id_len + self.truncated_offset_len,
+                        expected_stream_id_len + truncated_offset_len,
                     ) {
                         Some(v) => v,
                         None => {
                             trace!("checked_sub underflow. expected_stream_id_len is {0}, truncated_offset_len is {1}",
-                                    self.expected_stream_id_len, self.truncated_offset_len);
+                                    expected_stream_id_len, truncated_offset_len);
                             // Should we panic?
                             panic!("this shouldn't happen");
                         },
@@ -5083,8 +5076,6 @@ impl<F: BufFactory> Connection<F> {
                             left -= fixed_overhead;
                             has_fixed_overhead = false;
                         }
-                        self.expected_stream_id_len = 1;
-                        self.truncated_offset_len = 1;
                         continue;
                     },
                 };
@@ -5471,8 +5462,8 @@ impl<F: BufFactory> Connection<F> {
                 && pkt_type == packet::Type::ZeroRTT
             {
                 pn_len
-                    + self.expected_stream_id_len
-                    + self.truncated_offset_len
+                    + expected_stream_id_len
+                    + truncated_offset_len
                     + payload_len
                     + crypto_overhead
             } else {
@@ -5657,7 +5648,7 @@ impl<F: BufFactory> Connection<F> {
                 && (pkt_type == packet::Type::Short
                     || pkt_type == packet::Type::ZeroRTT),
         ) {
-            pn_len + self.expected_stream_id_len + self.truncated_offset_len
+            pn_len + expected_stream_id_len + truncated_offset_len
         } else {
             pn_len
         };
@@ -5673,9 +5664,6 @@ impl<F: BufFactory> Connection<F> {
                 self.version,
             )?;
         }
-
-        self.expected_stream_id_len = 1;
-        self.truncated_offset_len = 1;
 
         let sent_pkt = recovery::Sent {
             pkt_num: pn,
@@ -5923,6 +5911,12 @@ impl<F: BufFactory> Connection<F> {
                 self.streams.remove_readable(&priority_key);
             }
         }
+
+        trace!(
+            "{} stream_consumed: consuming {} bytes",
+            self.trace_id(),
+            consumed
+        );
 
         let stream = self
             .streams
@@ -10505,10 +10499,8 @@ pub mod testing {
             // both <= 63 in the tests.
             //
             // TODO protocol_reverso: improve this instead of being lazy.
-            conn.expected_stream_id_len = 4;
             packet::encode_u64_num_and_nextelem_len(0, 4, &mut b)?;
             b.put_u24(pn as u32)?;
-            conn.truncated_offset_len = 4;
             packet::encode_u64_num_and_nextelem_len(0, 4, &mut b)?;
             b.put_u24(stream_id as u32)?;
             b.put_u32(offset as u32)?;

@@ -605,7 +605,7 @@ pub fn pkt_num_len(pn: u64, largest_acked: u64) -> usize {
     // computes ceil of num_unacked.log2() + 1
     let min_bits = u64::BITS - num_unacked.leading_zeros() + 1;
     // get the num len in bytes
-    ((min_bits + 7) / 8) as usize
+    min_bits.div_ceil(8) as usize
 }
 
 /// In Reverso, 2 bits of the pn are reserved to indicate length of the stream
@@ -616,7 +616,7 @@ pub fn pkt_num_len_v3(pn: u64, largest_acked: u64) -> usize {
     // computes ceil of num_unacked.log2() + 1
     let min_bits = u64::BITS - num_unacked.leading_zeros() + 3;
     // get the num len in bytes
-    ((min_bits + 7) / 8) as usize
+    min_bits.div_ceil(8) as usize
 }
 
 #[inline]
@@ -652,9 +652,11 @@ pub fn decrypt_hdr(
     };
 
     if is_vreverso_special {
-        let mut pn_stream_and_sample = b.peek_bytes_mut(MAX_PKT_NUM_STREAMID_OFFSET_LEN + SAMPLE_LEN)?;
+        let mut pn_stream_and_sample =
+            b.peek_bytes_mut(MAX_PKT_NUM_STREAMID_OFFSET_LEN + SAMPLE_LEN)?;
 
-        let (mut ciphertext, sample) = pn_stream_and_sample.split_at(MAX_PKT_NUM_STREAMID_OFFSET_LEN)?;
+        let (mut ciphertext, sample) =
+            pn_stream_and_sample.split_at(MAX_PKT_NUM_STREAMID_OFFSET_LEN)?;
 
         let ciphertext = ciphertext.as_mut();
 
@@ -674,28 +676,39 @@ pub fn decrypt_hdr(
             ciphertext_slice[i] ^= mask[i + 1];
         }
         // Extract packet number corresponding to the decoded length.
-        let pn_with_streamid_len = unpack_var_int_in_hdr(pn_len, &mut
-                                                         octets_rev::Octets::with_slice(ciphertext_slice))?;
+        let pn_with_streamid_len = unpack_var_int_in_hdr(
+            pn_len,
+            &mut octets_rev::Octets::with_slice(ciphertext_slice),
+        )?;
 
-        let (pn, streamid_len) = decode_num_and_nextelem_len(pn_with_streamid_len, pn_len);
+        let (pn, streamid_len) =
+            decode_num_and_nextelem_len(pn_with_streamid_len, pn_len);
 
-        let bound_streamid = pn_len+streamid_len;
+        let bound_streamid = pn_len + streamid_len;
         ciphertext_slice = &mut ciphertext[..bound_streamid];
         for i in pn_len..bound_streamid {
-            ciphertext_slice[i] ^= mask[i+1];
+            ciphertext_slice[i] ^= mask[i + 1];
         }
         // Extract the streamid
-        let stream_id_with_offset_len = unpack_var_int_in_hdr(streamid_len, &mut
-                                                              octets_rev::Octets::with_slice(&ciphertext_slice[pn_len..bound_streamid]))?;
-        let (stream_id, offset_len) = decode_num_and_nextelem_len(stream_id_with_offset_len,
-                                                                  streamid_len);
-        let bound_offset = bound_streamid+offset_len;
+        let stream_id_with_offset_len = unpack_var_int_in_hdr(
+            streamid_len,
+            &mut octets_rev::Octets::with_slice(
+                &ciphertext_slice[pn_len..bound_streamid],
+            ),
+        )?;
+        let (stream_id, offset_len) =
+            decode_num_and_nextelem_len(stream_id_with_offset_len, streamid_len);
+        let bound_offset = bound_streamid + offset_len;
         ciphertext_slice = &mut ciphertext[..bound_offset];
         for i in bound_streamid..bound_offset {
-            ciphertext_slice[i] ^= mask[i+1];
+            ciphertext_slice[i] ^= mask[i + 1];
         }
-        let offset = unpack_var_int_in_hdr(offset_len, &mut
-                                           octets_rev::Octets::with_slice(&ciphertext_slice[bound_streamid..bound_offset]))?;
+        let offset = unpack_var_int_in_hdr(
+            offset_len,
+            &mut octets_rev::Octets::with_slice(
+                &ciphertext_slice[bound_streamid..bound_offset],
+            ),
+        )?;
 
         // Moving b.split here to please the mighty borrow checker, since cihphertext's ref isn't
         // used anymore.
@@ -710,15 +723,12 @@ pub fn decrypt_hdr(
         hdr.pkt_num_len = pn_len;
 
         // advance the buffer.
-        b.skip(pn_len+streamid_len+offset_len)?;
+        b.skip(pn_len + streamid_len + offset_len)?;
 
         if hdr.ty == Type::Short {
             hdr.key_phase = (first & KEY_PHASE_BIT) != 0;
         }
-
     } else {
-
-
         let mut pn_and_sample = b.peek_bytes_mut(MAX_PKT_NUM_LEN + SAMPLE_LEN)?;
 
         let (mut ciphertext, sample) = pn_and_sample.split_at(MAX_PKT_NUM_LEN)?;
@@ -916,8 +926,8 @@ fn encrypt_hdr_inner(
     if is_vreverso_special {
         // considering max 4 bytes for the streamid and 4 bytes for the buffer offset.
         // for which the encoding/decoding would work in a similar fashion than for the packet number.
-        let sample = &payload
-            [MAX_PKT_NUM_STREAMID_OFFSET_LEN - enc_len..SAMPLE_LEN + (MAX_PKT_NUM_STREAMID_OFFSET_LEN - enc_len)];
+        let sample = &payload[MAX_PKT_NUM_STREAMID_OFFSET_LEN - enc_len
+            ..SAMPLE_LEN + (MAX_PKT_NUM_STREAMID_OFFSET_LEN - enc_len)];
         let mask = aead.new_mask_13(sample)?;
 
         if Header::is_long(first[0]) {
@@ -1583,9 +1593,9 @@ mod tests {
             {
                 let mut b = octets_rev::OctetsMut::with_slice(&mut d);
                 encode_pkt_num_v3(64, 2, 1, &mut b).unwrap();
-                // Encode stream_id 4 with 3 byte length for offset
+                // Encode stream_id 4 with 2 byte length for offset
                 encode_u64_num_and_nextelem_len(4, 2, &mut b).unwrap();
-                // Encode the offset in 3 bytes
+                // Encode the offset in 2 bytes
                 encode_offset_num(100_000, 2, &mut b).unwrap();
                 let expected_wire_data = [0x00, 0x40, 0x44, 0x86, 0xa0];
                 assert_eq!(expected_wire_data, &d[0..5]);
