@@ -106,7 +106,7 @@ type ClientMap = HashMap<
 const POOL_SHARDS: usize = 8;
 const _MAX_POOL_BUF_SIZE: usize = 64 * 1024;
 const SMALL_POOL_BUF_SIZE: usize = 4096;
-const LARGE_POOL_BUF_SIZE: usize = 1024 * 80;
+const LARGE_POOL_BUF_SIZE: usize = 1024 * 64;
 
 type BufPool = Pool<POOL_SHARDS, ConsumeBuffer>;
 
@@ -517,6 +517,12 @@ async fn handle_client(
                     .map(|b| format!("{b:02x}"))
                     .collect::<Vec<_>>()
                     .join("")
+            );
+            info!(
+                "{} connection stats {:?} {:?}",
+                conn.trace_id(),
+                conn.stats(),
+                conn.path_stats().collect::<Vec<quiceh::PathStats>>()
             );
             tx_garbage_conn.send(scid.unwrap()).await.unwrap();
             break;

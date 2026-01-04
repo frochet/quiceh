@@ -55,6 +55,7 @@ pub struct CommonArgs {
     pub qpack_blocked_streams: Option<u64>,
     pub initial_cwnd_packets: u64,
     pub max_bufpool_size: Option<usize>,
+    pub chunk_len: usize,
 }
 
 /// Creates a new `CommonArgs` structure using the provided [`Docopt`].
@@ -81,6 +82,7 @@ pub struct CommonArgs {
 /// --qpack-max-table-capacity BYTES  Max capacity of dynamic QPACK decoding.
 /// --qpack-blocked-streams STREAMS  Limit of blocked streams while decoding.
 /// --initial-cwnd-packets      Size of initial congestion window, in packets.
+/// --chunk-len BYTES           The expected chunk len which we would consume at once from receive buffers [default: 128KB]
 ///
 /// [`Docopt`]: https://docs.rs/docopt/1.1.0/docopt/
 impl Args for CommonArgs {
@@ -199,6 +201,9 @@ impl Args for CommonArgs {
             None
         };
 
+        let chunk_len = args.get_str("--chunk-len");
+        let chunk_len = chunk_len.parse::<usize>().unwrap();
+
         CommonArgs {
             alpns,
             max_data,
@@ -223,6 +228,7 @@ impl Args for CommonArgs {
             qpack_blocked_streams,
             initial_cwnd_packets,
             max_bufpool_size,
+            chunk_len,
         }
     }
 }
@@ -253,6 +259,7 @@ impl Default for CommonArgs {
             qpack_blocked_streams: None,
             initial_cwnd_packets: 10,
             max_bufpool_size: None,
+            chunk_len: 128_000,
         }
     }
 }
@@ -300,6 +307,7 @@ Options:
   --source-port PORT       Source port to use when connecting to the server [default: 0].
   --initial-cwnd-packets PACKETS   The initial congestion window size in terms of packet count [default: 10].
   --max-bufpool-size BYTES   The maximum number of bytes the buffer pool can allocate. If not specified, a default of 2GiB is used.
+  --chunk-len BYTES        The expected chunk len which we would consume at once from receive buffers [default: 128000]
   -h --help                Show this screen.
 ";
 

@@ -204,6 +204,8 @@ where
 
     let local_addr = socket.local_addr().unwrap();
 
+    config.set_expected_chunklen_to_consume(conn_args.chunk_len);
+
     // Create a QUIC connection and initiate handshake.
     let mut conn = quiceh::connect_with_buffer_factory(
         connect_url.domain(),
