@@ -1355,37 +1355,55 @@ mod tests {
 
     #[test]
     fn split_read() {
-        // TODO Double check; we don't need split logic in reverso since
-        // we explicetly disallow overlapping contiguous bytes
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
-            let mut recv = RecvBuf::new(
-                u64::MAX,
-                DEFAULT_STREAM_WINDOW,
-                DEFAULT_CHUNK_LEN,
-                crate::PROTOCOL_VERSION,
-            );
-            assert_eq!(recv.len, 0);
+        let mut recv = RecvBuf::new(
+            u64::MAX,
+            DEFAULT_STREAM_WINDOW,
+            DEFAULT_CHUNK_LEN,
+            crate::PROTOCOL_VERSION,
+        );
+        assert_eq!(recv.len, 0);
 
-            let mut buf = [0; 32];
+        let mut buf = [0; 32];
 
-            let first = RangeBuf::from(b"something", 0, false);
-            let second = RangeBuf::from(b"helloworld", 9, true);
+        let first = RangeBuf::from(b"something", 0, false);
+        let firstinfo = RecvBufInfo::from(0, 9, false);
+        let second = RangeBuf::from(b"helloworld", 9, true);
+        let secondinfo = RecvBufInfo::from(9, 10, true);
 
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+            assert!(recv.write_v3(firstinfo).is_ok());
+        } else {
             assert!(recv.write(first).is_ok());
-            assert_eq!(recv.len, 9);
-            assert_eq!(recv.off, 0);
+        }
+        assert_eq!(recv.len, 9);
+        assert_eq!(recv.off, 0);
 
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+            assert!(recv.write_v3(secondinfo).is_ok());
+        } else {
             assert!(recv.write(second).is_ok());
-            assert_eq!(recv.len, 19);
-            assert_eq!(recv.off, 0);
+        }
+        assert_eq!(recv.len, 19);
+        assert_eq!(recv.off, 0);
 
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+            // bytes are contiguous, so they're all available to read. We can read and split it
+            // with consume tho.
+            let (b, fin) = recv.read().unwrap();
+            assert_eq!(b.len(), 19);
+            assert!(recv.mark_consumed(10).is_ok());
+            assert!(fin);
+            assert_eq!(recv.off, 19);
+        } else {
             let (len, fin) = recv.emit(&mut buf[..10]).unwrap();
             assert_eq!(len, 10);
             assert!(!fin);
             assert_eq!(&buf[..len], b"somethingh");
-            assert_eq!(recv.len, 19);
             assert_eq!(recv.off, 10);
+        }
+        assert_eq!(recv.len, 19);
 
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             let (len, fin) = recv.emit(&mut buf[..5]).unwrap();
             assert_eq!(len, 5);
             assert!(!fin);

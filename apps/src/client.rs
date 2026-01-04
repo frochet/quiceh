@@ -60,7 +60,6 @@ pub fn connect<F: BufFactory<Buf = BufResponse>>(
 where
     <F as BufFactory>::Buf: BufSplit,
 {
-    let mut buf = [0; 65536 * BATCH_SIZE];
     let mut out = [0; MAX_DATAGRAM_SIZE];
 
     let output_sink =
@@ -95,6 +94,7 @@ where
     recv_state
         .set_recv_buffer_size((&socket_std).into(), 2097152)
         .unwrap();
+    let mut buf = vec![0; 65536 * BATCH_SIZE * recv_state.gro_segments()];
     let mut metainfos = [RecvMeta::default(); BATCH_SIZE];
     // Create the UDP socket backing the QUIC connection, and register it with
     // the event loop.
@@ -301,8 +301,9 @@ where
             };
 
             let mut iovs: [IoSliceMut; BATCH_SIZE] = {
-                let mut bufs =
-                    buf.chunks_mut(u16::MAX.into()).map(IoSliceMut::new);
+                let mut bufs = buf
+                    .chunks_mut(65536 * recv_state.gro_segments())
+                    .map(IoSliceMut::new);
 
                 std::array::from_fn(|_| bufs.next().expect("BATCH_SIZE elements"))
             };
