@@ -729,14 +729,18 @@ extern "C" fn set_read_secret(
     trace!("{} set read secret lvl={:?}", ex_data.trace_id, level);
 
     let space = match level {
-        crypto::Level::Initial =>
-            &mut ex_data.pkt_num_spaces[packet::Epoch::Initial],
-        crypto::Level::ZeroRTT =>
-            &mut ex_data.pkt_num_spaces[packet::Epoch::Application],
-        crypto::Level::Handshake =>
-            &mut ex_data.pkt_num_spaces[packet::Epoch::Handshake],
-        crypto::Level::OneRTT =>
-            &mut ex_data.pkt_num_spaces[packet::Epoch::Application],
+        crypto::Level::Initial => {
+            &mut ex_data.pkt_num_spaces[packet::Epoch::Initial]
+        },
+        crypto::Level::ZeroRTT => {
+            &mut ex_data.pkt_num_spaces[packet::Epoch::Application]
+        },
+        crypto::Level::Handshake => {
+            &mut ex_data.pkt_num_spaces[packet::Epoch::Handshake]
+        },
+        crypto::Level::OneRTT => {
+            &mut ex_data.pkt_num_spaces[packet::Epoch::Application]
+        },
     };
 
     let aead = match get_cipher_from_ptr(cipher) {
@@ -749,7 +753,7 @@ extern "C" fn set_read_secret(
     if level != crypto::Level::ZeroRTT || ex_data.is_server {
         let secret = unsafe { slice::from_raw_parts(secret, secret_len) };
 
-        let open = match crypto::Open::from_secret(aead, secret.to_vec()) {
+        let open = match crypto::Open::from_secret(aead, secret) {
             Ok(v) => v,
 
             Err(_) => return 0,
@@ -780,14 +784,18 @@ extern "C" fn set_write_secret(
     trace!("{} set write secret lvl={:?}", ex_data.trace_id, level);
 
     let space = match level {
-        crypto::Level::Initial =>
-            &mut ex_data.pkt_num_spaces[packet::Epoch::Initial],
-        crypto::Level::ZeroRTT =>
-            &mut ex_data.pkt_num_spaces[packet::Epoch::Application],
-        crypto::Level::Handshake =>
-            &mut ex_data.pkt_num_spaces[packet::Epoch::Handshake],
-        crypto::Level::OneRTT =>
-            &mut ex_data.pkt_num_spaces[packet::Epoch::Application],
+        crypto::Level::Initial => {
+            &mut ex_data.pkt_num_spaces[packet::Epoch::Initial]
+        },
+        crypto::Level::ZeroRTT => {
+            &mut ex_data.pkt_num_spaces[packet::Epoch::Application]
+        },
+        crypto::Level::Handshake => {
+            &mut ex_data.pkt_num_spaces[packet::Epoch::Handshake]
+        },
+        crypto::Level::OneRTT => {
+            &mut ex_data.pkt_num_spaces[packet::Epoch::Application]
+        },
     };
 
     let aead = match get_cipher_from_ptr(cipher) {
@@ -800,7 +808,7 @@ extern "C" fn set_write_secret(
     if level != crypto::Level::ZeroRTT || !ex_data.is_server {
         let secret = unsafe { slice::from_raw_parts(secret, secret_len) };
 
-        let seal = match crypto::Seal::from_secret(aead, secret.to_vec()) {
+        let seal = match crypto::Seal::from_secret(aead, secret) {
             Ok(v) => v,
 
             Err(_) => return 0,
@@ -832,13 +840,16 @@ extern "C" fn add_handshake_data(
     let buf = unsafe { slice::from_raw_parts(data, len) };
 
     let space = match level {
-        crypto::Level::Initial =>
-            &mut ex_data.pkt_num_spaces[packet::Epoch::Initial],
+        crypto::Level::Initial => {
+            &mut ex_data.pkt_num_spaces[packet::Epoch::Initial]
+        },
         crypto::Level::ZeroRTT => unreachable!(),
-        crypto::Level::Handshake =>
-            &mut ex_data.pkt_num_spaces[packet::Epoch::Handshake],
-        crypto::Level::OneRTT =>
-            &mut ex_data.pkt_num_spaces[packet::Epoch::Application],
+        crypto::Level::Handshake => {
+            &mut ex_data.pkt_num_spaces[packet::Epoch::Handshake]
+        },
+        crypto::Level::OneRTT => {
+            &mut ex_data.pkt_num_spaces[packet::Epoch::Application]
+        },
     };
 
     if space.crypto_stream.send.write(buf, false).is_err() {
@@ -940,8 +951,8 @@ extern "C" fn select_alpn(
                 std::str::from_utf8(expected.as_slice())
             );
 
-            if expected.len() == proto.len() &&
-                expected.as_slice() == proto.as_ref()
+            if expected.len() == proto.len()
+                && expected.as_slice() == proto.as_ref()
             {
                 unsafe {
                     *out = expected.as_slice().as_ptr();

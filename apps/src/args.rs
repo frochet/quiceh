@@ -484,6 +484,7 @@ Options:
   --initial-cwnd-packets PACKETS      The initial congestion window size in terms of packet count [default: 10].
   --max-bufpool-size BYTES    The maximum number of bytes the buffer pool can allocate. If not specified, a default will be used.
   --enable-hidden-copy        [EXPERIMENTAL] Assemble a stream frame and control through encryption -- currently negatively impact performance with BoringSSL.
+  --chunk-len BYTES        The expected chunk len which we would consume at once from receive buffers [default: 128000]
   -h --help                   Show this screen.
 ";
 

@@ -1500,7 +1500,6 @@ mod tests {
             };
         stream.set_frame_payload_len(frame_payload_len).unwrap();
 
-        env_logger::builder().format_timestamp_nanos().init();
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let b = stream
                 .try_acquire_state_buffer_for_tests(&mut cursor)
