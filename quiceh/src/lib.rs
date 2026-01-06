@@ -2277,6 +2277,7 @@ impl<F: BufFactory> Connection<F> {
                 &dcid,
                 conn.version,
                 conn.is_server,
+                false,
             )?;
 
             let reset_token = conn.peer_transport_params.stateless_reset_token;
@@ -2589,7 +2590,7 @@ impl<F: BufFactory> Connection<F> {
         match self.peer_transport_params.stateless_reset_token {
             Some(token) => {
                 let token_len = 16;
-                ring::constant_time::verify_slices_are_equal(
+                crypto::verify_slices_are_equal(
                     &token.to_be_bytes(),
                     &buf[buf_len - token_len..buf_len],
                 )
@@ -2718,6 +2719,7 @@ impl<F: BufFactory> Connection<F> {
                 &self.destination_id(),
                 self.version,
                 self.is_server,
+                true,
             )?;
 
             // Reset connection state to force sending another Initial packet.
@@ -2783,6 +2785,7 @@ impl<F: BufFactory> Connection<F> {
                 &hdr.scid,
                 self.version,
                 self.is_server,
+                true,
             )?;
 
             // Reset connection state to force sending another Initial packet.
@@ -2851,6 +2854,7 @@ impl<F: BufFactory> Connection<F> {
                 &hdr.dcid,
                 self.version,
                 self.is_server,
+                false,
             )?;
 
             self.pkt_num_spaces[packet::Epoch::Initial].crypto_open =
