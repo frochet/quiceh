@@ -15,13 +15,78 @@ use tokio::sync::mpsc;
 use tokio_uring::buf::fixed::{FixedBuf, FixedBufPool};
 use tokio_uring::buf::BoundedBuf;
 
+use quiceh::BufFactory;
+use quiceh::BufSplit;
+
 use clap::Parser;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
-const MAX_MESSAGE_SIZE: usize = 65535;
+const MAX_MESSAGE_SIZE: usize = 65536;
+
+#[derive(Debug, Clone, Default)]
+struct MyBufFactory;
+
+#[derive(Debug, Clone, Default)]
+struct MyBuf {
+    inner: Arc<Box<[u8]>>,
+    start: usize,
+    end: usize,
+}
+
+impl MyBuf {
+    fn new(inner: Arc<Box<[u8]>>, start: usize, end: usize) -> Self {
+        Self { inner, start, end }
+    }
+
+    fn len(&self) -> usize {
+        self.end - self.start
+    }
+}
+
+impl From<Vec<u8>> for MyBuf {
+    fn from(value: Vec<u8>) -> Self {
+        MyBuf {
+            start: 0,
+            end: value.len(),
+            inner: Arc::new(value.into_boxed_slice()),
+        }
+    }
+}
+
+impl BufFactory for MyBufFactory {
+    type Buf = MyBuf;
+
+    fn buf_from_slice(buf: &[u8]) -> Self::Buf {
+        MyBuf {
+            start: 0,
+            end: buf.len(),
+            inner: Arc::new(buf.into()),
+        }
+    }
+}
+
+impl BufSplit for MyBuf {
+    fn split_at(&mut self, at: usize) -> Self {
+        assert!(at <= self.len(), "split_at index out of bounds");
+
+        let newend = self.start + at;
+        let buf = MyBuf::new(self.inner.clone(), newend, self.end);
+
+        self.end = newend;
+
+        buf
+    }
+}
+
+impl AsRef<[u8]> for MyBuf {
+    fn as_ref(&self) -> &[u8] {
+        &self.inner[self.start..self.end]
+    }
+}
 
 struct PartialResponse {
-    body: Vec<u8>,
+    chunk: MyBuf,
+    remaining_chunk: Option<MyBuf>,
     written: usize,
     tot_size: usize,
 }
@@ -34,7 +99,7 @@ struct Args {
 
 type ClientMap = HashMap<
     quiceh::ConnectionId<'static>,
-    mpsc::Sender<(FixedBuf, usize, net::SocketAddr)>,
+    mpsc::UnboundedSender<(FixedBuf, usize, net::SocketAddr)>,
 >;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -49,13 +114,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap(),
         );
         let mut pacing = false;
-        match set_txtime_sockopt(&socket) {
-            Ok(_) => {
-                pacing = true;
-                debug!("successfully set SO_TXTIME socket option");
-            },
-            Err(e) => debug!("setsockopt failed {:?}", e),
-        };
+        if set_txtime_sockopt(&socket) {
+            pacing = true;
+            debug!("successfully set SO_TXTIME socket option");
+        } else {
+            debug!("setsockopt failed");
+        }
 
         if !set_gso(&socket, MAX_DATAGRAM_SIZE) {
             debug!("Could not set GSO's max segment size");
@@ -225,7 +289,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                         debug!("New connection: dcid={:?} scid={:?}", hdr.dcid, scid);
 
-                        let conn = quiceh::accept(
+                        let conn = quiceh::accept_with_buf_factory::<MyBufFactory>(
                             &scid,
                             odcid.as_ref(),
                             socket.local_addr().unwrap(),
@@ -234,11 +298,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         )
                         .unwrap();
 
-                        let (tx, rx) = mpsc::channel(128);
+                        let (tx, rx) = mpsc::unbounded_channel();
 
                         tokio_uring::spawn(handle_client(
                             socket.clone(),
-                            Box::new(conn),
+                            conn,
                             rx,
                             tx_garbage_conn.clone(),
                             pool.clone(),
@@ -251,7 +315,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     };
 
                     if let Some(client_sender) = client_sender {
-                        if let Err(e) = client_sender.send((buf, len, from)).await {
+                        if let Err(e) = client_sender.send((buf, len, from)) {
                             error!("Failed to send packet to client handler: {}", e);
                         }
                     }
@@ -263,17 +327,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn handle_client<T: tokio_uring::buf::IoBufMut>(
-    socket: Arc<tokio_uring::net::UdpSocket>, mut conn: Box<quiceh::Connection>,
-    mut rx: mpsc::Receiver<(FixedBuf, usize, net::SocketAddr)>,
+    socket: Arc<tokio_uring::net::UdpSocket>,
+    mut conn: quiceh::Connection<MyBufFactory>,
+    mut rx: mpsc::UnboundedReceiver<(FixedBuf, usize, net::SocketAddr)>,
     tx_garbage_conn: mpsc::Sender<Vec<u8>>, pool: FixedBufPool<T>,
 ) {
     let mut partial_responses: HashMap<u64, PartialResponse> = HashMap::new();
 
     let mut loss_rate: f64 = 0.0;
-    let mut max_send_burst = 65535;
+    let mut max_send_burst = 48 * MAX_DATAGRAM_SIZE;
 
     let mut continue_write = false;
-    // TODO: NO GSO support and TxTime support; (should use sendmsg_zc with appropriate message
+    // TODO: NO TxTime support; (should use sendmsg_zc with appropriate message
     // control)
 
     loop {
@@ -335,9 +400,10 @@ async fn handle_client<T: tokio_uring::buf::IoBufMut>(
                             let response = handle_stream(&chunk[..], ".").await;
                             let fin = response.body.len() == response.tot_size;
                             debug!("Starting sending body part of {} for total size {}, fin is {}", response.body.len(), response.tot_size, fin);
-                            let written = match conn.stream_send(s, &response.body, fin) {
+                            let body_len = response.body.len();
+                            let (written, remaining) = match conn.stream_send_zc(s, response.body.clone(), Some(body_len), fin) {
                                 Ok(v) => v,
-                                Err(quiceh::Error::Done) => 0,
+                                Err(quiceh::Error::Done) => (0, None),
                                 Err(e) => {
                                     error!("{} stream send failed {:?}", conn.trace_id(), e);
                                     break;
@@ -347,7 +413,8 @@ async fn handle_client<T: tokio_uring::buf::IoBufMut>(
                             if written < response.tot_size {
                                 debug!("{} written partially on stream {} bytes", conn.trace_id(), written);
                                 partial_responses.insert(s, PartialResponse {
-                                    body: response.body,
+                                    chunk: response.body,
+                                    remaining_chunk: remaining,
                                     written,
                                     tot_size: response.tot_size,
                                 });
@@ -376,9 +443,7 @@ async fn handle_client<T: tokio_uring::buf::IoBufMut>(
                 loss_rate = new_loss_rate;
             }
 
-            let new_max_send_burst = conn.send_quantum().min(max_send_burst)
-                / MAX_DATAGRAM_SIZE
-                * MAX_DATAGRAM_SIZE;
+            let new_max_send_burst = max_send_burst;
 
             'send: while total_write < new_max_send_burst {
                 let (write, send_info) =
@@ -410,14 +475,15 @@ async fn handle_client<T: tokio_uring::buf::IoBufMut>(
 
         if total_write != 0 && dst_info.is_some() {
             debug!("Sending {} bytes in socket", total_write);
-            let (res, ..) = socket
-                .send_to(out.slice(0..total_write), dst_info.unwrap().to)
-                .await;
+            // For some reason send_to is faster than sendmsg_zc ...
+            let (res, ..) = socket.send_to(out.slice(0..total_write), dst_info.unwrap().to)
+//                send_zc_to(&socket, dst_info.unwrap(), out.slice(0..total_write))
+                    .await;
 
             match res {
                 Ok(v) => {
                     if v < total_write {
-                        debug!("Wrote {} out of {}", v, total_write);
+                        info!("Wrote {} out of {}", v, total_write);
                     }
                 },
                 Err(e) => {
@@ -498,7 +564,7 @@ fn validate_token<'a>(
 }
 
 struct Response {
-    body: Vec<u8>,
+    body: MyBuf,
     tot_size: usize,
 }
 
@@ -533,14 +599,14 @@ async fn handle_stream(buf: &[u8], root: &str) -> Response {
                     (vec![42; 1024 * 1024], val)
                 };
                 Response {
-                    body: res,
+                    body: res.into(),
                     tot_size,
                 }
             } else {
                 let res = b"Invalid download request!\r\n".to_vec();
                 let len = res.len();
                 Response {
-                    body: res,
+                    body: res.into(),
                     tot_size: len,
                 }
             }
@@ -551,7 +617,7 @@ async fn handle_stream(buf: &[u8], root: &str) -> Response {
             info!("sending response of size {} on stream", body.len(),);
             let len = body.len();
             Response {
-                body,
+                body: body.into(),
                 tot_size: len,
             }
         }
@@ -559,14 +625,14 @@ async fn handle_stream(buf: &[u8], root: &str) -> Response {
         let res = b"Not a GET request!\r\n".to_vec();
         let len = res.len();
         Response {
-            body: res,
+            body: res.into(),
             tot_size: len,
         }
     }
 }
 
 fn handle_writable(
-    conn: &mut quiceh::Connection, stream_id: u64,
+    conn: &mut quiceh::Connection<MyBufFactory>, stream_id: u64,
     partial_responses: &mut HashMap<u64, PartialResponse>,
 ) {
     debug!("{} stream {} is writable", conn.trace_id(), stream_id);
@@ -574,33 +640,57 @@ fn handle_writable(
         return;
     }
     let resp = partial_responses.get_mut(&stream_id).unwrap();
-    let body = if resp.written < resp.body.len() {
-        &resp.body[resp.written..]
+
+    let body = if let Some(rem) = resp.remaining_chunk.take() {
+        rem
     } else {
-        let upper = (resp.tot_size - resp.written).min(resp.body.len());
-        &resp.body[..upper]
+        let upper = (resp.tot_size - resp.written).min(resp.chunk.len());
+        let mut b = resp.chunk.clone();
+        if upper < b.len() {
+            b.split_at(upper);
+        }
+        b
     };
 
-    let fin = body.len() >= resp.tot_size - resp.written;
+    let fin = resp.written + body.len() >= resp.tot_size;
     debug!("fin bit is {}", fin);
-    let written = match conn.stream_send(stream_id, body, fin) {
-        Ok(v) => v,
-        Err(quiceh::Error::Done) => 0,
-        Err(e) => {
-            partial_responses.remove(&stream_id);
-            error!("{} stream send failed {:?}", conn.trace_id(), e);
-            return;
-        },
-    };
+
+    let body_len = body.len();
+    let (written, remaining) =
+        match conn.stream_send_zc(stream_id, body, Some(body_len), fin) {
+            Ok(v) => v,
+            Err(quiceh::Error::Done) => (0, None),
+            Err(e) => {
+                partial_responses.remove(&stream_id);
+                error!("{} stream send failed {:?}", conn.trace_id(), e);
+                return;
+            },
+        };
+
     debug!(
         "{} written partially on stream {} bytes",
         conn.trace_id(),
         written
     );
     resp.written += written;
+    resp.remaining_chunk = remaining;
+
     if resp.written == resp.tot_size {
         partial_responses.remove(&stream_id);
     }
+}
+
+#[allow(dead_code)]
+async fn send_zc_to<T: BoundedBuf>(
+    on: &tokio_uring::net::UdpSocket, send_info: quiceh::SendInfo, buf: T,
+) -> (std::io::Result<usize>, T) {
+    let mut io_slices = Vec::new();
+    io_slices.push(buf);
+
+    let (res, mut buf, _) = on
+        .sendmsg_zc(io_slices, Some(send_info.to), None::<T>)
+        .await;
+    (res, buf.pop().unwrap())
 }
 
 /// Set SO_TXTIME socket option.
@@ -609,27 +699,26 @@ fn handle_writable(
 /// packet transmission time in the sendmsg syscall.
 ///
 /// Note that this socket option works only on linux platforms.
-fn set_txtime_sockopt(sock: &tokio_uring::net::UdpSocket) -> std::io::Result<()> {
+fn set_txtime_sockopt(sock: &tokio_uring::net::UdpSocket) -> bool {
     use nix::sys::socket::setsockopt;
     use nix::sys::socket::sockopt::TxTime;
     use std::os::fd::AsRawFd;
-    use std::os::fd::FromRawFd;
 
     let config = nix::libc::sock_txtime {
         clockid: libc::CLOCK_MONOTONIC,
         flags: 0,
     };
 
-    let raw_fd = sock.as_raw_fd();
-    let std_socket = unsafe { std::net::UdpSocket::from_raw_fd(raw_fd) };
+    let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(sock.as_raw_fd()) };
 
-    setsockopt(&std_socket, TxTime, &config)?;
-    std::mem::forget(std_socket);
-
-    Ok(())
+    setsockopt(&fd, TxTime, &config).is_ok()
 }
-
 /// Set Udp GSO segment size
+///
+/// This socket option is set to send to kernel the outgoing UDP
+/// packet transmission time in the sendmsg syscall.
+///
+/// Note that this socket option works only on linux platforms.
 pub fn set_gso(
     socket: &tokio_uring::net::UdpSocket, segment_size: usize,
 ) -> bool {
