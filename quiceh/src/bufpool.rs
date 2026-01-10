@@ -54,7 +54,7 @@ static POOL: OnceCell<BufPool> = OnceCell::new();
 ///
 /// Panics if the pool is already initialized.
 pub fn init(max_memory: usize, chunk_len: usize) {
-    let pool = BufPool::new(max_memory / chunk_len, DEFAULT_CHUNK_LEN as usize);
+    let pool = BufPool::new(max_memory / chunk_len, DEFAULT_CHUNK_LEN);
     POOL.set(pool).expect("pool already initialized");
 }
 
@@ -73,7 +73,7 @@ pub fn pool_or_default() -> &'static BufPool {
     POOL.get_or_init(|| {
         BufPool::new(
             MAX_MEMORY_POOL / DEFAULT_CHUNK_LEN,
-            DEFAULT_CHUNK_LEN as usize,
+            DEFAULT_CHUNK_LEN,
         )
     })
 }

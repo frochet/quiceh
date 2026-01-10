@@ -3282,7 +3282,7 @@ impl<F: BufFactory> Connection<F> {
             if !self.pkt_num_spaces[epoch]
                 .key_update
                 .as_ref()
-                .map_or(true, |prev| prev.update_acked)
+                .is_none_or(|prev| prev.update_acked)
             {
                 // Peer has updated keys twice without awaiting confirmation.
                 return Err(Error::KeyUpdate);
@@ -4423,7 +4423,7 @@ impl<F: BufFactory> Connection<F> {
             && (pkt_space.ack_elicited || ack_elicit_required)
             && (!is_closing
                 || (pkt_type == Type::Handshake
-                    && self.local_error.as_ref().map_or(false, |le| le.is_app)))
+                    && self.local_error.as_ref().is_some_and(|le| le.is_app)))
             && path.active()
         {
             let ack_delay = pkt_space.largest_rx_pkt_time.elapsed();
@@ -5551,14 +5551,12 @@ impl<F: BufFactory> Connection<F> {
                 } else {
                     None
                 }
+            } else if let Some(frame::Frame::StreamHeader { stream_id, .. }) =
+                frames.last()
+            {
+                Some(self.streams.entry(*stream_id))
             } else {
-                if let Some(frame::Frame::StreamHeader { stream_id, .. }) =
-                    frames.last()
-                {
-                    Some(self.streams.entry(*stream_id))
-                } else {
-                    None
-                }
+                None
             };
 
             let written = if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
@@ -5826,9 +5824,9 @@ impl<F: BufFactory> Connection<F> {
     /// [`stream_consumed()`]: struct.Connection.html#method.stream_consumed
     /// [`stream_recv_zc()`]: struct.Connection.html#method.stream_recv_zc
     #[inline]
-    pub fn stream_peek<'a>(
-        &'a mut self, stream_id: u64,
-    ) -> Result<(&'a [u8], usize, bool)> {
+    pub fn stream_peek(
+        &mut self, stream_id: u64,
+    ) -> Result<(&[u8], usize, bool)> {
         if self.version != PROTOCOL_VERSION_VREVERSO {
             return Err(Error::InvalidAPICall("This function should be called on a \
                                              PROTOCOL_VERSION_VREVERSO connection version"));
@@ -8259,7 +8257,7 @@ impl<F: BufFactory> Connection<F> {
         if self
             .local_error
             .as_ref()
-            .map_or(false, |conn_err| !conn_err.is_app)
+            .is_some_and(|conn_err| !conn_err.is_app)
         {
             let epoch = match self.handshake.write_level() {
                 crypto::Level::Initial => packet::Epoch::Initial,
@@ -8336,7 +8334,7 @@ impl<F: BufFactory> Connection<F> {
                 || self
                     .local_error
                     .as_ref()
-                    .map_or(false, |conn_err| conn_err.is_app)
+                    .is_some_and(|conn_err| conn_err.is_app)
                 || self.streams.should_update_max_streams_bidi()
                 || self.streams.should_update_max_streams_uni()
                 || send_path.pmtud.get_probe_status()

@@ -71,7 +71,7 @@ impl Reuse for StreamChunk {
         self.consumed = 0;
         self.contiguous_off = 0;
         self.stream_offset_start = u64::MAX;
-        self.inner.len() > 0
+        !self.inner.is_empty()
     }
 }
 
@@ -134,7 +134,7 @@ impl StreamChunk {
 
     #[inline]
     /// provides ready-to-read reference to contiguous bytes.
-    pub fn read<'a>(&'a self) -> &'a [u8] {
+    pub fn read(&self) -> &[u8] {
         &self.inner[self.consumed..self.contiguous_off]
     }
 }
@@ -547,6 +547,7 @@ impl RecvBuf {
             if value.start_off > self.contiguous_off {
                 break;
             }
+            // Safe since the heap isn't empty
             let (_, recvbufinfo) = self.heap.pop_first().unwrap();
 
             // packets received not in order created a "full" overlap that we
@@ -713,7 +714,7 @@ impl RecvBuf {
     /// This function also increases self.off, which makes quiceh assumes
     /// these bytes have been delivered to the app.
     #[inline]
-    pub fn read<'a>(&'a mut self) -> Result<(&'a [u8], bool)> {
+    pub fn read(&mut self) -> Result<(&[u8], bool)> {
         // We have received data in order, we can read it right away.
         let chunk = self.chunks.front_mut().ok_or(Error::Done)?;
 
@@ -742,6 +743,8 @@ impl RecvBuf {
     /// can be collected, and how many bytes are available for read.
     #[inline]
     pub fn mark_consumed(&mut self, consumed: usize) -> Result<(bool, usize)> {
+        // Safe since this function can only be called if we have something to read, and having
+        // something to read means self.chunks isn't empty.
         let chunk = self.chunks.front_mut().unwrap();
         if chunk.stream_offset_start == u64::MAX
             || chunk.consumed + consumed > chunk.capacity() as usize

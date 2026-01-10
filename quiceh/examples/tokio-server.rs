@@ -106,7 +106,7 @@ type ClientMap = HashMap<
 const POOL_SHARDS: usize = 8;
 const _MAX_POOL_BUF_SIZE: usize = 64 * 1024;
 const SMALL_POOL_BUF_SIZE: usize = 4096;
-const LARGE_POOL_BUF_SIZE: usize = 1024 * 64;
+const LARGE_POOL_BUF_SIZE: usize = 1350 * 48;
 
 type BufPool = Pool<POOL_SHARDS, ConsumeBuffer>;
 

@@ -2021,11 +2021,8 @@ impl Connection {
                     if let Err(crate::Error::StreamReset(e)) =
                         conn.stream_peek(finished)
                     {
-                        if let Err(_) = conn.stream_consumed(finished, 0) {
-                            return Ok((finished, Event::Reset(e)));
-                        } else {
-                            return Ok((finished, Event::Reset(e)));
-                        }
+                        let _ = conn.stream_consumed(finished, 0);
+                        return Ok((finished, Event::Reset(e)));
                     }
                 } else if let Err(crate::Error::StreamReset(e)) =
                     conn.stream_recv(finished, &mut [])
