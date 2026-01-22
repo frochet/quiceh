@@ -3,7 +3,7 @@
 quiceh is a research implementation of QUIC VReverso, an extension of
 the QUIC transport protocol which allows implementers to achieve higher
 efficiency through the new opportunity to implement contiguous zero-copy
-in the receive code path without touching the Crypto backend, which is
+of arbitrary size in the receive code path without touching the Crypto backend, which is
 otherwise impossible with QUIC version 1 (RFC9000). This research
 implementation is forked from Cloudflare's
 [quiche](https://github.com/cloudflare/quiche) implementation of the
@@ -33,7 +33,7 @@ Efficiency improvement
 
 - VReverso reports an improvement of ~30% over the receive code path using
 [`stream_peek()`] and [`stream_consumed()`] compared to QUIC V1. This is
-currently the default zero-copy interaction being used in apps/ and
+currently the default contiguous zero-copy interaction being used in apps/ and
 implemented in the HTTP/3 module. This is the main research
 contribution requiring an adaptation of QUIC's wire image, and only
 available if the connection negotiates protocol version 0x00791097. Note
@@ -43,14 +43,15 @@ improvement depending on their software architecture choice, but some
 improvement should be expected in all cases.
 
 - [`stream_recv_zc()`] only available for VReverso supports the
-  Application to receive contiguous chunks of memory from underlying
-quiceh buffers in zero-copy in expectation. This is designed for
-concurrent processing of stream data. This function can be used together
-with [`stream_peek()`] and [`stream_consumed()`], although received
-chunks are considered as consumed from the internal QUIC recv stream
-buffer. Dropping the chunk will send the memory allocation back to the
-stream buffer pool.
-
+Application to receive contiguous chunks of memory from underlying
+quiceh buffers in contiguous zero-copy in expectation. This is designed for
+concurrent processing of stream data. By default, chunks are 64KiB,
+and can be configured using the connection [`Config`]'s
+[`set_expected_chunklen_to_consume()`] call. [`stream_recv_zc()`] can be used
+together with [`stream_peek()`] and [`stream_consumed()`], although
+received chunks are considered as consumed from the internal QUIC recv
+stream buffer. Dropping the chunk sends the memory allocation back to
+the stream buffer pool.
 
 - Support sending in zero-copy for both QUIC v1 and QUIC VReverso using
   [`stream_send_zc()`]. Current server behavior implemented in apps/ for
@@ -68,8 +69,7 @@ and much lower performance for sending small blobs of data.
 Using quiceh 
 ------------
 
-### Overview of the main differences with
-[quiche](https://github.com/cloudflare/quiche)
+### Overview of the main differences with [quiche](https://github.com/cloudflare/quiche)
 
 quiceh has a few API extensions, and any application using
 [quiche](https://github.com/cloudflare/quiche) would have to slightly
@@ -411,7 +411,7 @@ receiving HTTP requests and responses on top of the QUIC transport protocol.
 Have a look at the [quiceh/examples/] directory for more complete examples on
 how to use the quiceh API.
 
-the directory apps/ contains a more complete implementation of a HTTP/3
+The apps/ directory contains a more complete implementation of a HTTP/3
 client/server using the zero-copy HTTP/3 module.
 
 The main differences with
@@ -480,9 +480,29 @@ These two commits on the top of
 
 If you use this code in your research, please cite the following paper:  
 
-[Reverso](https://arxiv.org/abs/2409.07138) 
+[Reverso](https://dl.acm.org/doi/epdf/10.1145/3787927.3787929) 
 
-You may also cite this repository seperately:  
+@article{10.1145/3787927.3787929,
+    author = {Rochet, Florentin},
+    title = {Contiguous Zero-Copy for Encrypted Transport Protocols},
+    year = {2026},
+    issue_date = {July 2025},
+    publisher = {Association for Computing Machinery},
+    address = {New York, NY, USA},
+    volume = {55},
+    number = {3},
+    issn = {0146-4833},
+    url = {https://doi.org/10.1145/3787927.3787929},
+    doi = {10.1145/3787927.3787929},
+    abstract = {We propose in this paper to revisit the design of existing encrypted transport protocols to improve their efficiency. We call the methodology "Reverso" from reversing the order of field elements within a protocol specification. We detail how such a benign-looking change within the specifications may unlock contiguous zero-copy for encrypted protocols during data transport. To demonstrate our findings, we release quiceh, a QUIC implementation of QUIC VReverso, an extension of the QUIC V1 standard (RFC9000). Our methodology applied to the QUIC protocol reports ≈ 30\% of CPU efficiency improvement for processing packets at no added cost on the sender side and without relaxing any security guarantee from QUIC V1. We also implement a fork of Cloudflare's HTTP/3 module and client/server demonstrator using quiceh and show our optimizations to directly transfer to HTTP/3 as well, resulting in our new HTTP/3 to be ≈ 38\% more efficient than the baseline implementation using QUIC V1. We argue that Reverso applies to any modern encrypted protocol and its implementations and that similar efficiency improvement can also be unlocked for them, independently of the layer in which they operate. Indeed, this research shows that the ability to implement contiguous zero-copy on the receiver side inherently depends on the specified encrypted protocol wire image, and that we may need to reverse how we are used to write them.},
+    journal = {SIGCOMM Comput. Commun. Rev.},
+    month = jan,
+    pages = {2–18},
+    numpages = {17},
+    keywords = {security and privacy, network security, security protocols}
+}
+
+You may also cite this repository separately:  
 
 @misc{frochet-quiceh,  
 &nbsp;&nbsp;title={quiceh: an implementation of QUIC VReverso},  
@@ -511,6 +531,7 @@ See [COPYING] for the license.
 [`set_initial_max_stream_data_bidi_local()`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html#method.set_initial_max_stream_data_bidi_local
 [`set_initial_max_stream_data_bidi_remote()`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html#method.set_initial_max_stream_data_bidi_remote
 [`set_initial_max_stream_data_uni()`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html#method.set_initial_max_stream_data_uni
+[`set_expected_chunklen_to_consume()`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html#method.set_expected_chunklen_to_consume
 [`with_boring_ssl_ctx_builder()`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html#method.with_boring_ssl_ctx_builder
 [`send()`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.send
 [`timeout()`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.timeout
