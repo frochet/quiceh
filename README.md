@@ -21,7 +21,7 @@ we made available through QUIC V1 and QUIC VReverso.
 
 Even more details are availbale in the academic paper, on .pdf:
 
-[Reverso paper](https://arxiv.org/abs/2409.07138)
+[Reverso paper](https://dl.acm.org/doi/epdf/10.1145/3787927.3787929)
 
 The most desirable outcome is that this proposal eventually makes it to
 the official QUIC design, and QUIC implementations eventually take
@@ -522,6 +522,7 @@ See [COPYING] for the license.
 
 [`Config`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html
 [`recv`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.recv
+[`enable_hidden_copy_for_zc_sender()`]: https://docs.rs/quiceh/latest/quiceh/struct.Config.html#method.enable_hidden_copy_for_zc_sender
 [`stream_peek()`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.stream_peek
 [`stream_recv_zc()`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.stream_recv_zc
 [`stream_consumed()`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.stream_consumed
