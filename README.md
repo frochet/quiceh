@@ -405,7 +405,7 @@ An example is available in apps/src/common.rs
 
 ### HTTP/3
 
-The quiceh [HTTP/3 module] provides a high level API for sending and
+The quiceh [`HTTP/3 module`] provides a high level API for sending and
 receiving HTTP requests and responses on top of the QUIC transport protocol.
 
 Have a look at the [quiceh/examples/] directory for more complete examples on
@@ -416,10 +416,10 @@ client/server using the zero-copy HTTP/3 module.
 
 The main differences with
 [quiche](https://github.com/cloudflare/quiche)'s HTTP/3 module are the
-use of [`poll_v3()`] replacing [`poll()`], [`body_peek()`] replacing
-[`recv_body()`] and the addition of [`body_consumed()`] to tell HTTP/3
-how much of the data frame has been consumed (up to the announced max
-value that [`body_peek()`] announces.  Pretty much all the rest remains
+[`body_peek()`] replacing [`recv_body()`] and the addition of
+[`body_consumed()`] to tell HTTP/3 how much of the data frame has been
+consumed (up to the announced max
+value that [`body_peek()`] returns).  Pretty much all the rest remains
 the same.
 
 [examples/]: quiceh/examples/
@@ -541,3 +541,7 @@ See [COPYING] for the license.
 [`at`]: https://docs.rs/quiceh/latest/quiceh/struct.SendInfo.html#structfield.at
 [`stream_send()`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.steam_send
 [`stream_send_zc()`]: https://docs.rs/quiceh/latest/quiceh/struct.Connection.html#method.steam_send_zc
+[`body_peek()`]: https://docs.rs/quiceh/latest/quiceh/h3/struct.Connection.html#method.body_peek
+[`body_consumed()`]: https://docs.rs/quiceh/latest/quiceh/h3/struct.Connection.html#method.body_consumed
+[`recv_body()`]: https://docs.rs/quiceh/latest/quiceh/h3/struct.Connection.html#method.recv_body
+[`HTTP/3 module`]: https://docs.rs/quiceh/latest/quiceh/h3/index.html
