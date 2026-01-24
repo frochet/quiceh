@@ -482,24 +482,23 @@ If you use this code in your research, please cite the following paper:
 
 [Reverso](https://dl.acm.org/doi/epdf/10.1145/3787927.3787929) 
 
-@article{10.1145/3787927.3787929,
-    author = {Rochet, Florentin},
-    title = {Contiguous Zero-Copy for Encrypted Transport Protocols},
-    year = {2026},
-    issue_date = {July 2025},
-    publisher = {Association for Computing Machinery},
-    address = {New York, NY, USA},
-    volume = {55},
-    number = {3},
-    issn = {0146-4833},
+@article{10.1145/3787927.3787929,  
+    author = {Rochet, Florentin},  
+    title = {Contiguous Zero-Copy for Encrypted Transport Protocols},  
+    year = {2026},  
+    issue_date = {July 2025},  
+    publisher = {Association for Computing Machinery},  
+    address = {New York, NY, USA},  
+    volume = {55},  
+    number = {3},  
+    issn = {0146-4833},  
     url = {https://doi.org/10.1145/3787927.3787929},
-    doi = {10.1145/3787927.3787929},
-    abstract = {We propose in this paper to revisit the design of existing encrypted transport protocols to improve their efficiency. We call the methodology "Reverso" from reversing the order of field elements within a protocol specification. We detail how such a benign-looking change within the specifications may unlock contiguous zero-copy for encrypted protocols during data transport. To demonstrate our findings, we release quiceh, a QUIC implementation of QUIC VReverso, an extension of the QUIC V1 standard (RFC9000). Our methodology applied to the QUIC protocol reports ≈ 30\% of CPU efficiency improvement for processing packets at no added cost on the sender side and without relaxing any security guarantee from QUIC V1. We also implement a fork of Cloudflare's HTTP/3 module and client/server demonstrator using quiceh and show our optimizations to directly transfer to HTTP/3 as well, resulting in our new HTTP/3 to be ≈ 38\% more efficient than the baseline implementation using QUIC V1. We argue that Reverso applies to any modern encrypted protocol and its implementations and that similar efficiency improvement can also be unlocked for them, independently of the layer in which they operate. Indeed, this research shows that the ability to implement contiguous zero-copy on the receiver side inherently depends on the specified encrypted protocol wire image, and that we may need to reverse how we are used to write them.},
-    journal = {SIGCOMM Comput. Commun. Rev.},
-    month = jan,
-    pages = {2–18},
-    numpages = {17},
-    keywords = {security and privacy, network security, security protocols}
+    doi = {10.1145/3787927.3787929},  
+    journal = {SIGCOMM Comput. Commun. Rev.},  
+    month = jan,  
+    pages = {2–18},   
+    numpages = {17},  
+    keywords = {security and privacy, network security, security protocols}  
 }
 
 You may also cite this repository separately:  
