@@ -1225,9 +1225,9 @@ extern "C" {
 }
 
 #[cfg(not(feature = "openssl"))]
-mod boringssl;
+mod boringssl_or_aws;
 #[cfg(not(feature = "openssl"))]
-use boringssl::*;
+use boringssl_or_aws::*;
 
 #[cfg(feature = "openssl")]
 mod openssl_quictls;

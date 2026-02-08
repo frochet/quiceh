@@ -1,175 +1,3 @@
-// Additional parameters for Android build of BoringSSL.
-//
-// Requires Android NDK >= 19.
-const CMAKE_PARAMS_ANDROID_NDK: &[(&str, &[(&str, &str)])] = &[
-    ("aarch64", &[("ANDROID_ABI", "arm64-v8a")]),
-    ("arm", &[("ANDROID_ABI", "armeabi-v7a")]),
-    ("x86", &[("ANDROID_ABI", "x86")]),
-    ("x86_64", &[("ANDROID_ABI", "x86_64")]),
-];
-
-// iOS.
-const CMAKE_PARAMS_IOS: &[(&str, &[(&str, &str)])] = &[
-    ("aarch64", &[
-        ("CMAKE_OSX_ARCHITECTURES", "arm64"),
-        ("CMAKE_OSX_SYSROOT", "iphoneos"),
-    ]),
-    ("x86_64", &[
-        ("CMAKE_OSX_ARCHITECTURES", "x86_64"),
-        ("CMAKE_OSX_SYSROOT", "iphonesimulator"),
-    ]),
-];
-
-// ARM Linux.
-const CMAKE_PARAMS_ARM_LINUX: &[(&str, &[(&str, &str)])] = &[
-    ("aarch64", &[("CMAKE_SYSTEM_PROCESSOR", "aarch64")]),
-    ("arm", &[("CMAKE_SYSTEM_PROCESSOR", "arm")]),
-];
-
-/// Returns the platform-specific output path for lib.
-///
-/// MSVC generator on Windows place static libs in a target sub-folder,
-/// so adjust library location based on platform and build target.
-/// See issue: https://github.com/alexcrichton/cmake-rs/issues/18
-fn get_boringssl_platform_output_path() -> String {
-    if cfg!(target_env = "msvc") {
-        // Code under this branch should match the logic in cmake-rs
-        let debug_env_var =
-            std::env::var("DEBUG").expect("DEBUG variable not defined in env");
-
-        let deb_info = match &debug_env_var[..] {
-            "false" => false,
-            "true" => true,
-            unknown => panic!("Unknown DEBUG={} env var.", unknown),
-        };
-
-        let opt_env_var = std::env::var("OPT_LEVEL")
-            .expect("OPT_LEVEL variable not defined in env");
-
-        let subdir = match &opt_env_var[..] {
-            "0" => "Debug",
-            "1" | "2" | "3" =>
-                if deb_info {
-                    "RelWithDebInfo"
-                } else {
-                    "Release"
-                },
-            "s" | "z" => "MinSizeRel",
-            unknown => panic!("Unknown OPT_LEVEL={} env var.", unknown),
-        };
-
-        subdir.to_string()
-    } else {
-        "".to_string()
-    }
-}
-
-/// Returns a new cmake::Config for building BoringSSL.
-///
-/// It will add platform-specific parameters if needed.
-fn get_boringssl_cmake_config() -> cmake::Config {
-    let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
-    let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
-    let pwd = std::env::current_dir().unwrap();
-
-    let mut boringssl_cmake = cmake::Config::new("deps/boringssl");
-
-    // Add platform-specific parameters.
-    match os.as_ref() {
-        "android" => {
-            // We need ANDROID_NDK_HOME to be set properly.
-            let android_ndk_home = std::env::var("ANDROID_NDK_HOME")
-                .expect("Please set ANDROID_NDK_HOME for Android build");
-            let android_ndk_home = std::path::Path::new(&android_ndk_home);
-            for (android_arch, params) in CMAKE_PARAMS_ANDROID_NDK {
-                if *android_arch == arch {
-                    for (name, value) in *params {
-                        boringssl_cmake.define(name, value);
-                    }
-                }
-            }
-            let toolchain_file =
-                android_ndk_home.join("build/cmake/android.toolchain.cmake");
-            let toolchain_file = toolchain_file.to_str().unwrap();
-            boringssl_cmake.define("CMAKE_TOOLCHAIN_FILE", toolchain_file);
-
-            // 21 is the minimum level tested. You can give higher value.
-            boringssl_cmake.define("ANDROID_NATIVE_API_LEVEL", "21");
-            boringssl_cmake.define("ANDROID_STL", "c++_shared");
-
-            boringssl_cmake
-        },
-
-        "ios" => {
-            for (ios_arch, params) in CMAKE_PARAMS_IOS {
-                if *ios_arch == arch {
-                    for (name, value) in *params {
-                        boringssl_cmake.define(name, value);
-                    }
-                }
-            }
-
-            // Bitcode is always on.
-            let bitcode_cflag = "-fembed-bitcode";
-
-            // Hack for Xcode 10.1.
-            let target_cflag = if arch == "x86_64" {
-                "-target x86_64-apple-ios-simulator"
-            } else {
-                ""
-            };
-
-            let cflag = format!("{bitcode_cflag} {target_cflag}");
-
-            boringssl_cmake.define("CMAKE_ASM_FLAGS", &cflag);
-            boringssl_cmake.cflag(&cflag);
-
-            boringssl_cmake
-        },
-
-        "linux" => match arch.as_ref() {
-            "aarch64" | "arm" => {
-                for (arm_arch, params) in CMAKE_PARAMS_ARM_LINUX {
-                    if *arm_arch == arch {
-                        for (name, value) in *params {
-                            boringssl_cmake.define(name, value);
-                        }
-                    }
-                }
-                boringssl_cmake.define("CMAKE_SYSTEM_NAME", "Linux");
-                boringssl_cmake.define("CMAKE_SYSTEM_VERSION", "1");
-
-                boringssl_cmake
-            },
-
-            "x86" => {
-                boringssl_cmake.define(
-                    "CMAKE_TOOLCHAIN_FILE",
-                    pwd.join("deps/boringssl/src/util/32-bit-toolchain.cmake")
-                        .as_os_str(),
-                );
-
-                boringssl_cmake
-            },
-
-            _ => boringssl_cmake,
-        },
-
-        _ => {
-            // Configure BoringSSL for building on 32-bit non-windows platforms.
-            if arch == "x86" && os != "windows" {
-                boringssl_cmake.define(
-                    "CMAKE_TOOLCHAIN_FILE",
-                    pwd.join("deps/boringssl/src/util/32-bit-toolchain.cmake")
-                        .as_os_str(),
-                );
-            }
-
-            boringssl_cmake
-        },
-    }
-}
-
 fn write_pkg_config() {
     use std::io::prelude::*;
 
@@ -216,43 +44,131 @@ fn target_dir_path() -> std::path::PathBuf {
 }
 
 fn main() {
-    if cfg!(feature = "boringssl-vendored") &&
-        !cfg!(feature = "boringssl-boring-crate") &&
-        !cfg!(feature = "openssl")
+    let out_dir = std::env::var("OUT_DIR").unwrap();
+    let dest_path = std::path::Path::new(&out_dir).join("aliases.rs");
+    let mut f = std::fs::File::create(&dest_path).unwrap();
+    use std::io::Write;
+
+    if cfg!(feature = "aws-lc-rs")
+        && !cfg!(feature = "boringssl-boring-crate")
+        && !cfg!(feature = "openssl")
     {
-        let bssl_dir = std::env::var("QUICHE_BSSL_PATH").unwrap_or_else(|_| {
-            let mut cfg = get_boringssl_cmake_config();
+        let crypto_root = std::env::var("DEP_AWS_LC_RS_1_15_4_SYS_ROOT").unwrap();
+        let crypto_lib_name =
+            std::env::var("DEP_AWS_LC_RS_1_15_4_SYS_LIBCRYPTO").unwrap();
+        let ssl_lib_name =
+            std::env::var("DEP_AWS_LC_RS_1_15_4_SYS_LIBSSL").unwrap();
 
-            if cfg!(feature = "fuzzing") {
-                cfg.cxxflag("-DBORINGSSL_UNSAFE_DETERMINISTIC_MODE")
-                    .cxxflag("-DBORINGSSL_UNSAFE_FUZZER_MODE");
+        println!(
+            "cargo:rustc-link-search=native={}/build/artifacts",
+            crypto_root
+        );
+        // ssl depends on crypto
+        println!("cargo:rustc-link-lib=static={}", ssl_lib_name);
+        println!("cargo:rustc-link-lib=static={}", crypto_lib_name);
+
+        writeln!(f, "std::arch::global_asm!(").unwrap();
+
+        let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+        let jump_instr = match arch.as_str() {
+            "x86_64" => "jmp",
+            "aarch64" => "b",
+            _ => "jmp", // fallback
+        };
+
+        let mut processed_syms = std::collections::HashSet::new();
+        let prefix = "aws_lc_0_37_0_";
+        for lib in &[&crypto_lib_name, &ssl_lib_name] {
+            let lib_path =
+                format!("{}/build/artifacts/lib{}.a", crypto_root, lib);
+            let output = std::process::Command::new("nm")
+                .arg("-gP")
+                .arg(&lib_path)
+                .output()
+                .expect("failed to execute nm");
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2
+                    && parts[0].starts_with(prefix)
+                    && parts[1] != "U"
+                {
+                    let sym = parts[0];
+                    let sym_type = parts[1];
+                    let standard_sym = &sym[prefix.len()..];
+
+                    if processed_syms.contains(standard_sym) {
+                        continue;
+                    }
+
+                    if standard_sym.starts_with("EVP_")
+                        || standard_sym.starts_with("SSL_")
+                        || standard_sym.starts_with("HKDF_")
+                        || standard_sym.starts_with("AES_")
+                        || standard_sym.starts_with("CRYPTO_")
+                        || standard_sym.starts_with("ERR_")
+                        || standard_sym.starts_with("OPENSSL_")
+                        || standard_sym.starts_with("X509_")
+                        || standard_sym.starts_with("sk_")
+                        || standard_sym.starts_with("ASN1_")
+                        || standard_sym.starts_with("BIO_")
+                        || standard_sym.starts_with("DH_")
+                        || standard_sym.starts_with("DSA_")
+                        || standard_sym.starts_with("RSASSA_")
+                        || standard_sym.starts_with("RSA_")
+                        || standard_sym.starts_with("SHA")
+                        || standard_sym.starts_with("EC_")
+                        || standard_sym == "TLS_method"
+                        || standard_sym == "RAND_bytes"
+                    {
+                        writeln!(f, "    \".globl {}\",", standard_sym).unwrap();
+                        if sym_type == "T" || sym_type == "W" {
+                            writeln!(
+                                f,
+                                "    \"{}: {} {}\",",
+                                standard_sym, jump_instr, sym
+                            )
+                            .unwrap();
+                        } else {
+                            writeln!(
+                                f,
+                                "    \".set {}, {}\",",
+                                standard_sym, sym
+                            )
+                            .unwrap();
+                        }
+
+                        processed_syms.insert(standard_sym.to_string());
+
+                        if standard_sym.starts_with("OPENSSL_sk_") {
+                            let short_sk_sym = &standard_sym["OPENSSL_".len()..];
+                            if !processed_syms.contains(short_sk_sym) {
+                                writeln!(f, "    \".globl {}\",", short_sk_sym)
+                                    .unwrap();
+                                if sym_type == "T" || sym_type == "W" {
+                                    writeln!(
+                                        f,
+                                        "    \"{}: {} {}\",",
+                                        short_sk_sym, jump_instr, sym
+                                    )
+                                    .unwrap();
+                                } else {
+                                    writeln!(
+                                        f,
+                                        "    \".set {}, {}\",",
+                                        short_sk_sym, sym
+                                    )
+                                    .unwrap();
+                                }
+                                processed_syms.insert(short_sk_sym.to_string());
+                            }
+                        }
+                    }
+                }
             }
-
-            cfg.build_target("ssl").build();
-            cfg.build_target("crypto").build().display().to_string()
-        });
-
-        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", bssl_dir);
-
-        let build_path = get_boringssl_platform_output_path();
-        let mut build_dir = format!("{bssl_dir}/build/{build_path}");
-
-        // If build directory doesn't exist, use the specified path as is.
-        if !std::path::Path::new(&build_dir).is_dir() {
-            build_dir = bssl_dir;
         }
-
-        println!("cargo:rustc-link-search=native={build_dir}");
-
-        let bssl_link_kind = std::env::var("QUICHE_BSSL_LINK_KIND")
-            .unwrap_or("static".to_string());
-        println!("cargo:rustc-link-lib={bssl_link_kind}=ssl");
-        println!("cargo:rustc-link-lib={bssl_link_kind}=crypto");
-    }
-
-    if cfg!(feature = "boringssl-boring-crate") {
-        println!("cargo:rustc-link-lib=static=ssl");
-        println!("cargo:rustc-link-lib=static=crypto");
+        writeln!(f, ");").unwrap();
     }
 
     // MacOS: Allow cdylib to link with undefined symbols

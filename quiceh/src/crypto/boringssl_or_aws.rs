@@ -39,7 +39,6 @@ impl Algorithm {
 
 fn make_aead_ctx(alg: Algorithm, key: &[u8]) -> Result<EVP_AEAD_CTX> {
     let mut ctx = MaybeUninit::uninit();
-
     let ctx = unsafe {
         let aead = alg.get_evp_aead();
 
@@ -92,22 +91,6 @@ impl PacketKey {
         derive_pkt_iv(aead, secret, &mut iv)?;
 
         let pkt_key = Self::new(aead, key, iv, enc)?;
-
-        // Dummy seal operation to prime the AEAD context with the nonce mask.
-        //
-        // This is needed because BoringCrypto requires the first counter (i.e.
-        // packet number) to be zero, which would not be the case for packet
-        // number spaces after Initial as the same packet number sequence is
-        // shared.
-        //let _ = pkt_key.seal_with_u64_counter(
-        //0,
-        //b"",
-        //&mut [0_u8; 16],
-        //0,
-        //None,
-        //None,
-        //false,
-        //);
 
         Ok(pkt_key)
     }
