@@ -18,9 +18,6 @@ default = ["aws-lc-rs"]
 # Use the BoringSSL library provided by the boring crate.
 boringssl-boring-crate = ["dep:boring", "foreign-types-shared"]
 
-# Build quiceh against OpenSSL instead of BoringSSL.
-openssl = ["pkg-config"]
-
 # Use aws-ls-rc for symmetric cryptography
 aws-lc-rs = ["dep:aws-lc-rs", "dep:aws-lc-sys", "foreign-types-shared"]
 

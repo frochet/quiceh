@@ -49,10 +49,7 @@ fn main() {
     let mut f = std::fs::File::create(&dest_path).unwrap();
     use std::io::Write;
 
-    if cfg!(feature = "aws-lc-rs")
-        && !cfg!(feature = "boringssl-boring-crate")
-        && !cfg!(feature = "openssl")
-    {
+    if cfg!(feature = "aws-lc-rs") && !cfg!(feature = "boringssl-boring-crate") {
         let crypto_root = std::env::var("DEP_AWS_LC_RS_1_15_4_SYS_ROOT").unwrap();
         let crypto_lib_name =
             std::env::var("DEP_AWS_LC_RS_1_15_4_SYS_LIBCRYPTO").unwrap();
@@ -175,19 +172,6 @@ fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
     if target_os == "macos" {
         println!("cargo:rustc-cdylib-link-arg=-Wl,-undefined,dynamic_lookup");
-    }
-
-    #[cfg(feature = "openssl")]
-    {
-        let pkgcfg = pkg_config::Config::new();
-
-        if pkgcfg.probe("libcrypto").is_err() {
-            panic!("no libcrypto found");
-        }
-
-        if pkgcfg.probe("libssl").is_err() {
-            panic!("no libssl found");
-        }
     }
 
     if cfg!(feature = "pkg-config-meta") {

@@ -10935,9 +10935,6 @@ mod tests {
         assert_eq!(pipe.handshake(), Ok(()));
     }
 
-    // Disable this for openssl as it seems to fail for some reason. It could be
-    // because of the way the get_certs API differs from bssl.
-    #[cfg(not(feature = "openssl"))]
     #[test]
     fn verify_client_invalid() {
         let mut server_config = Config::new(crate::PROTOCOL_VERSION).unwrap();
@@ -11150,14 +11147,7 @@ mod tests {
 
     #[test]
     fn handshake_resumption() {
-        #[cfg(not(feature = "openssl"))]
         const SESSION_TICKET_KEY: [u8; 48] = [0xa; 48];
-
-        // 80-byte key(AES 256)
-        // TODO: We can set the default? or query the ticket size by calling
-        // the same API(SSL_CTX_set_tlsext_ticket_keys) twice to fetch the size.
-        #[cfg(feature = "openssl")]
-        const SESSION_TICKET_KEY: [u8; 80] = [0xa; 80];
 
         let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
 
@@ -11242,7 +11232,6 @@ mod tests {
         assert_eq!(pipe.server.sent_count, 1);
     }
 
-    #[cfg(not(feature = "openssl"))] // 0-RTT not supported when using openssl/quictls
     #[test]
     fn handshake_0rtt() {
         let mut buf = [0; 65535];
@@ -11311,7 +11300,6 @@ mod tests {
         }
     }
 
-    #[cfg(not(feature = "openssl"))] // 0-RTT not supported when using openssl/quictls
     #[test]
     fn handshake_0rtt_reordered() {
         let mut buf = [0; 65535];
@@ -11389,7 +11377,6 @@ mod tests {
         }
     }
 
-    #[cfg(not(feature = "openssl"))] // 0-RTT not supported when using openssl/quictls
     #[test]
     fn handshake_0rtt_truncated() {
         let mut buf = [0; 65535];
@@ -11678,7 +11665,6 @@ mod tests {
         }
     }
 
-    #[cfg(not(feature = "openssl"))] // 0-RTT not supported when using openssl/quictls
     #[test]
     fn streamv3_partial_consume() {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -13882,7 +13868,6 @@ mod tests {
         );
     }
 
-    #[cfg(not(feature = "openssl"))] // 0-RTT not supported when using openssl/quictls
     #[test]
     /// Simulates reception of an early 1-RTT packet on the server, by
     /// delaying the client's Handshake packet that completes the handshake.
@@ -18383,9 +18368,6 @@ mod tests {
         }
     }
 
-    // OpenSSL does not provide a straightforward interface to deal with custom
-    // off-load key signing.
-    #[cfg(not(feature = "openssl"))]
     #[test]
     fn app_close_by_server_during_handshake_private_key_failure() {
         let mut pipe = <Pipe>::new().unwrap();
