@@ -50,11 +50,22 @@ fn main() {
     use std::io::Write;
 
     if cfg!(feature = "aws-lc-rs") && !cfg!(feature = "boringssl-boring-crate") {
-        let crypto_root = std::env::var("DEP_AWS_LC_RS_1_15_4_SYS_ROOT").unwrap();
-        let crypto_lib_name =
-            std::env::var("DEP_AWS_LC_RS_1_15_4_SYS_LIBCRYPTO").unwrap();
-        let ssl_lib_name =
-            std::env::var("DEP_AWS_LC_RS_1_15_4_SYS_LIBSSL").unwrap();
+        let mut aws_lc_vars = None;
+        for (key, value) in std::env::vars() {
+            if key.starts_with("DEP_AWS_LC_") && key.ends_with("_ROOT") {
+                let prefix_env = &key[4..key.len() - 5];
+                if let (Ok(crypto_lib), Ok(ssl_lib)) = (
+                    std::env::var(format!("DEP_{}_LIBCRYPTO", prefix_env)),
+                    std::env::var(format!("DEP_{}_LIBSSL", prefix_env)),
+                ) {
+                    aws_lc_vars = Some((value, crypto_lib, ssl_lib));
+                    break;
+                }
+            }
+        }
+
+        let (crypto_root, crypto_lib_name, ssl_lib_name) =
+            aws_lc_vars.expect("aws-lc-sys environment variables not found");
 
         println!(
             "cargo:rustc-link-search=native={}/build/artifacts",
@@ -73,8 +84,30 @@ fn main() {
             _ => "jmp", // fallback
         };
 
+        let mut prefix = String::new();
+        let lib_path =
+            format!("{}/build/artifacts/lib{}.a", crypto_root, crypto_lib_name);
+        let output = std::process::Command::new("nm")
+            .arg("-gP")
+            .arg(&lib_path)
+            .output()
+            .expect("failed to execute nm");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if line.find("_CRYPTO_malloc").is_some() {
+                let sym = line.split_whitespace().next().unwrap();
+                if sym.ends_with("_CRYPTO_malloc") {
+                    prefix = sym[..sym.len() - "CRYPTO_malloc".len()].to_string();
+                    break;
+                }
+            }
+        }
+
+        if prefix.is_empty() {
+            panic!("Could not determine aws-lc symbol prefix");
+        }
+
         let mut processed_syms = std::collections::HashSet::new();
-        let prefix = "aws_lc_0_37_0_";
         for lib in &[&crypto_lib_name, &ssl_lib_name] {
             let lib_path =
                 format!("{}/build/artifacts/lib{}.a", crypto_root, lib);
@@ -88,7 +121,7 @@ fn main() {
             for line in stdout.lines() {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() >= 2
-                    && parts[0].starts_with(prefix)
+                    && parts[0].starts_with(&prefix)
                     && parts[1] != "U"
                 {
                     let sym = parts[0];
