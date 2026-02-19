@@ -19,4 +19,4 @@ cargo package --package quiceh
 sed -i "0,/^version/ s/version = \"\(.*\)\"/version = \"$VERSION\"/" quiceh/Cargo.toml
 git add quiceh/Cargo.toml
 git commit -m $VERSION
-git tag -a $VERSION -m "quiceh $VERSION" --sign
+git tag -a $VERSION -m "quiceh $VERSION"
