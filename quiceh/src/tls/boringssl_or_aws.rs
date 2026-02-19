@@ -351,8 +351,18 @@ extern "C" {
 
     // STACK_OF
 
+    #[cfg(feature = "boringssl-boring-crate")]
     fn sk_num(stack: *const STACK_OF) -> usize;
 
+    #[cfg(feature = "boringssl-boring-crate")]
+    fn sk_value(stack: *const STACK_OF, idx: usize) -> *mut c_void;
+
+    #[cfg(all(feature = "aws-lc", not(feature = "boringssl-boring-crate")))]
+    #[link_name = "OPENSSL_sk_num"]
+    fn sk_num(stack: *const STACK_OF) -> usize;
+
+    #[cfg(all(feature = "aws-lc", not(feature = "boringssl-boring-crate")))]
+    #[link_name = "OPENSSL_sk_value"]
     fn sk_value(stack: *const STACK_OF, idx: usize) -> *mut c_void;
 
     // CRYPTO_BUFFER
