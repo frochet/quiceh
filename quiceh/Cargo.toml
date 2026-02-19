@@ -13,15 +13,13 @@ license = "BSD-2-Clause"
 rust-version = "1.82"
 
 [features]
-default = ["aws-lc-rs"]
+default = ["aws-lc"]
 
 # Use the BoringSSL library provided by the boring crate.
 boringssl-boring-crate = ["dep:boring", "foreign-types-shared"]
 
 # Use aws-ls-rc for symmetric cryptography
-aws-lc-rs = ["dep:aws-lc-rs", "dep:aws-lc-sys", "foreign-types-shared"]
-
-boring-for-symm = ["boringssl-boring-crate"]
+aws-lc = ["dep:aws-lc-sys", "foreign-types-shared"]
 
 # Generate pkg-config metadata file for libquiceh.
 pkg-config-meta = []
@@ -56,7 +54,6 @@ slab = "0.4"
 once_cell = "1"
 octets_rev = { version = "0.1.0", path = "../octets_rev" }
 boring = { version = "4", optional = true }
-aws-lc-rs = { version = "1", optional = true }
 aws-lc-sys = { version = "0.37", optional = true, features = ["ssl"] }
 foreign-types-shared = { version = "0.3.1", optional = true }
 intrusive-collections = "0.9.7"

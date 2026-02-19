@@ -401,8 +401,6 @@
 #![warn(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-include!(concat!(env!("OUT_DIR"), "/aliases.rs"));
-
 #[macro_use]
 extern crate log;
 
