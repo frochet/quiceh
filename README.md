@@ -435,7 +435,7 @@ Once the Rust build environment is setup, the quiceh source code can be fetched
 using git:
 
 ```bash
- $ git clone --recursive git@github.com:frochet/quiceh
+ $ git clone git@github.com:frochet/quiceh
 ```
 
 and then built using cargo:
@@ -446,22 +446,9 @@ and then built using cargo:
 
 cargo can also be used to run the testsuite:
 
-```bas
+```bash
  $ cargo test
 ```
-
-Note that [BoringSSL], which is used to implement QUIC's cryptographic handshake
-based on TLS, needs to be built and linked to quiceh. This is done automatically
-when building quiceh using cargo, but requires the `cmake` command to be
-available during the build process. On Windows you also need
-[NASM](https://www.nasm.us/). The [official BoringSSL
-documentation](https://github.com/google/boringssl/blob/master/BUILDING.md) has
-more details.
-
-```bash
- $ QUICEH_BSSL_PATH="/path/to/boringssl" cargo build --examples
-```
-[BoringSSL]: https://boringssl.googlesource.com/boringssl/
 
 Research
 --------
