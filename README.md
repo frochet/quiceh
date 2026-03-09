@@ -469,6 +469,7 @@ If you use this code in your research, please cite the following paper:
 
 [Reverso](https://dl.acm.org/doi/epdf/10.1145/3787927.3787929) 
 
+```bibtex
 @article{10.1145/3787927.3787929,  
     author = {Rochet, Florentin},  
     title = {Contiguous Zero-Copy for Encrypted Transport Protocols},  
@@ -487,14 +488,17 @@ If you use this code in your research, please cite the following paper:
     numpages = {17},  
     keywords = {security and privacy, network security, security protocols}  
 }
+```
 
 You may also cite this repository separately:  
 
+```bibtex
 @misc{frochet-quiceh,  
-&nbsp;&nbsp;title={quiceh: an implementation of QUIC VReverso},  
-&nbsp;&nbsp;author={Florentin Rochet},  
-&nbsp;&nbsp;howpublished={\url{https://github.com/frochet/quiceh}}  
+    title={quiceh: an implementation of QUIC VReverso},  
+    author={Florentin Rochet},  
+    howpublished={\url{https://github.com/frochet/quiceh}}  
 }
+```
 
 
 Copyright
