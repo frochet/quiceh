@@ -44,6 +44,9 @@ fn target_dir_path() -> std::path::PathBuf {
 }
 
 fn main() {
+    if cfg!(feature = "aws-lc") {
+        println!("cargo:rustc-env=AWS_LC_SYS_NO_PREFIX=1");
+    }
     if cfg!(any(feature = "aws-lc", feature = "boringssl-boring-crate")) {
         println!("cargo:rustc-link-lib=static=ssl");
         println!("cargo:rustc-link-lib=static=crypto");
