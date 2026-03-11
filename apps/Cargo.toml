@@ -29,10 +29,10 @@ bytes = "1"
 url = "1"
 log = "0.4"
 octets_rev = { version = "0.1.0", path = "../octets_rev" }
-ring = { git = "https://github.com/frochet/ring" }
-quiceh = { path = "../quiceh" }
+quiceh = { path = "../quiceh", default-features = false }
 libc = "0.2"
 nix = { version = "0.27", features = ["net", "socket", "uio"] }
+ring = "0.17.14"
 
 [lib]
 crate-type = ["lib"]
