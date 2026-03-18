@@ -33,6 +33,7 @@ quiceh = { path = "../quiceh", default-features = false }
 libc = "0.2"
 nix = { version = "0.27", features = ["net", "socket", "uio"] }
 ring = "0.17.14"
+buffer-pool = "0.2.1"
 
 [lib]
 crate-type = ["lib"]

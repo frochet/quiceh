@@ -41,10 +41,62 @@ use quinn_udp::RecvMeta;
 use quinn_udp::UdpSocketState;
 use quinn_udp::BATCH_SIZE;
 
+use buffer_pool::Reuse;
+use buffer_pool::{Pool, Pooled};
 use bytes::BytesMut;
+use std::ops::Deref;
+use std::ops::DerefMut;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
 pub const MAX_FLUSH_SIZE: usize = 1_048_576;
+
+const POOL_SHARDS: usize = 1;
+
+type BufPool = Pool<POOL_SHARDS, UdpBuf>;
+const UDP_RECV_BUF_SIZE: usize = 64 * 1024;
+static UDP_BUF_POOL: BufPool = BufPool::new(64, UDP_RECV_BUF_SIZE, "UdpBufPool");
+
+#[derive(Default)]
+struct UdpBuf {
+    inner: BytesMut,
+}
+
+impl UdpBuf {
+    fn expand(&mut self, size: usize) {
+        if self.capacity() != size {
+            self.resize(size, 0x0);
+        } else {
+            unsafe {
+                self.set_len(size);
+            }
+        }
+    }
+}
+
+impl Reuse for UdpBuf {
+    fn reuse(&mut self, trim: usize) -> bool {
+        self.inner.clear();
+        self.inner.truncate(trim);
+        self.inner.capacity() > 0
+    }
+
+    fn capacity(&self) -> usize {
+        self.inner.capacity()
+    }
+}
+
+impl Deref for UdpBuf {
+    type Target = BytesMut;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl DerefMut for UdpBuf {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -275,6 +327,10 @@ where
     let mut new_path_probed = false;
     let mut migrated = false;
 
+    let mut udp_bufs: [Pooled<UdpBuf>; BATCH_SIZE] = std::array::from_fn(|_| {
+        UDP_BUF_POOL.get_with(|d| d.expand(UDP_RECV_BUF_SIZE))
+    });
+
     loop {
         if !conn.is_in_early_data() || app_proto_selected {
             poll.poll(&mut events, conn.timeout()).unwrap();
@@ -300,16 +356,19 @@ where
                 _ => unreachable!(),
             };
 
-            let mut iovs: [IoSliceMut; BATCH_SIZE] = {
-                let mut bufs = buf
-                    .chunks_mut(65536 * recv_state.gro_segments())
-                    .map(IoSliceMut::new);
-
-                std::array::from_fn(|_| bufs.next().expect("BATCH_SIZE elements"))
-            };
-
             let local_addr = socket.local_addr().unwrap();
             'read: loop {
+                for buf in udp_bufs.iter_mut() {
+                    buf.expand(UDP_RECV_BUF_SIZE);
+                }
+                let mut iovs: [IoSliceMut<'_>; BATCH_SIZE] = {
+                    let mut bufs =
+                        udp_bufs.iter_mut().map(|b| IoSliceMut::new(b.as_mut()));
+                    std::array::from_fn(|_| {
+                        bufs.next().expect("BATCH_SIZE elements")
+                    })
+                };
+
                 let len = match recv_state.recv(
                     (&socket_std).into(),
                     &mut iovs,
@@ -339,7 +398,8 @@ where
                 };
 
                 let mut read = 0;
-                for (meta, buf) in metainfos.iter().zip(iovs.iter_mut()).take(len)
+                for (meta, data) in
+                    metainfos.iter().zip(udp_bufs.iter_mut()).take(len)
                 {
                     if let Some(target_path) = conn_args.dump_packet_path.as_ref()
                     {
@@ -347,21 +407,24 @@ where
 
                         if let Ok(f) = std::fs::File::create(path) {
                             let mut f = std::io::BufWriter::new(f);
-                            f.write_all(&buf[..meta.len]).ok();
+                            f.write_all(&data[..meta.len]).ok();
                         }
                     }
-                    let mut data: BytesMut = buf[0..meta.len].into();
-                    while !data.is_empty() {
+                    let mut offset = 0;
+                    while offset < meta.len {
                         pkt_count += 1;
-                        let mut buf = data.split_to(meta.stride.min(data.len()));
+                        let stride = meta.stride.min(meta.len - offset);
+                        let mut buf = &mut data[offset..offset + stride];
                         read += match conn.recv(&mut buf, recv_info) {
                             Ok(v) => v,
 
                             Err(e) => {
                                 error!("{}: recv failed: {:?}", local_addr, e);
+                                offset += stride;
                                 continue;
                             },
                         };
+                        offset += stride;
                     }
                 }
                 trace!("{}: processed {} bytes", local_addr, read);
