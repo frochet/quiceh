@@ -1,6 +1,6 @@
 [package]
 name = "quiceh"
-version = "2.0.4"
+version = "2.0.5"
 authors = ["Florentin Rochet <florentin.rochet@unamur.be>"]
 edition = "2018"
 build = "src/build.rs"
