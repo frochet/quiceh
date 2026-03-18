@@ -541,14 +541,30 @@ pub fn verify_slices_are_equal(a: &[u8], b: &[u8]) -> Result<()> {
     Err(Error::CryptoFail)
 }
 
-extern "C" {
-    fn EVP_sha256() -> *const EVP_MD;
+#[cfg(feature = "aws-lc")]
+use aws_lc_sys as sys;
+#[cfg(feature = "boringssl-boring-crate")]
+use boring_sys as sys;
 
-    fn EVP_sha384() -> *const EVP_MD;
-
-    // CRYPTO
-    fn CRYPTO_memcmp(a: *const u8, b: *const u8, len: usize) -> c_int;
+#[inline]
+#[allow(non_snake_case)]
+unsafe fn EVP_sha256() -> *const EVP_MD {
+    sys::EVP_sha256() as _
 }
+
+#[inline]
+#[allow(non_snake_case)]
+unsafe fn EVP_sha384() -> *const EVP_MD {
+    sys::EVP_sha384() as _
+}
+
+// CRYPTO
+#[inline]
+#[allow(non_snake_case)]
+unsafe fn CRYPTO_memcmp(a: *const u8, b: *const u8, len: usize) -> c_int {
+    sys::CRYPTO_memcmp(a as _, b as _, len as _) as _
+}
+
 
 #[cfg(test)]
 mod tests {

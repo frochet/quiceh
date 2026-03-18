@@ -59,6 +59,14 @@ pub fn rand_u64_uniform(max: u64) -> u64 {
     r / chunk_size
 }
 
-extern "C" {
-    fn RAND_bytes(buf: *mut u8, len: libc::size_t) -> libc::c_int;
+#[cfg(feature = "aws-lc")]
+use aws_lc_sys as sys;
+#[cfg(feature = "boringssl-boring-crate")]
+use boring_sys as sys;
+
+#[inline]
+#[allow(non_snake_case)]
+unsafe fn RAND_bytes(buf: *mut u8, len: libc::size_t) -> libc::c_int {
+    sys::RAND_bytes(buf as _, len as _) as _
 }
+

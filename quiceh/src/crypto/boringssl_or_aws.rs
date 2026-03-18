@@ -377,55 +377,78 @@ pub(crate) fn hkdf_expand(
 
     Ok(())
 }
-extern "C" {
-    fn EVP_aead_aes_128_gcm_tls13() -> *const EVP_AEAD;
+#[cfg(feature = "aws-lc")]
+use aws_lc_sys as sys;
+#[cfg(feature = "boringssl-boring-crate")]
+use boring_sys as sys;
 
-    fn EVP_aead_aes_256_gcm_tls13() -> *const EVP_AEAD;
-
-    fn EVP_aead_chacha20_poly1305() -> *const EVP_AEAD;
-
-    // HKDF
-    fn HKDF_extract(
-        out_key: *mut u8, out_len: *mut usize, digest: *const EVP_MD,
-        secret: *const u8, secret_len: usize, salt: *const u8, salt_len: usize,
-    ) -> c_int;
-
-    fn HKDF_expand(
-        out_key: *mut u8, out_len: usize, digest: *const EVP_MD, prk: *const u8,
-        prk_len: usize, info: *const u8, info_len: usize,
-    ) -> c_int;
-
-    // EVP_AEAD_CTX
-    fn EVP_AEAD_CTX_init(
-        ctx: *mut EVP_AEAD_CTX, aead: *const EVP_AEAD, key: *const u8,
-        key_len: usize, tag_len: usize, engine: *mut c_void,
-    ) -> c_int;
-
-    fn EVP_AEAD_CTX_open(
-        ctx: *const EVP_AEAD_CTX, out: *mut u8, out_len: *mut usize,
-        max_out_len: usize, nonce: *const u8, nonce_len: usize, inp: *const u8,
-        in_len: usize, ad: *const u8, ad_len: usize,
-    ) -> c_int;
-
-    fn EVP_AEAD_CTX_seal_scatter(
-        ctx: *const EVP_AEAD_CTX, out: *mut u8, out_tag: *mut u8,
-        out_tag_len: *mut usize, max_out_tag_len: usize, nonce: *const u8,
-        nonce_len: usize, inp: *const u8, in_len: usize, extra_in: *const u8,
-        extra_in_len: usize, ad: *const u8, ad_len: usize,
-    ) -> c_int;
-
-    // AES
-    fn AES_set_encrypt_key(
-        key: *const u8, bits: c_uint, aeskey: *mut AES_KEY,
-    ) -> c_int;
-
-    fn AES_ecb_encrypt(
-        inp: *const u8, out: *mut u8, key: *const AES_KEY, enc: c_int,
-    ) -> c_void;
-
-    // ChaCha20
-    fn CRYPTO_chacha_20(
-        out: *mut u8, inp: *const u8, in_len: usize, key: *const u8,
-        nonce: *const u8, counter: u32,
-    ) -> c_void;
+#[inline]
+#[allow(non_snake_case)]
+unsafe fn EVP_aead_aes_128_gcm_tls13() -> *const EVP_AEAD {
+    sys::EVP_aead_aes_128_gcm_tls13() as _
 }
+
+#[inline]
+#[allow(non_snake_case)]
+unsafe fn EVP_aead_aes_256_gcm_tls13() -> *const EVP_AEAD {
+    sys::EVP_aead_aes_256_gcm_tls13() as _
+}
+
+#[inline]
+#[allow(non_snake_case)]
+unsafe fn EVP_aead_chacha20_poly1305() -> *const EVP_AEAD {
+    sys::EVP_aead_chacha20_poly1305() as _
+}
+
+// HKDF
+#[inline]
+#[allow(non_snake_case)]
+unsafe fn HKDF_extract( out_key: *mut u8, out_len: *mut usize, digest: *const EVP_MD, secret: *const u8, secret_len: usize, salt: *const u8, salt_len: usize, ) -> c_int {
+    sys::HKDF_extract(out_key as _, out_len as _, digest as _, secret as _, secret_len as _, salt as _, salt_len as _) as _
+}
+
+#[inline]
+#[allow(non_snake_case)]
+unsafe fn HKDF_expand( out_key: *mut u8, out_len: usize, digest: *const EVP_MD, prk: *const u8, prk_len: usize, info: *const u8, info_len: usize, ) -> c_int {
+    sys::HKDF_expand(out_key as _, out_len as _, digest as _, prk as _, prk_len as _, info as _, info_len as _) as _
+}
+
+// EVP_AEAD_CTX
+#[inline]
+#[allow(non_snake_case)]
+unsafe fn EVP_AEAD_CTX_init( ctx: *mut EVP_AEAD_CTX, aead: *const EVP_AEAD, key: *const u8, key_len: usize, tag_len: usize, engine: *mut c_void, ) -> c_int {
+    sys::EVP_AEAD_CTX_init(ctx as _, aead as _, key as _, key_len as _, tag_len as _, engine as _) as _
+}
+
+#[inline]
+#[allow(non_snake_case)]
+unsafe fn EVP_AEAD_CTX_open( ctx: *const EVP_AEAD_CTX, out: *mut u8, out_len: *mut usize, max_out_len: usize, nonce: *const u8, nonce_len: usize, inp: *const u8, in_len: usize, ad: *const u8, ad_len: usize, ) -> c_int {
+    sys::EVP_AEAD_CTX_open(ctx as _, out as _, out_len as _, max_out_len as _, nonce as _, nonce_len as _, inp as _, in_len as _, ad as _, ad_len as _) as _
+}
+
+#[inline]
+#[allow(non_snake_case)]
+unsafe fn EVP_AEAD_CTX_seal_scatter( ctx: *const EVP_AEAD_CTX, out: *mut u8, out_tag: *mut u8, out_tag_len: *mut usize, max_out_tag_len: usize, nonce: *const u8, nonce_len: usize, inp: *const u8, in_len: usize, extra_in: *const u8, extra_in_len: usize, ad: *const u8, ad_len: usize, ) -> c_int {
+    sys::EVP_AEAD_CTX_seal_scatter(ctx as _, out as _, out_tag as _, out_tag_len as _, max_out_tag_len as _, nonce as _, nonce_len as _, inp as _, in_len as _, extra_in as _, extra_in_len as _, ad as _, ad_len as _) as _
+}
+
+// AES
+#[inline]
+#[allow(non_snake_case)]
+unsafe fn AES_set_encrypt_key( key: *const u8, bits: c_uint, aeskey: *mut AES_KEY, ) -> c_int {
+    sys::AES_set_encrypt_key(key as _, bits as _, aeskey as _) as _
+}
+
+#[inline]
+#[allow(non_snake_case)]
+unsafe fn AES_ecb_encrypt( inp: *const u8, out: *mut u8, key: *const AES_KEY, enc: c_int, ) {
+    sys::AES_ecb_encrypt(inp as _, out as _, key as _, enc as _);
+}
+
+// ChaCha20
+#[inline]
+#[allow(non_snake_case)]
+unsafe fn CRYPTO_chacha_20( out: *mut u8, inp: *const u8, in_len: usize, key: *const u8, nonce: *const u8, counter: u32, ) {
+    sys::CRYPTO_chacha_20(out as _, inp as _, in_len as _, key as _, nonce as _, counter as _);
+}
+
