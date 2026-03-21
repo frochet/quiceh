@@ -43,7 +43,6 @@ use quinn_udp::BATCH_SIZE;
 
 use buffer_pool::Reuse;
 use buffer_pool::{Pool, Pooled};
-use bytes::BytesMut;
 use std::ops::Deref;
 use std::ops::DerefMut;
 
@@ -58,13 +57,13 @@ static UDP_BUF_POOL: BufPool = BufPool::new(64, UDP_RECV_BUF_SIZE, "UdpBufPool")
 
 #[derive(Default)]
 struct UdpBuf {
-    inner: BytesMut,
+    inner: Vec<u8>,
 }
 
 impl UdpBuf {
     fn expand(&mut self, size: usize) {
         if self.capacity() != size {
-            self.resize(size, 0x0);
+            self.inner.resize(size, 0x0);
         } else {
             unsafe {
                 self.set_len(size);
@@ -86,7 +85,7 @@ impl Reuse for UdpBuf {
 }
 
 impl Deref for UdpBuf {
-    type Target = BytesMut;
+    type Target = Vec<u8>;
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
@@ -146,7 +145,7 @@ where
     recv_state
         .set_recv_buffer_size((&socket_std).into(), 2097152)
         .unwrap();
-    let mut buf = vec![0; 65536 * BATCH_SIZE * recv_state.gro_segments()];
+    let mut buf = vec![0; 65536];
     let mut metainfos = [RecvMeta::default(); BATCH_SIZE];
     // Create the UDP socket backing the QUIC connection, and register it with
     // the event loop.
