@@ -4769,7 +4769,9 @@ impl<F: BufFactory> Connection<F> {
             }
 
             // Create RETIRE_CONNECTION_ID frames as needed.
-            while let Some(seq_num) = self.ids.next_retire_dcid_seq() {
+            let retire_dcid_seqs = self.ids.retire_dcid_seqs();
+
+            for seq_num in retire_dcid_seqs {
                 // The sequence number specified in a RETIRE_CONNECTION_ID frame
                 // MUST NOT refer to the Destination Connection ID field of the
                 // packet in which the frame is contained.
@@ -21031,6 +21033,105 @@ mod tests {
 
         // Continue searching for PMTU
         assert!(pmtu_param.get_probe_status());
+    }
+
+    #[test]
+    fn connection_id_retire_exotic_sequence() {
+        let mut buf = [0; 65535];
+
+        let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        assert_eq!(config.set_cc_algorithm_name("cubic"), Ok(()));
+        config
+            .load_cert_chain_from_pem_file("examples/cert.crt")
+            .unwrap();
+        config
+            .load_priv_key_from_pem_file("examples/cert.key")
+            .unwrap();
+        config
+            .set_application_protos(&[b"proto1", b"proto2"])
+            .unwrap();
+        config.verify_peer(false);
+        config.set_active_connection_id_limit(2);
+        config.set_initial_max_data(30);
+        config.set_initial_max_stream_data_bidi_local(15);
+        config.set_initial_max_stream_data_bidi_remote(15);
+        config.set_initial_max_stream_data_uni(10);
+        config.set_initial_max_streams_uni(3);
+        config.set_initial_max_streams_bidi(3);
+
+        let mut pipe = <Pipe>::with_config(&mut config).unwrap();
+        assert_eq!(pipe.handshake(), Ok(()));
+
+        // Inject an exotic sequence of NEW_CONNECTION_ID frames, unbeknowst to
+        // quiceh client connection object.
+        let mut frames = [
+            frame::Frame::NewConnectionId {
+                seq_num: 8,
+                retire_prior_to: 1,
+                conn_id: vec![0],
+                reset_token: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            },
+            frame::Frame::NewConnectionId {
+                seq_num: 1,
+                retire_prior_to: 0,
+                conn_id: vec![2],
+                reset_token: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
+            },
+            frame::Frame::NewConnectionId {
+                seq_num: 6,
+                retire_prior_to: 6,
+                conn_id: vec![0x15],
+                reset_token: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3],
+            },
+            frame::Frame::NewConnectionId {
+                seq_num: 8,
+                retire_prior_to: 1,
+                conn_id: vec![0],
+                reset_token: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4],
+            },
+            frame::Frame::NewConnectionId {
+                seq_num: 48,
+                retire_prior_to: 8,
+                conn_id: vec![1],
+                reset_token: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5],
+            },
+        ];
+
+        let pkt_type = packet::Type::Short;
+        if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_V1 {
+            pipe.send_pkt_to_server(pkt_type, &frames, &mut buf)
+                .unwrap();
+        } else {
+            frames.reverse();
+            pipe.send_pkt_to_server(pkt_type, &frames, &mut buf)
+                .unwrap();
+        }
+
+        let (s1, s2, s3, s4) =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                (2, 3, 4, 5)
+            } else {
+                (0, 1, 2, 3)
+            };
+
+        // Ensure operations continue to be allowed.
+        assert_eq!(pipe.client.stream_send(s1, b"data", true), Ok(4));
+        assert_eq!(pipe.server.stream_send(s2, b"data", true), Ok(4));
+        assert_eq!(pipe.client.stream_send(s3, b"data", true), Ok(4));
+        assert_eq!(pipe.server.stream_send(s4, b"data", true), Ok(4));
+
+        assert_eq!(pipe.advance(), Ok(()));
+
+        let mut b = [0; 15];
+        if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_V1 {
+            assert_eq!(pipe.server.stream_recv(s1, &mut b), Ok((4, true)));
+            assert_eq!(pipe.server.stream_recv(s3, &mut b), Ok((4, true)));
+        } else {
+            let (chunk, fin) = pipe.server.stream_recv_zc(s1).expect("recv_zc");
+            assert_eq!((chunk.len(), fin), (4, true));
+            let (chunk, fin) = pipe.server.stream_recv_zc(s3).expect("recv_zc");
+            assert_eq!((chunk.len(), fin), (4, true));
+        }
     }
 }
 
