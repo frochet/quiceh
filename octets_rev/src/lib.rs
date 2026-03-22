@@ -934,6 +934,26 @@ impl<'a> std::ops::Deref for OctetsRev<'a> {
     }
 }
 
+impl<'a> From<Octets<'a>> for OctetsRev<'a> {
+    /// Convert from forward to backward direction
+    fn from(value: Octets<'a>) -> Self {
+        OctetsRev {
+            buf: value.buf,
+            off: value.off,
+        }
+    }
+}
+
+impl<'a> From<OctetsRev<'a>> for Octets<'a> {
+    /// Convert from backward to forward direction
+    fn from(value: OctetsRev<'a>) -> Self {
+        Octets {
+            buf: value.buf,
+            off: value.off,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct OctetsMutRev<'a> {
     buf: &'a mut [u8],
@@ -1073,6 +1093,24 @@ impl<'a> AsRef<[u8]> for OctetsMutRev<'a> {
 impl<'a> AsMut<[u8]> for OctetsMutRev<'a> {
     fn as_mut(&mut self) -> &mut [u8] {
         &mut self.buf[..self.off]
+    }
+}
+
+impl<'a> From<OctetsMut<'a>> for OctetsMutRev<'a> {
+    fn from(value: OctetsMut<'a>) -> Self {
+        OctetsMutRev {
+            buf: value.buf,
+            off: value.off,
+        }
+    }
+}
+
+impl<'a> From<OctetsMutRev<'a>> for OctetsMut<'a> {
+    fn from(value: OctetsMutRev<'a>) -> Self {
+        OctetsMut {
+            buf: value.buf,
+            off: value.off,
+        }
     }
 }
 
