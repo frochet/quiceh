@@ -24,7 +24,7 @@
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use likely_stable::if_unlikely;
+use branches::unlikely;
 /// Zero-copy abstraction for parsing and constructing network packets.
 use std::mem;
 use std::ops::Deref;
@@ -101,14 +101,14 @@ macro_rules! get_u {
 
 macro_rules! peek_u_reverse {
     ($b:expr, $ty:ty , $len:expr) => {{
-        if_unlikely! { $b.off < $len => {
-            return Err (BufferError::BufferProtocolError);
+        if unlikely($b.off < $len) {
+            return Err(BufferError::BufferProtocolError);
         } else {
             $b.off -= $len;
             let out = peek_u_buflen_guaranteed!($b, $ty, $len);
             $b.off += $len;
             return out;
-        }};
+        }
     }};
 }
 
@@ -121,13 +121,13 @@ macro_rules! peek_u_reverse {
 /// the set of [..]() functions.
 macro_rules! get_u_reverse {
     ($b:expr, $ty:ty, $len:expr) => {{
-        if_unlikely! { $b.off < $len => {
-            return Err (BufferError::BufferProtocolError);
+        if unlikely($b.off < $len) {
+            return Err(BufferError::BufferProtocolError);
         } else {
             $b.off -= $len;
             let out = peek_u_buflen_guaranteed!($b, $ty, $len);
             return out;
-        }};
+        }
     }};
 }
 
@@ -822,32 +822,35 @@ impl<'a> OctetsRev<'a> {
     /// Reads an unsigned variable-length integer in network byte-order from
     /// the current offset and rewinds the buffer.
     pub fn get_varint(&mut self) -> Result<u64> {
-        if_unlikely! { self.off == 0 => {
+        if unlikely(self.off == 0) {
             Err(BufferError::BufferProtocolError)
         } else {
             let last = self.peek_u8()?;
             let len = varint_parse_len_reverse(last);
             let out = match len {
                 1 => u64::from(self.get_u8()? >> 2),
-                2 => u64::from(self.get_u16() ? >> 2),
+                2 => u64::from(self.get_u16()? >> 2),
                 4 => u64::from(self.get_u32()? >> 2),
                 8 => self.get_u64()? >> 2,
                 _ => unreachable!(),
             };
             Ok(out)
-        }}
+        }
     }
 
     /// Rewind the buffer of  `len` bytes from the current offset and then
     /// read without copying.
     pub fn get_bytes(&mut self, len: usize) -> Result<Octets<'a>> {
-        if_unlikely! { self.off < len => {
+        if unlikely(self.off < len) {
             Err(BufferError::BufferProtocolError)
         } else {
             self.off -= len;
-            let out = Octets {buf: &self.buf[self.off..self.off + len], off: 0};
+            let out = Octets {
+                buf: &self.buf[self.off..self.off + len],
+                off: 0,
+            };
             Ok(out)
-        }}
+        }
     }
 
     /// Rewind the buffer of `len` bytes and read `len` bytes  without copying.
