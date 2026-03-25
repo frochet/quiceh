@@ -1894,25 +1894,13 @@ macro_rules! push_frames_to_pkt {
                  **/
                 frame::Frame::StreamHeader { stream_id, offset, length, fin } => {
                     if $usehiddencopy {
-                        if $ver == crate::PROTOCOL_VERSION_VREVERSO {
-                            // not in place VReverso
-                            frame::encode_stream_footer(
-                                *stream_id,
-                                *offset,
-                                *length as u64,
-                                *fin,
-                                &mut $out,
-                            )?;
-                        } else {
-                            // not in place QUIC v1
-                            frame::encode_stream_header(
-                                *stream_id,
-                                *offset,
-                                *length as u64,
-                                *fin,
-                                &mut $out,
-                            )?;
-                        }
+                        frame::encode_stream_header(
+                            *stream_id,
+                            *offset,
+                            *length as u64,
+                            *fin,
+                            &mut $out,
+                        )?;
                     } else {
                         let hdr_len = 1 + // frame type
                             octets_rev::varint_len(*stream_id) + // stream_id
@@ -1926,24 +1914,13 @@ macro_rules! push_frames_to_pkt {
                 },
                 frame::Frame::CryptoVec { offset, length, rbvec } => {
                     if rbvec.len() > 0 {
-                        if $ver == crate::PROTOCOL_VERSION_VREVERSO {
-                            for rb in rbvec {
-                                $out.put_bytes(&rb[..])?;
-                            }
-                            frame::encode_crypto_footer(
-                                *offset,
-                                *length as u64,
-                                &mut $out
-                            )?;
-                        } else {
-                            frame::encode_crypto_header(
-                                *offset,
-                                *length as u64,
-                                &mut $out
-                            )?;
-                            for rb in rbvec {
-                                $out.put_bytes(&rb[..])?;
-                            }
+                        frame::encode_crypto_header(
+                            *offset,
+                            *length as u64,
+                            &mut $out
+                        )?;
+                        for rb in rbvec {
+                            $out.put_bytes(&rb[..])?;
                         }
                     }
                 }
@@ -1959,7 +1936,7 @@ macro_rules! push_frames_to_pkt {
                     $out.skip(length + hdr_len)?;
                 }
                 _ => {
-                    frame.to_bytes(&mut $out,  $ver)?;
+                    frame.to_bytes(&mut $out)?;
                 },
             }
         }
@@ -3395,8 +3372,9 @@ impl<F: BufFactory> Connection<F> {
             //set the offset at the end
             let payload_start_offset = payload.off();
             payload.skip(payload_len)?;
+            let mut payload: OctetsRev = payload.into();
             // start reverse buffer processing
-            while payload.off() > payload_start_offset {
+            while payload.cap() > 0 {
                 let frame =
                     frame::Frame::from_bytes(&mut payload, hdr.ty, self.version)?;
                 qlog_with_type!(QLOG_PACKET_RX, self.qlog, _q, {
@@ -5102,12 +5080,17 @@ impl<F: BufFactory> Connection<F> {
                             let (len, fin) =
                                 stream.send.emit(&mut b.as_mut()[..max_len])?;
                             // Advance the buffer
-                            b.skip(len)?;
+                            b.skip(len + hdr_len)?;
+
+                            let mut rev_b = OctetsMutRev::from(b);
 
                             // Encode the header reversed
-                            frame::encode_stream_footer(
-                                stream_id, stream_off, len as u64, fin, &mut b,
+                            frame::encode_stream_header(
+                                stream_id, stream_off, len as u64, fin,
+                                &mut rev_b,
                             )?;
+
+                            b = OctetsMut::from(rev_b);
 
                             // back to the initial index.
                             b.rewind(len + hdr_len)?;
@@ -5265,11 +5248,16 @@ impl<F: BufFactory> Connection<F> {
                             .send
                             .emit(&mut b.as_mut()[..max_len])?;
                         // this advances b to the Crypto Hdr expected location.
-                        b.skip(len)?;
+                        b.skip(len + hdr_len)?;
+
+                        let mut rev_b = OctetsMutRev::from(b);
                         // Encode the header reversed
-                        frame::encode_crypto_footer(
-                            crypto_off, len as u64, &mut b,
+                        frame::encode_crypto_header(
+                            crypto_off, len as u64, &mut rev_b,
                         )?;
+
+                        b = OctetsMut::from(rev_b);
+
                         // back to the initial index.
                         b.rewind(len + hdr_len + cumul)?;
                         len
@@ -5450,10 +5438,12 @@ impl<F: BufFactory> Connection<F> {
             };
             // let mut ctrl = vec![0; cumul-stream_len];
             // let mut b_ctrl = octets_rev::OctetsMut::with_slice(&mut ctrl);
-            push_frames_to_pkt!(b_ctrl, frames, true, self.version);
-            let b_ctrl_len = b_ctrl.off();
-            b_ctrl.rewind(b_ctrl_len)?;
-            (b_start, Some(b_ctrl), stream_len, b_ctrl_len)
+            b_ctrl.skip(cumul)?;
+            let mut b_ctrl_rev = OctetsMutRev::from(b_ctrl);
+            frames.reverse();
+            push_frames_to_pkt!(b_ctrl_rev, frames, true, self.version);
+            let b_ctrl = OctetsMut::from(b_ctrl_rev);
+            (b_start, Some(b_ctrl), stream_len, cumul)
         } else {
             push_frames_to_pkt!(b, frames, false, self.version);
             let b_len = b.off() - payload_offset;
@@ -8371,10 +8361,9 @@ impl<F: BufFactory> Connection<F> {
     }
 
     /// Processes an incoming frame.
-    fn process_frame(
-        &mut self, frame: frame::Frame, hdr: &packet::Header,
-        b: &mut octets_rev::Octets, recv_path_id: usize, epoch: packet::Epoch,
-        now: time::Instant,
+    fn process_frame<T: octets_rev::OctetsRead>(
+        &mut self, frame: frame::Frame, hdr: &packet::Header, b: &mut T,
+        recv_path_id: usize, epoch: packet::Epoch, now: time::Instant,
     ) -> Result<()> {
         trace!("{} rx frm {:?}", self.trace_id, frame);
 
@@ -10515,8 +10504,17 @@ pub mod testing {
         };
 
         let payload_offset = b.off();
-        for frame in frames {
-            frame.to_bytes(&mut b, conn.version)?;
+        if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
+            b.skip(payload_len)?;
+            let mut b_rev = OctetsMutRev::from(b);
+            for frame in frames {
+                frame.to_bytes(&mut b_rev)?;
+            }
+            b = OctetsMut::from(b_rev);
+        } else {
+            for frame in frames {
+                frame.to_bytes(&mut b)?;
+            }
         }
 
         let aead = match space.crypto_seal {
@@ -21152,6 +21150,9 @@ pub use crate::range_buf::BufSplit;
 pub use crate::stream::Chunk;
 
 use crate::stream::Stream;
+use octets_rev::OctetsMut;
+use octets_rev::OctetsMutRev;
+use octets_rev::OctetsRev;
 
 pub mod bufpool;
 mod cid;

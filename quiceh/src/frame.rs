@@ -200,35 +200,21 @@ pub enum Frame {
 }
 
 impl Frame {
-    pub fn from_bytes(
-        b: &mut octets_rev::Octets, pkt: packet::Type, version: u32,
+    pub fn from_bytes<
+        'a,
+        T: octets_rev::OctetsRead<Bytes = octets_rev::Octets<'a>>,
+    >(
+        b: &mut T, pkt: packet::Type, version: u32,
     ) -> Result<Frame> {
-        let frame_type = if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-            b.get_varint_reverse()?
-        } else {
-            b.get_varint()?
-        };
-        // Parse frames according either to the V3 format or to the previous Quic
-        // format. In V3, frames are reversed, meaning that:
-        //  - Elements order is reversed
-        //  - Elements are encoded and decoded with the set of [..]_reverse()
-        //    Octets functions to enable reading them from the back of the buffer
-        //    towards the beginning (Manga-like).
+        let frame_type = b.get_varint()?;
+
         let frame: Frame = match frame_type {
             0x00 => {
                 let mut len = 1;
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    while b.peek_u8_reverse() == Ok(0x00) {
-                        b.get_u8_reverse()?;
+                while b.peek_u8() == Ok(0x00) {
+                    b.get_u8()?;
 
-                        len += 1;
-                    }
-                } else {
-                    while b.peek_u8() == Ok(0x00) {
-                        b.get_u8()?;
-
-                        len += 1;
-                    }
+                    len += 1;
                 }
 
                 Frame::Padding { len }
@@ -236,265 +222,129 @@ impl Frame {
 
             0x01 => Frame::Ping { mtu_probe: None },
 
-            0x02..=0x03 => parse_ack_frame(frame_type, b, version)?,
+            0x02..=0x03 => parse_ack_frame(frame_type, b)?,
 
-            0x04 => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    Frame::ResetStream {
-                        stream_id: b.get_varint_reverse()?,
-                        error_code: b.get_varint_reverse()?,
-                        final_size: b.get_varint_reverse()?,
-                    }
-                } else {
-                    Frame::ResetStream {
-                        stream_id: b.get_varint()?,
-                        error_code: b.get_varint()?,
-                        final_size: b.get_varint()?,
-                    }
-                }
+            0x04 => Frame::ResetStream {
+                stream_id: b.get_varint()?,
+                error_code: b.get_varint()?,
+                final_size: b.get_varint()?,
             },
 
-            0x05 => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    Frame::StopSending {
-                        stream_id: b.get_varint_reverse()?,
-                        error_code: b.get_varint_reverse()?,
-                    }
-                } else {
-                    Frame::StopSending {
-                        stream_id: b.get_varint()?,
-                        error_code: b.get_varint()?,
-                    }
-                }
+            0x05 => Frame::StopSending {
+                stream_id: b.get_varint()?,
+                error_code: b.get_varint()?,
             },
 
             0x06 => {
                 let (offset, data) =
-                    if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                        (
-                            b.get_varint_reverse()?,
-                            b.get_bytes_with_varint_length_reverse()?,
-                        )
-                    } else {
-                        (b.get_varint()?, b.get_bytes_with_varint_length()?)
-                    };
-                // TODO protocol reverso could get rid of RangeBuf.
+                    (b.get_varint()?, b.get_bytes_with_varint_length()?);
+
                 let data = <RangeBuf>::from(data.as_ref(), offset, false);
 
                 Frame::Crypto { data }
             },
 
             0x07 => Frame::NewToken {
-                token: if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    let len = b.get_varint_reverse()?;
-                    if len == 0 {
-                        return Err(Error::InvalidFrame);
-                    }
-                    b.get_bytes_reverse(len as usize)?.to_vec()
-                } else {
+                token: {
                     let len = b.get_varint()?;
                     if len == 0 {
                         return Err(Error::InvalidFrame);
                     }
-                    b.get_bytes(len as usize)?.to_vec()
+                    b.get_bytes(len as usize)?.as_ref().to_vec()
                 },
             },
 
             0x08..=0x0f => parse_stream_frame(frame_type, b, version)?,
 
             0x10 => Frame::MaxData {
-                max: if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.get_varint_reverse()?
-                } else {
-                    b.get_varint()?
-                },
+                max: b.get_varint()?,
             },
 
-            0x11 => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    Frame::MaxStreamData {
-                        stream_id: b.get_varint_reverse()?,
-                        max: b.get_varint_reverse()?,
-                    }
-                } else {
-                    Frame::MaxStreamData {
-                        stream_id: b.get_varint()?,
-                        max: b.get_varint()?,
-                    }
-                }
+            0x11 => Frame::MaxStreamData {
+                stream_id: b.get_varint()?,
+                max: b.get_varint()?,
             },
 
             0x12 => Frame::MaxStreamsBidi {
-                max: if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.get_varint_reverse()?
-                } else {
-                    b.get_varint()?
-                },
+                max: b.get_varint()?,
             },
 
             0x13 => Frame::MaxStreamsUni {
-                max: if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.get_varint_reverse()?
-                } else {
-                    b.get_varint()?
-                },
+                max: b.get_varint()?,
             },
 
             0x14 => Frame::DataBlocked {
-                limit: if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.get_varint_reverse()?
-                } else {
-                    b.get_varint()?
-                },
+                limit: b.get_varint()?,
             },
 
-            0x15 => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    Frame::StreamDataBlocked {
-                        stream_id: b.get_varint_reverse()?,
-                        limit: b.get_varint_reverse()?,
-                    }
-                } else {
-                    Frame::StreamDataBlocked {
-                        stream_id: b.get_varint()?,
-                        limit: b.get_varint()?,
-                    }
-                }
+            0x15 => Frame::StreamDataBlocked {
+                stream_id: b.get_varint()?,
+                limit: b.get_varint()?,
             },
 
             0x16 => Frame::StreamsBlockedBidi {
-                limit: if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.get_varint_reverse()?
-                } else {
-                    b.get_varint()?
-                },
+                limit: b.get_varint()?,
             },
 
             0x17 => Frame::StreamsBlockedUni {
-                limit: if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.get_varint_reverse()?
-                } else {
-                    b.get_varint()?
-                },
+                limit: b.get_varint()?,
             },
 
             0x18 => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    let seq_num = b.get_varint_reverse()?;
-                    let retire_prior_to = b.get_varint_reverse()?;
-                    let conn_id_len = b.get_u8_reverse()?;
+                let seq_num = b.get_varint()?;
+                let retire_prior_to = b.get_varint()?;
+                let conn_id_len = b.get_u8()?;
 
-                    if !(1..=packet::MAX_CID_LEN).contains(&conn_id_len) {
-                        return Err(Error::InvalidFrame);
-                    }
+                if !(1..=packet::MAX_CID_LEN).contains(&conn_id_len) {
+                    return Err(Error::InvalidFrame);
+                }
 
-                    Frame::NewConnectionId {
-                        seq_num,
-                        retire_prior_to,
-                        conn_id: b
-                            .get_bytes_reverse(conn_id_len as usize)?
-                            .to_vec(),
-                        reset_token: b
-                            .get_bytes_reverse(16)?
-                            .buf()
-                            .try_into()
-                            .map_err(|_| Error::BufferTooShort)?,
-                    }
-                } else {
-                    let seq_num = b.get_varint()?;
-                    let retire_prior_to = b.get_varint()?;
-                    let conn_id_len = b.get_u8()?;
-
-                    if !(1..=packet::MAX_CID_LEN).contains(&conn_id_len) {
-                        return Err(Error::InvalidFrame);
-                    }
-
-                    Frame::NewConnectionId {
-                        seq_num,
-                        retire_prior_to,
-                        conn_id: b.get_bytes(conn_id_len as usize)?.to_vec(),
-                        reset_token: b
-                            .get_bytes(16)?
-                            .buf()
-                            .try_into()
-                            .map_err(|_| Error::BufferTooShort)?,
-                    }
+                Frame::NewConnectionId {
+                    seq_num,
+                    retire_prior_to,
+                    conn_id: b.get_bytes(conn_id_len as usize)?.as_ref().to_vec(),
+                    reset_token: b
+                        .get_bytes(16)?
+                        .as_ref()
+                        .try_into()
+                        .map_err(|_| Error::BufferTooShort)?,
                 }
             },
 
             0x19 => Frame::RetireConnectionId {
-                seq_num: if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.get_varint_reverse()?
-                } else {
-                    b.get_varint()?
-                },
+                seq_num: b.get_varint()?,
             },
 
             0x1a => Frame::PathChallenge {
-                data: if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.get_bytes_reverse(8)?
-                        .buf()
-                        .try_into()
-                        .map_err(|_| Error::BufferTooShort)?
-                } else {
-                    b.get_bytes(8)?
-                        .buf()
-                        .try_into()
-                        .map_err(|_| Error::BufferTooShort)?
-                },
+                data: b
+                    .get_bytes(8)?
+                    .as_ref()
+                    .try_into()
+                    .map_err(|_| Error::BufferTooShort)?,
             },
 
             0x1b => Frame::PathResponse {
-                data: if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.get_bytes_reverse(8)?
-                        .buf()
-                        .try_into()
-                        .map_err(|_| Error::BufferTooShort)?
-                } else {
-                    b.get_bytes(8)?
-                        .buf()
-                        .try_into()
-                        .map_err(|_| Error::BufferTooShort)?
-                },
+                data: b
+                    .get_bytes(8)?
+                    .as_ref()
+                    .try_into()
+                    .map_err(|_| Error::BufferTooShort)?,
             },
 
-            0x1c => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    Frame::ConnectionClose {
-                        error_code: b.get_varint_reverse()?,
-                        frame_type: b.get_varint_reverse()?,
-                        reason: b
-                            .get_bytes_with_varint_length_reverse()?
-                            .to_vec(),
-                    }
-                } else {
-                    Frame::ConnectionClose {
-                        error_code: b.get_varint()?,
-                        frame_type: b.get_varint()?,
-                        reason: b.get_bytes_with_varint_length()?.to_vec(),
-                    }
-                }
+            0x1c => Frame::ConnectionClose {
+                error_code: b.get_varint()?,
+                frame_type: b.get_varint()?,
+                reason: b.get_bytes_with_varint_length()?.as_ref().to_vec(),
             },
 
-            0x1d => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    Frame::ApplicationClose {
-                        error_code: b.get_varint_reverse()?,
-                        reason: b
-                            .get_bytes_with_varint_length_reverse()?
-                            .to_vec(),
-                    }
-                } else {
-                    Frame::ApplicationClose {
-                        error_code: b.get_varint()?,
-                        reason: b.get_bytes_with_varint_length()?.to_vec(),
-                    }
-                }
+            0x1d => Frame::ApplicationClose {
+                error_code: b.get_varint()?,
+                reason: b.get_bytes_with_varint_length()?.as_ref().to_vec(),
             },
 
             0x1e => Frame::HandshakeDone,
 
-            0x30 | 0x31 => parse_datagram_frame(frame_type, b, version)?,
+            0x30 | 0x31 => parse_datagram_frame(frame_type, b)?,
 
             _ => return Err(Error::InvalidFrame),
         };
@@ -534,8 +384,8 @@ impl Frame {
         Ok(frame)
     }
 
-    pub fn to_bytes(
-        &self, b: &mut octets_rev::OctetsMut, version: u32,
+    pub fn to_bytes<T: octets_rev::OctetsWrite>(
+        &self, b: &mut T,
     ) -> Result<usize> {
         let before = b.cap();
 
@@ -544,21 +394,13 @@ impl Frame {
                 let mut left = *len;
 
                 while left > 0 {
-                    if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                        b.put_varint_reverse(0x00)?;
-                    } else {
-                        b.put_varint(0x00)?;
-                    }
+                    b.put_varint(0x00)?;
                     left -= 1;
                 }
             },
 
             Frame::Ping { .. } => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.put_varint_reverse(0x01)?;
-                } else {
-                    b.put_varint(0x01)?;
-                }
+                b.put_varint(0x01)?;
             },
 
             Frame::ACK {
@@ -566,89 +408,38 @@ impl Frame {
                 ranges,
                 ecn_counts,
             } => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    // ecn first
-                    if let Some(ecn) = ecn_counts {
-                        b.put_varint_reverse(ecn.ecn_ce_count)?;
-                        b.put_varint_reverse(ecn.ect1_count)?;
-                        b.put_varint_reverse(ecn.ect0_count)?;
-                    }
-                    // This is a bit more mindtricking. On V1, ack ranges
-                    // are actually reversed to start reading from the largest_ack.
-                    // On V3, we can put the acks on the natural ordering, since it
-                    // is read backwards.
-                    let mut it = ranges.iter();
-                    let first = it.next().unwrap();
-                    let len = it.len();
-                    let last = it.next_back();
-                    let mut smallest_ack_end = first.end;
-                    let mut ack_block = (first.end - 1) - first.start;
-                    for block in it {
-                        let gap = block.start - smallest_ack_end - 1;
-                        b.put_varint_reverse(ack_block)?;
-                        b.put_varint_reverse(gap)?;
-                        ack_block = (block.end - 1) - block.start;
-                        smallest_ack_end = block.end;
-                    }
-                    // XXX Is there a better implementation possible to eliminate the control flow
-                    // for the last element?
-                    if let Some(block) = last {
-                        // last
-                        let gap = block.start - smallest_ack_end - 1;
-                        b.put_varint_reverse(ack_block)?;
-                        b.put_varint_reverse(gap)?;
-                        ack_block = (block.end - 1) - block.start;
-                        b.put_varint_reverse(ack_block)?;
-                        b.put_varint_reverse(len as u64)?;
-                        b.put_varint_reverse(*ack_delay)?;
-                        b.put_varint_reverse(block.end - 1)?;
-                    } else {
-                        // We actually just had one element
-                        b.put_varint_reverse(ack_block)?;
-                        b.put_varint_reverse(len as u64)?;
-                        b.put_varint_reverse(*ack_delay)?;
-                        b.put_varint_reverse(first.end - 1)?;
-                    }
-
-                    if ecn_counts.is_none() {
-                        b.put_varint_reverse(0x02)?;
-                    } else {
-                        b.put_varint_reverse(0x03)?;
-                    }
+                if ecn_counts.is_none() {
+                    b.put_varint(0x02)?;
                 } else {
-                    if ecn_counts.is_none() {
-                        b.put_varint(0x02)?;
-                    } else {
-                        b.put_varint(0x03)?;
-                    }
+                    b.put_varint(0x03)?;
+                }
 
-                    let mut it = ranges.iter().rev();
+                let mut it = ranges.iter().rev();
 
-                    let first = it.next().unwrap();
-                    let ack_block = (first.end - 1) - first.start;
+                let first = it.next().unwrap();
+                let ack_block = (first.end - 1) - first.start;
 
-                    b.put_varint(first.end - 1)?;
-                    b.put_varint(*ack_delay)?;
-                    b.put_varint(it.len() as u64)?;
+                b.put_varint(first.end - 1)?;
+                b.put_varint(*ack_delay)?;
+                b.put_varint(it.len() as u64)?;
+                b.put_varint(ack_block)?;
+
+                let mut smallest_ack = first.start;
+
+                for block in it {
+                    let gap = smallest_ack - block.end - 1;
+                    let ack_block = (block.end - 1) - block.start;
+
+                    b.put_varint(gap)?;
                     b.put_varint(ack_block)?;
 
-                    let mut smallest_ack = first.start;
+                    smallest_ack = block.start;
+                }
 
-                    for block in it {
-                        let gap = smallest_ack - block.end - 1;
-                        let ack_block = (block.end - 1) - block.start;
-
-                        b.put_varint(gap)?;
-                        b.put_varint(ack_block)?;
-
-                        smallest_ack = block.start;
-                    }
-
-                    if let Some(ecn) = ecn_counts {
-                        b.put_varint(ecn.ect0_count)?;
-                        b.put_varint(ecn.ect1_count)?;
-                        b.put_varint(ecn.ecn_ce_count)?;
-                    }
+                if let Some(ecn) = ecn_counts {
+                    b.put_varint(ecn.ect0_count)?;
+                    b.put_varint(ecn.ect1_count)?;
+                    b.put_varint(ecn.ecn_ce_count)?;
                 }
             },
 
@@ -657,194 +448,104 @@ impl Frame {
                 error_code,
                 final_size,
             } => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.put_varint_reverse(*final_size)?;
-                    b.put_varint_reverse(*error_code)?;
-                    b.put_varint_reverse(*stream_id)?;
+                b.put_varint(0x04)?;
 
-                    b.put_varint_reverse(0x04)?;
-                } else {
-                    b.put_varint(0x04)?;
-
-                    b.put_varint(*stream_id)?;
-                    b.put_varint(*error_code)?;
-                    b.put_varint(*final_size)?;
-                }
+                b.put_varint(*stream_id)?;
+                b.put_varint(*error_code)?;
+                b.put_varint(*final_size)?;
             },
 
             Frame::StopSending {
                 stream_id,
                 error_code,
             } => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.put_varint_reverse(*error_code)?;
-                    b.put_varint_reverse(*stream_id)?;
+                b.put_varint(0x05)?;
 
-                    b.put_varint_reverse(0x05)?;
-                } else {
-                    b.put_varint(0x05)?;
-
-                    b.put_varint(*stream_id)?;
-                    b.put_varint(*error_code)?;
-                };
+                b.put_varint(*stream_id)?;
+                b.put_varint(*error_code)?;
             },
 
             Frame::Crypto { data } => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.put_bytes(data)?;
+                encode_crypto_header(data.off(), data.len() as u64, b)?;
 
-                    encode_crypto_footer(data.off(), data.len() as u64, b)?;
-                } else {
-                    encode_crypto_header(data.off(), data.len() as u64, b)?;
-
-                    b.put_bytes(data)?;
-                }
+                b.put_bytes(data)?;
             },
 
             Frame::CryptoHeader { .. } => (),
             Frame::CryptoVec { .. } => (),
 
             Frame::NewToken { token } => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.put_bytes(token)?;
-                    b.put_varint_reverse(token.len() as u64)?;
+                b.put_varint(0x07)?;
 
-                    b.put_varint_reverse(0x07)?;
-                } else {
-                    b.put_varint(0x07)?;
-
-                    b.put_varint(token.len() as u64)?;
-                    b.put_bytes(token)?;
-                }
+                b.put_varint(token.len() as u64)?;
+                b.put_bytes(token)?;
             },
 
             // We don't use it to send data; we only use that for some test.
             Frame::StreamV3 { .. } => (),
 
             Frame::Stream { stream_id, data } => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.put_bytes(data)?;
+                encode_stream_header(
+                    *stream_id,
+                    data.off(),
+                    data.len() as u64,
+                    data.fin(),
+                    b,
+                )?;
 
-                    encode_stream_footer(
-                        *stream_id,
-                        data.off(),
-                        data.len() as u64,
-                        data.fin(),
-                        b,
-                    )?;
-                } else {
-                    encode_stream_header(
-                        *stream_id,
-                        data.off(),
-                        data.len() as u64,
-                        data.fin(),
-                        b,
-                    )?;
-
-                    b.put_bytes(data)?;
-                }
+                b.put_bytes(data)?;
             },
 
             Frame::StreamHeader { .. } => (),
 
             Frame::MaxData { max } => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.put_varint_reverse(*max)?;
+                b.put_varint(0x10)?;
 
-                    b.put_varint_reverse(0x10)?;
-                } else {
-                    b.put_varint(0x10)?;
-
-                    b.put_varint(*max)?;
-                }
+                b.put_varint(*max)?;
             },
 
             Frame::MaxStreamData { stream_id, max } => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.put_varint_reverse(*max)?;
-                    b.put_varint_reverse(*stream_id)?;
+                b.put_varint(0x11)?;
 
-                    b.put_varint_reverse(0x11)?;
-                } else {
-                    b.put_varint(0x11)?;
-
-                    b.put_varint(*stream_id)?;
-                    b.put_varint(*max)?;
-                }
+                b.put_varint(*stream_id)?;
+                b.put_varint(*max)?;
             },
 
             Frame::MaxStreamsBidi { max } => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.put_varint_reverse(*max)?;
+                b.put_varint(0x12)?;
 
-                    b.put_varint_reverse(0x12)?;
-                } else {
-                    b.put_varint(0x12)?;
-
-                    b.put_varint(*max)?;
-                }
+                b.put_varint(*max)?;
             },
 
             Frame::MaxStreamsUni { max } => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.put_varint_reverse(*max)?;
+                b.put_varint(0x13)?;
 
-                    b.put_varint_reverse(0x13)?;
-                } else {
-                    b.put_varint(0x13)?;
-
-                    b.put_varint(*max)?;
-                }
+                b.put_varint(*max)?;
             },
 
             Frame::DataBlocked { limit } => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.put_varint_reverse(*limit)?;
+                b.put_varint(0x14)?;
 
-                    b.put_varint_reverse(0x14)?;
-                } else {
-                    b.put_varint(0x14)?;
-
-                    b.put_varint(*limit)?;
-                }
+                b.put_varint(*limit)?;
             },
 
             Frame::StreamDataBlocked { stream_id, limit } => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.put_varint_reverse(*limit)?;
-                    b.put_varint_reverse(*stream_id)?;
+                b.put_varint(0x15)?;
 
-                    b.put_varint_reverse(0x15)?;
-                } else {
-                    b.put_varint(0x15)?;
-
-                    b.put_varint(*stream_id)?;
-                    b.put_varint(*limit)?;
-                }
+                b.put_varint(*stream_id)?;
+                b.put_varint(*limit)?;
             },
 
             Frame::StreamsBlockedBidi { limit } => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.put_varint_reverse(*limit)?;
+                b.put_varint(0x16)?;
 
-                    b.put_varint_reverse(0x16)?;
-                } else {
-                    b.put_varint(0x16)?;
-
-                    b.put_varint(*limit)?;
-                }
+                b.put_varint(*limit)?;
             },
 
             Frame::StreamsBlockedUni { limit } => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.put_varint_reverse(*limit)?;
+                b.put_varint(0x17)?;
 
-                    b.put_varint_reverse(0x17)?;
-                } else {
-                    b.put_varint(0x17)?;
-
-                    b.put_varint(*limit)?;
-                }
+                b.put_varint(*limit)?;
             },
 
             Frame::NewConnectionId {
@@ -853,59 +554,31 @@ impl Frame {
                 conn_id,
                 reset_token,
             } => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.put_bytes(reset_token.as_ref())?;
-                    b.put_bytes(conn_id.as_ref())?;
-                    b.put_u8(conn_id.len() as u8)?;
-                    b.put_varint_reverse(*retire_prior_to)?;
-                    b.put_varint_reverse(*seq_num)?;
+                b.put_varint(0x18)?;
 
-                    b.put_varint_reverse(0x18)?;
-                } else {
-                    b.put_varint(0x18)?;
-
-                    b.put_varint(*seq_num)?;
-                    b.put_varint(*retire_prior_to)?;
-                    b.put_u8(conn_id.len() as u8)?;
-                    b.put_bytes(conn_id.as_ref())?;
-                    b.put_bytes(reset_token.as_ref())?;
-                }
+                b.put_varint(*seq_num)?;
+                b.put_varint(*retire_prior_to)?;
+                b.put_u8(conn_id.len() as u8)?;
+                b.put_bytes(conn_id.as_ref())?;
+                b.put_bytes(reset_token.as_ref())?;
             },
 
             Frame::RetireConnectionId { seq_num } => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.put_varint_reverse(*seq_num)?;
+                b.put_varint(0x19)?;
 
-                    b.put_varint_reverse(0x19)?;
-                } else {
-                    b.put_varint(0x19)?;
-
-                    b.put_varint(*seq_num)?;
-                }
+                b.put_varint(*seq_num)?;
             },
 
             Frame::PathChallenge { data } => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.put_bytes(data.as_ref())?;
+                b.put_varint(0x1a)?;
 
-                    b.put_varint_reverse(0x1a)?;
-                } else {
-                    b.put_varint(0x1a)?;
-
-                    b.put_bytes(data.as_ref())?;
-                }
+                b.put_bytes(data.as_ref())?;
             },
 
             Frame::PathResponse { data } => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.put_bytes(data.as_ref())?;
+                b.put_varint(0x1b)?;
 
-                    b.put_varint_reverse(0x1b)?;
-                } else {
-                    b.put_varint(0x1b)?;
-
-                    b.put_bytes(data.as_ref())?;
-                }
+                b.put_bytes(data.as_ref())?;
             },
 
             Frame::ConnectionClose {
@@ -913,58 +586,30 @@ impl Frame {
                 frame_type,
                 reason,
             } => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.put_bytes(reason.as_ref())?;
-                    b.put_varint_reverse(reason.len() as u64)?;
-                    b.put_varint_reverse(*frame_type)?;
-                    b.put_varint_reverse(*error_code)?;
+                b.put_varint(0x1c)?;
 
-                    b.put_varint_reverse(0x1c)?;
-                } else {
-                    b.put_varint(0x1c)?;
-
-                    b.put_varint(*error_code)?;
-                    b.put_varint(*frame_type)?;
-                    b.put_varint(reason.len() as u64)?;
-                    b.put_bytes(reason.as_ref())?;
-                }
+                b.put_varint(*error_code)?;
+                b.put_varint(*frame_type)?;
+                b.put_varint(reason.len() as u64)?;
+                b.put_bytes(reason.as_ref())?;
             },
 
             Frame::ApplicationClose { error_code, reason } => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.put_bytes(reason.as_ref())?;
+                b.put_varint(0x1d)?;
 
-                    b.put_varint_reverse(reason.len() as u64)?;
-                    b.put_varint_reverse(*error_code)?;
-
-                    b.put_varint_reverse(0x1d)?;
-                } else {
-                    b.put_varint(0x1d)?;
-
-                    b.put_varint(*error_code)?;
-                    b.put_varint(reason.len() as u64)?;
-                    b.put_bytes(reason.as_ref())?;
-                }
+                b.put_varint(*error_code)?;
+                b.put_varint(reason.len() as u64)?;
+                b.put_bytes(reason.as_ref())?;
             },
 
             Frame::HandshakeDone => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.put_varint_reverse(0x1e)?;
-                } else {
-                    b.put_varint(0x1e)?;
-                }
+                b.put_varint(0x1e)?;
             },
 
             Frame::Datagram { data } => {
-                if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-                    b.put_bytes(data.as_ref())?;
+                encode_dgram_header(data.len() as u64, b)?;
 
-                    encode_dgram_footer(data.len() as u64, b)?;
-                } else {
-                    encode_dgram_header(data.len() as u64, b)?;
-
-                    b.put_bytes(data.as_ref())?;
-                }
+                b.put_bytes(data.as_ref())?;
             },
 
             Frame::DatagramHeader { .. } => (),
@@ -1634,27 +1279,17 @@ impl std::fmt::Debug for Frame {
 }
 
 fn parse_ack_frame(
-    ty: u64, b: &mut octets_rev::Octets, version: u32,
+    ty: u64, b: &mut impl octets_rev::OctetsRead,
 ) -> Result<Frame> {
     let first = ty as u8;
     let mut ranges = ranges::RangeSet::default();
 
-    let (largest_ack, ack_delay, block_count, ack_block) =
-        if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-            (
-                b.get_varint_reverse()?,
-                b.get_varint_reverse()?,
-                b.get_varint_reverse()?,
-                b.get_varint_reverse()?,
-            )
-        } else {
-            (
-                b.get_varint()?,
-                b.get_varint()?,
-                b.get_varint()?,
-                b.get_varint()?,
-            )
-        };
+    let (largest_ack, ack_delay, block_count, ack_block) = (
+        b.get_varint()?,
+        b.get_varint()?,
+        b.get_varint()?,
+        b.get_varint()?,
+    );
 
     if largest_ack < ack_block {
         return Err(Error::InvalidFrame);
@@ -1665,22 +1300,14 @@ fn parse_ack_frame(
     ranges.insert(smallest_ack..largest_ack + 1);
 
     for _ in 0..block_count {
-        let gap = if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-            b.get_varint_reverse()?
-        } else {
-            b.get_varint()?
-        };
+        let gap = b.get_varint()?;
 
         if smallest_ack < 2 + gap {
             return Err(Error::InvalidFrame);
         }
 
         let largest_ack = (smallest_ack - gap) - 2;
-        let ack_block = if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-            b.get_varint_reverse()?
-        } else {
-            b.get_varint()?
-        };
+        let ack_block = b.get_varint()?;
 
         if largest_ack < ack_block {
             return Err(Error::InvalidFrame);
@@ -1692,18 +1319,10 @@ fn parse_ack_frame(
     }
 
     let ecn_counts = if first & 0x01 != 0 {
-        let ecn = if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-            EcnCounts {
-                ect0_count: b.get_varint_reverse()?,
-                ect1_count: b.get_varint_reverse()?,
-                ecn_ce_count: b.get_varint_reverse()?,
-            }
-        } else {
-            EcnCounts {
-                ect0_count: b.get_varint()?,
-                ect1_count: b.get_varint()?,
-                ecn_ce_count: b.get_varint()?,
-            }
+        let ecn = EcnCounts {
+            ect0_count: b.get_varint()?,
+            ect1_count: b.get_varint()?,
+            ecn_ce_count: b.get_varint()?,
         };
         Some(ecn)
     } else {
@@ -1717,8 +1336,8 @@ fn parse_ack_frame(
     })
 }
 
-pub fn encode_crypto_header(
-    offset: u64, length: u64, b: &mut octets_rev::OctetsMut,
+pub fn encode_crypto_header<T: octets_rev::OctetsWrite>(
+    offset: u64, length: u64, b: &mut T,
 ) -> Result<()> {
     b.put_varint(0x06)?;
 
@@ -1730,21 +1349,8 @@ pub fn encode_crypto_header(
     Ok(())
 }
 
-pub fn encode_crypto_footer(
-    offset: u64, length: u64, b: &mut octets_rev::OctetsMut,
-) -> Result<()> {
-    b.put_varint_with_len_reverse(length, 2)?;
-
-    b.put_varint_reverse(offset)?;
-
-    b.put_varint_reverse(0x06)?;
-
-    Ok(())
-}
-
-pub fn encode_stream_header(
-    stream_id: u64, offset: u64, length: u64, fin: bool,
-    b: &mut octets_rev::OctetsMut,
+pub fn encode_stream_header<T: octets_rev::OctetsWrite>(
+    stream_id: u64, offset: u64, length: u64, fin: bool, b: &mut T,
 ) -> Result<()> {
     let mut ty: u8 = 0x08;
 
@@ -1764,47 +1370,9 @@ pub fn encode_stream_header(
     b.put_varint_with_len(length, 2)?;
     Ok(())
 }
-pub fn encode_stream_footer(
-    stream_id: u64, offset: u64, length: u64, fin: bool,
-    b: &mut octets_rev::OctetsMut,
-) -> Result<()> {
-    let mut ty: u8 = 0x08;
-
-    // Always encode offset.
-    ty |= 0x04;
-
-    // Always encode length.
-    ty |= 0x02;
-
-    if fin {
-        ty |= 0x01;
-    }
-    // Always encode length field as 2-byte varint.
-    b.put_varint_with_len_reverse(length, 2)?;
-    b.put_varint_reverse(offset)?;
-    b.put_varint_reverse(stream_id)?;
-
-    b.put_varint_reverse(u64::from(ty))?;
-
-    Ok(())
-}
-
-pub fn encode_dgram_footer(
-    length: u64, b: &mut octets_rev::OctetsMut,
-) -> Result<()> {
-    let mut ty: u8 = 0x30;
-
-    // Always encode length
-    ty |= 0x01;
-
-    b.put_varint_with_len_reverse(length, 2)?;
-    b.put_varint_reverse(u64::from(ty))?;
-
-    Ok(())
-}
 
 pub fn encode_dgram_header(
-    length: u64, b: &mut octets_rev::OctetsMut,
+    length: u64, b: &mut impl octets_rev::OctetsWrite,
 ) -> Result<()> {
     let mut ty: u8 = 0x30;
 
@@ -1820,33 +1388,35 @@ pub fn encode_dgram_header(
 }
 
 fn parse_stream_frame(
-    ty: u64, b: &mut octets_rev::Octets, version: u32,
+    ty: u64, b: &mut impl octets_rev::OctetsRead, version: u32,
 ) -> Result<Frame> {
     let first = ty as u8;
 
+    let stream_id = b.get_varint()?;
+
+    let offset = if first & 0x04 != 0 {
+        b.get_varint()?
+    } else {
+        0
+    };
+
+    let len = if first & 0x02 != 0 {
+        b.get_varint()? as usize
+    } else {
+        b.cap()
+    };
+
+    if offset + len as u64 >= MAX_STREAM_SIZE {
+        return Err(Error::InvalidFrame);
+    }
+
+    let fin = first & 0x01 != 0;
     if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-        let stream_id = b.get_varint_reverse()?;
-
-        let offset = if first & 0x04 != 0 {
-            b.get_varint_reverse()?
-        } else {
-            0
-        };
-
-        let len = if first & 0x02 != 0 {
-            b.get_varint_reverse()? as usize
-        } else {
-            // should be all bytes until the begining of the buffer
-            b.off()
-        };
-
-        if offset + len as u64 >= MAX_STREAM_SIZE {
-            return Err(Error::InvalidFrame);
-        }
-
-        let fin = first & 0x01 != 0;
-        b.rewind(len)?;
-        // This avoids cloning the buffer, as does the RangeBuf.
+        // This avoids cloning the buffer, as does the RangeBuf;
+        // we can do this because we decrypt into the application's buffer,
+        // overriding the previous packet's control since they're put at the trail. We
+        // are not outliving the caller.
+        b.skip(len)?;
         let metadata = stream::RecvBufInfo::from(offset, len, fin);
 
         Ok(Frame::StreamV3 {
@@ -1854,27 +1424,10 @@ fn parse_stream_frame(
             metadata,
         })
     } else {
-        let stream_id = b.get_varint()?;
-
-        let offset = if first & 0x04 != 0 {
-            b.get_varint()?
-        } else {
-            0
-        };
-
-        let len = if first & 0x02 != 0 {
-            b.get_varint()? as usize
-        } else {
-            b.cap()
-        };
-
-        if offset + len as u64 >= MAX_STREAM_SIZE {
-            return Err(Error::InvalidFrame);
-        }
-
-        let fin = first & 0x01 != 0;
-
         let data = b.get_bytes(len)?;
+        // QUIC v1 code is cloning the data wihin RangeBuf ; This is necessary
+        // since otherwise a reference may outlive the data provided to quiceh; e.g., if
+        // the data lives on the application's stack frame.
         let data = <RangeBuf>::from(data.as_ref(), offset, fin);
 
         Ok(Frame::Stream { stream_id, data })
@@ -1882,20 +1435,11 @@ fn parse_stream_frame(
 }
 
 fn parse_datagram_frame(
-    ty: u64, b: &mut octets_rev::Octets, version: u32,
+    ty: u64, b: &mut impl octets_rev::OctetsRead,
 ) -> Result<Frame> {
     let first = ty as u8;
 
-    let data = if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
-        let len = if first & 0x01 != 0 {
-            b.get_varint_reverse()? as usize
-        } else {
-            // this is equal to b.off(), but having a "reversed" function
-            // should help for understanding the code.
-            b.cap_reverse()
-        };
-        b.get_bytes_reverse(len)?
-    } else {
+    let data = {
         let len = if first & 0x01 != 0 {
             b.get_varint()? as usize
         } else {
@@ -1904,14 +1448,16 @@ fn parse_datagram_frame(
         b.get_bytes(len)?
     };
 
+    // TODO implementing zero-copy for datagram as well.
     Ok(Frame::Datagram {
-        data: Vec::from(data.buf()),
+        data: Vec::from(data.as_ref()),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PROTOCOL_VERSION_VREVERSO;
 
     #[test]
     fn padding() {
@@ -1920,16 +1466,24 @@ mod tests {
         let frame = Frame::Padding { len: 128 };
 
         let wire_len = {
-            let mut b = octets_rev::OctetsMut::with_slice(&mut d);
-            frame.to_bytes(&mut b, crate::PROTOCOL_VERSION).unwrap()
+            let mut b: Box<dyn octets_rev::OctetsWrite> =
+                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
+                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
+                } else {
+                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
+                };
+            frame.to_bytes(&mut b).unwrap()
         };
 
         assert_eq!(wire_len, 128);
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
+
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -1939,10 +1493,13 @@ mod tests {
             Ok(frame)
         );
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
+
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::Initial,
@@ -1950,10 +1507,13 @@ mod tests {
         )
         .is_ok());
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
+
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::ZeroRTT,
@@ -1961,10 +1521,12 @@ mod tests {
         )
         .is_ok());
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::Handshake,
@@ -1981,7 +1543,7 @@ mod tests {
 
         let wire_len = {
             let mut b = octets_rev::OctetsMut::with_slice(&mut d);
-            frame.to_bytes(&mut b, crate::PROTOCOL_VERSION).unwrap()
+            frame.to_bytes(&mut b).unwrap()
         };
 
         assert_eq!(wire_len, 1);
