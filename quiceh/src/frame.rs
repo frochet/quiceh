@@ -1542,7 +1542,12 @@ mod tests {
         let frame = Frame::Ping { mtu_probe: None };
 
         let wire_len = {
-            let mut b = octets_rev::OctetsMut::with_slice(&mut d);
+            let mut b: Box<dyn octets_rev::OctetsWrite> =
+                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
+                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
+                } else {
+                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
+                };
             frame.to_bytes(&mut b).unwrap()
         };
 
@@ -1552,10 +1557,12 @@ mod tests {
             assert_eq!(&d[..wire_len], [0x01_u8]);
         }
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -1565,10 +1572,12 @@ mod tests {
             Ok(frame)
         );
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::ZeroRTT,
@@ -1576,10 +1585,12 @@ mod tests {
         )
         .is_ok());
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::Initial,
@@ -1587,10 +1598,12 @@ mod tests {
         )
         .is_ok());
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::Handshake,
@@ -1616,16 +1629,24 @@ mod tests {
         };
 
         let wire_len = {
-            let mut b = octets_rev::OctetsMut::with_slice(&mut d);
-            frame.to_bytes(&mut b, crate::PROTOCOL_VERSION).unwrap()
+            let mut b: Box<dyn octets_rev::OctetsWrite> =
+                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
+                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
+                } else {
+                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
+                };
+            frame.to_bytes(&mut b).unwrap()
         };
 
         assert_eq!(wire_len, 17);
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
+
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -1635,10 +1656,12 @@ mod tests {
             Ok(frame)
         );
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::Initial,
@@ -1646,10 +1669,12 @@ mod tests {
         )
         .is_ok());
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::ZeroRTT,
@@ -1657,10 +1682,13 @@ mod tests {
         )
         .is_err());
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
+
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::Handshake,
@@ -1692,16 +1720,23 @@ mod tests {
         };
 
         let wire_len = {
-            let mut b = octets_rev::OctetsMut::with_slice(&mut d);
-            frame.to_bytes(&mut b, crate::PROTOCOL_VERSION).unwrap()
+            let mut b: Box<dyn octets_rev::OctetsWrite> =
+                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
+                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
+                } else {
+                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
+                };
+            frame.to_bytes(&mut b).unwrap()
         };
 
         assert_eq!(wire_len, 23);
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -1711,10 +1746,12 @@ mod tests {
             Ok(frame)
         );
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::Initial,
@@ -1722,10 +1759,12 @@ mod tests {
         )
         .is_ok());
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::ZeroRTT,
@@ -1733,10 +1772,12 @@ mod tests {
         )
         .is_err());
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::Handshake,
@@ -1756,8 +1797,13 @@ mod tests {
         };
 
         let wire_len = {
-            let mut b = octets_rev::OctetsMut::with_slice(&mut d);
-            frame.to_bytes(&mut b, crate::PROTOCOL_VERSION).unwrap()
+            let mut b: Box<dyn octets_rev::OctetsWrite> =
+                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
+                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
+                } else {
+                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
+                };
+            frame.to_bytes(&mut b).unwrap()
         };
 
         assert_eq!(wire_len, 13);
@@ -1775,10 +1821,12 @@ mod tests {
             Ok(frame)
         );
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::ZeroRTT,
@@ -1786,10 +1834,12 @@ mod tests {
         )
         .is_ok());
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::Initial,
@@ -1797,10 +1847,12 @@ mod tests {
         )
         .is_err());
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::Handshake,
@@ -1819,16 +1871,23 @@ mod tests {
         };
 
         let wire_len = {
-            let mut b = octets_rev::OctetsMut::with_slice(&mut d);
-            frame.to_bytes(&mut b, crate::PROTOCOL_VERSION).unwrap()
+            let mut b: Box<dyn octets_rev::OctetsWrite> =
+                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
+                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
+                } else {
+                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
+                };
+            frame.to_bytes(&mut b).unwrap()
         };
 
         assert_eq!(wire_len, 7);
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -1838,10 +1897,12 @@ mod tests {
             Ok(frame)
         );
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::ZeroRTT,
@@ -1849,10 +1910,12 @@ mod tests {
         )
         .is_ok());
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::Initial,
@@ -1860,10 +1923,12 @@ mod tests {
         )
         .is_err());
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::Handshake,
@@ -1883,16 +1948,23 @@ mod tests {
         };
 
         let wire_len = {
-            let mut b = octets_rev::OctetsMut::with_slice(&mut d);
-            frame.to_bytes(&mut b, crate::PROTOCOL_VERSION).unwrap()
+            let mut b: Box<dyn octets_rev::OctetsWrite> =
+                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
+                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
+                } else {
+                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
+                };
+            frame.to_bytes(&mut b).unwrap()
         };
 
         assert_eq!(wire_len, 19);
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -1902,10 +1974,7 @@ mod tests {
             Ok(frame)
         );
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        b.rewind(wire_len).unwrap();
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::Initial,
@@ -1913,10 +1982,7 @@ mod tests {
         )
         .is_ok());
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        b.rewind(wire_len).unwrap();
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::ZeroRTT,
@@ -1924,10 +1990,12 @@ mod tests {
         )
         .is_err());
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::Handshake,
@@ -1945,16 +2013,23 @@ mod tests {
         };
 
         let wire_len = {
-            let mut b = octets_rev::OctetsMut::with_slice(&mut d);
-            frame.to_bytes(&mut b, crate::PROTOCOL_VERSION).unwrap()
+            let mut b: Box<dyn octets_rev::OctetsWrite> =
+                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
+                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
+                } else {
+                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
+                };
+            frame.to_bytes(&mut b).unwrap()
         };
 
         assert_eq!(wire_len, 17);
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -1964,10 +2039,7 @@ mod tests {
             Ok(frame)
         );
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        b.rewind(wire_len).unwrap();
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::Initial,
@@ -1986,10 +2058,12 @@ mod tests {
         )
         .is_err());
 
-        let mut b = octets_rev::Octets::with_slice(&d);
-        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            b.skip(wire_len).expect("skip issue");
-        }
+        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
+            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsRev::with_slice(&d))
+            } else {
+                Box::new(octets_rev::Octets::with_slice(&d))
+            };
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::Handshake,
