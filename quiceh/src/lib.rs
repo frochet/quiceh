@@ -10726,9 +10726,9 @@ pub mod testing {
 
         let mut frames = Vec::new();
         if likely(conn.version == PROTOCOL_VERSION_VREVERSO) {
-            let payload_start_offset = payload.off();
             payload.skip(payload_len)?;
-            while payload.off() > payload_start_offset {
+            let mut payload: OctetsRev = payload.into();
+            while payload.cap() > 0 {
                 let frame =
                     frame::Frame::from_bytes(&mut payload, hdr.ty, conn.version)?;
                 frames.push(frame);
@@ -15146,7 +15146,7 @@ mod tests {
         let frames = [frame::Frame::Padding { len: 10 }];
 
         for frame in &frames {
-            frame.to_bytes(&mut b, pipe.client.version).unwrap();
+            frame.to_bytes(&mut b).unwrap();
         }
 
         let space = &mut pipe.client.pkt_num_spaces[epoch];
@@ -20888,9 +20888,7 @@ mod tests {
         let payload_offset = b.off();
 
         for frame in frames {
-            frame
-                .to_bytes(&mut b, pipe.client.version)
-                .expect("encode frames");
+            frame.to_bytes(&mut b).expect("encode frames");
         }
 
         let aead = space.crypto_seal.as_ref().expect("crypto seal");

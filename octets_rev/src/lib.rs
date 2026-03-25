@@ -644,7 +644,7 @@ impl<'a> OctetsMut<'a> {
 
     /// Rewinds the buffer's offset.
     pub fn rewind(&mut self, rewind: usize) -> Result<()> {
-        if self.off < rewind {
+        if rewind > self.off {
             return Err(BufferError::BufferTooShortError);
         }
         self.off -= rewind;
@@ -896,7 +896,7 @@ impl<'a> OctetsRev<'a> {
     /// Rewinds the buffer's offset, moving the offset towards
     /// higher values.
     pub fn rewind(&mut self, rewind: usize) -> Result<()> {
-        if self.off < rewind {
+        if rewind > self.buf.len() - self.off {
             return Err(BufferError::BufferTooShortError);
         }
         self.off += rewind;
@@ -1066,7 +1066,7 @@ impl<'a> OctetsMutRev<'a> {
 
     /// Rewinds the buffer, moving the offet towards higher values.
     pub fn rewind(&mut self, rewind: usize) -> Result<()> {
-        if self.off < rewind {
+        if rewind > self.buf.len() - self.off {
             return Err(BufferError::BufferTooShortError);
         }
         self.off += rewind;
@@ -1436,67 +1436,67 @@ impl OctetsWrite for OctetsMut<'_> {
 
 impl OctetsWrite for Box<dyn OctetsWrite + '_> {
     fn put_u8(&mut self, v: u8) -> Result<&mut [u8]> {
-        <dyn OctetsWrite>::put_u8(self, v)
+        (**self).put_u8(v)
     }
 
     fn put_u16(&mut self, v: u16) -> Result<&mut [u8]> {
-        <dyn OctetsWrite>::put_u16(self, v)
+        (**self).put_u16(v)
     }
 
     fn put_u24(&mut self, v: u32) -> Result<&mut [u8]> {
-        <dyn OctetsWrite>::put_u24(self, v)
+        (**self).put_u24(v)
     }
 
     fn put_u32(&mut self, v: u32) -> Result<&mut [u8]> {
-        <dyn OctetsWrite>::put_u32(self, v)
+        (**self).put_u32(v)
     }
 
     fn put_u64(&mut self, v: u64) -> Result<&mut [u8]> {
-        <dyn OctetsWrite>::put_u64(self, v)
+        (**self).put_u64(v)
     }
 
     fn put_bytes(&mut self, v: &[u8]) -> Result<()> {
-        <dyn OctetsWrite>::put_bytes(self, v)
+        (**self).put_bytes(v)
     }
 
     fn put_varint(&mut self, v: u64) -> Result<&mut [u8]> {
-        <dyn OctetsWrite>::put_varint(self, v)
+        (**self).put_varint(v)
     }
 
     fn put_varint_with_len(&mut self, v: u64, len: usize) -> Result<&mut [u8]> {
-        <dyn OctetsWrite>::put_varint_with_len(self, v, len)
+        (**self).put_varint_with_len(v, len)
     }
 
     fn cap(&self) -> usize {
-        <dyn OctetsWrite>::cap(self)
+        (**self).cap()
     }
 
     fn len(&self) -> usize {
-        <dyn OctetsWrite>::len(self)
+        (**self).len()
     }
 
     fn off(&self) -> usize {
-        <dyn OctetsWrite>::off(self)
+        (**self).off()
     }
 
     fn buf(&self) -> &[u8] {
-        <dyn OctetsWrite>::buf(self)
+        (**self).buf()
     }
 
     fn skip(&mut self, skip: usize) -> Result<()> {
-        <dyn OctetsWrite>::skip(self, skip)
+        (**self).skip(skip)
     }
 
     fn rewind(&mut self, rewind: usize) -> Result<()> {
-        <dyn OctetsWrite>::rewind(self, rewind)
+        (**self).rewind(rewind)
     }
 
     fn to_vec(&self) -> Vec<u8> {
-        <dyn OctetsWrite>::to_vec(self)
+        (**self).to_vec()
     }
 
     fn is_empty(&self) -> bool {
-        <dyn OctetsWrite>::is_empty(self)
+        (**self).is_empty()
     }
 }
 
@@ -1504,83 +1504,83 @@ impl<'a> OctetsRead for Box<dyn OctetsRead<Bytes = Octets<'a>> + '_> {
     type Bytes = Octets<'a>;
 
     fn get_u8(&mut self) -> Result<u8> {
-        <dyn OctetsRead<Bytes = Octets<'_>>>::get_u8(self)
+        (**self).get_u8()
     }
 
     fn get_u16(&mut self) -> Result<u16> {
-        <dyn OctetsRead<Bytes = Octets<'_>>>::get_u16(self)
+        (**self).get_u16()
     }
 
     fn get_u24(&mut self) -> Result<u32> {
-        <dyn OctetsRead<Bytes = Octets<'_>>>::get_u24(self)
+        (**self).get_u24()
     }
 
     fn get_u32(&mut self) -> Result<u32> {
-        <dyn OctetsRead<Bytes = Octets<'_>>>::get_u32(self)
+        (**self).get_u32()
     }
 
     fn get_u64(&mut self) -> Result<u64> {
-        <dyn OctetsRead<Bytes = Octets<'_>>>::get_u64(self)
+        (**self).get_u64()
     }
 
     fn peek_u8(&mut self) -> Result<u8> {
-        <dyn OctetsRead<Bytes = Octets<'_>>>::peek_u8(self)
+        (**self).peek_u8()
     }
 
     fn get_bytes(&mut self, len: usize) -> Result<Self::Bytes> {
-        <dyn OctetsRead<Bytes = Octets<'_>>>::get_bytes(self, len)
+        (**self).get_bytes(len)
     }
 
     fn get_varint(&mut self) -> Result<u64> {
-        <dyn OctetsRead<Bytes = Octets<'_>>>::get_varint(self)
+        (**self).get_varint()
     }
 
     fn get_bytes_with_u8_length(&mut self) -> Result<Self::Bytes> {
-        <dyn OctetsRead<Bytes = Octets<'_>>>::get_bytes_with_u8_length(self)
+        (**self).get_bytes_with_u8_length()
     }
 
     fn get_bytes_with_u16_length(&mut self) -> Result<Self::Bytes> {
-        <dyn OctetsRead<Bytes = Octets<'_>>>::get_bytes_with_u16_length(self)
+        (**self).get_bytes_with_u16_length()
     }
 
     fn get_bytes_with_varint_length(&mut self) -> Result<Self::Bytes> {
-        <dyn OctetsRead<Bytes = Octets<'_>>>::get_bytes_with_varint_length(self)
+        (**self).get_bytes_with_varint_length()
     }
 
     fn is_empty(&self) -> bool {
-        <dyn OctetsRead<Bytes = Octets<'_>>>::is_empty(self)
+        (**self).is_empty()
     }
 
     fn to_vec(&self) -> Vec<u8> {
-        <dyn OctetsRead<Bytes = Octets<'_>>>::to_vec(self)
+        (**self).to_vec()
     }
 
     fn rewind(&mut self, rewind: usize) -> Result<()> {
-        <dyn OctetsRead<Bytes = Octets<'_>>>::rewind(self, rewind)
+        (**self).rewind(rewind)
     }
 
     fn skip(&mut self, skip: usize) -> Result<()> {
-        <dyn OctetsRead<Bytes = Octets<'_>>>::skip(self, skip)
+        (**self).skip(skip)
     }
 
     fn buf(&self) -> &[u8] {
-        <dyn OctetsRead<Bytes = Octets<'_>>>::buf(self)
+        (**self).buf()
     }
 
     fn off(&self) -> usize {
-        <dyn OctetsRead<Bytes = Octets<'_>>>::off(self)
+        (**self).off()
     }
 
     fn len(&self) -> usize {
-        <dyn OctetsRead<Bytes = Octets<'_>>>::len(self)
+        (**self).len()
     }
 
     fn cap(&self) -> usize {
-        <dyn OctetsRead<Bytes = Octets<'_>>>::cap(self)
+        (**self).cap()
     }
 
     fn peek_bytes(&mut self, len: usize) -> Result<Self::Bytes> {
-        <dyn OctetsRead<Bytes = Octets<'_>>>::peek_bytes(self, len)
+        (**self).peek_bytes(len)
     }
 }
 
