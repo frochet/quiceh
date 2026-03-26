@@ -5093,7 +5093,7 @@ impl<F: BufFactory> Connection<F> {
                             b = OctetsMut::from(rev_b);
 
                             // back to the initial index.
-                            b.rewind(len + hdr_len)?;
+                            b.rewind(len)?;
 
                             (len, fin)
                         } else {
@@ -5259,7 +5259,7 @@ impl<F: BufFactory> Connection<F> {
                         b = OctetsMut::from(rev_b);
 
                         // back to the initial index.
-                        b.rewind(len + hdr_len + cumul)?;
+                        b.rewind(len + cumul)?;
                         len
                     } else {
                         let (mut crypto_hdr, mut crypto_payload) =
