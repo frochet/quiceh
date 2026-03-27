@@ -3374,7 +3374,7 @@ impl<F: BufFactory> Connection<F> {
             payload.skip(payload_len)?;
             let mut payload: OctetsRev = payload.into();
             // start reverse buffer processing
-            while payload.cap() > 0 {
+            while payload.cap() > payload_start_offset {
                 let frame =
                     frame::Frame::from_bytes(&mut payload, hdr.ty, self.version)?;
                 qlog_with_type!(QLOG_PACKET_RX, self.qlog, _q, {
@@ -5392,9 +5392,7 @@ impl<F: BufFactory> Connection<F> {
             .use_hidden_crypt_copy_for_zc
         {
             // If we're in VReverso, the frame should be first.
-            let (b_start, mut b_ctrl, stream_len) = if self.version
-                == crate::PROTOCOL_VERSION_VREVERSO
-            {
+            if self.version == crate::PROTOCOL_VERSION_VREVERSO {
                 let stream_len =
                     if let Some(frame::Frame::StreamHeader { length, .. }) =
                         frames.first()
@@ -5403,17 +5401,24 @@ impl<F: BufFactory> Connection<F> {
                     } else {
                         0_usize
                     };
+
+                frames.reverse();
                 // ctrl cleartext is written inside the destination buffer,
                 // aligned on a multiple of the AES blocksize.
+
                 let align = stream_len % 16;
-                let (b, b_ctrl) =
+                let (b, mut b_ctrl) =
                     b.split_at(payload_offset + stream_len + align)?;
-                (b, b_ctrl, stream_len)
+                b_ctrl.skip(cumul - stream_len)?;
+                let mut b_ctrl_rev = OctetsMutRev::from(b_ctrl);
+                push_frames_to_pkt!(b_ctrl_rev, frames, true, self.version);
+                b_ctrl = OctetsMut::from(b_ctrl_rev);
+                (b, Some(b_ctrl), stream_len, cumul - stream_len)
             } else {
                 // In V1 we would start with the ctrl.
-                let (b, b_ctrl) = b.split_at(payload_offset)?;
+                let (b, mut b_ctrl) = b.split_at(payload_offset)?;
                 // The StreamHeader frame should be last.
-                if let Some(frame) = maybe_stream_header {
+                let stream_len = if let Some(frame) = &maybe_stream_header {
                     let frame_len = frame.wire_len();
                     //cumul -= frame_len;
                     left += frame_len;
@@ -5421,33 +5426,44 @@ impl<F: BufFactory> Connection<F> {
                         length, ..
                     } = frame
                     {
-                        length
+                        *length
                     } else {
                         0_usize
                     };
 
                     #[allow(unused_assignments)]
-                    if push_frame_to_vec!(frames, frame, left, cumul) {
-                        (b, b_ctrl, len)
+                    if push_frame_to_vec!(frames, frame.clone(), left, cumul) {
+                        len
                     } else {
-                        (b, b_ctrl, 0_usize)
+                        0_usize
                     }
                 } else {
-                    (b, b_ctrl, 0_usize)
-                }
-            };
-            // let mut ctrl = vec![0; cumul-stream_len];
-            // let mut b_ctrl = octets_rev::OctetsMut::with_slice(&mut ctrl);
-            b_ctrl.skip(cumul)?;
-            let mut b_ctrl_rev = OctetsMutRev::from(b_ctrl);
-            frames.reverse();
-            push_frames_to_pkt!(b_ctrl_rev, frames, true, self.version);
-            let b_ctrl = OctetsMut::from(b_ctrl_rev);
-            (b_start, Some(b_ctrl), stream_len, cumul)
+                    0_usize
+                };
+
+                push_frames_to_pkt!(b_ctrl, frames, true, self.version);
+                let b_ctrl_len = b_ctrl.off();
+                b_ctrl.rewind(b_ctrl_len)?;
+                (b, Some(b_ctrl), stream_len, b_ctrl_len)
+            }
         } else {
-            push_frames_to_pkt!(b, frames, false, self.version);
-            let b_len = b.off() - payload_offset;
-            (b, None, b_len, 0_usize)
+            if self.version == crate::PROTOCOL_VERSION_VREVERSO {
+                let stream_frame_len = if let Some(frame) = &maybe_stream_header {
+                    frame.wire_len()
+                } else {
+                    0_usize
+                };
+                b.skip(stream_frame_len + cumul)?;
+                let mut b_rev = OctetsMutRev::from(b);
+                frames.reverse();
+                push_frames_to_pkt!(b_rev, frames, false, self.version);
+                b = OctetsMut::from(b_rev);
+                (b, None, stream_frame_len + cumul, 0_usize)
+            } else {
+                push_frames_to_pkt!(b, frames, false, self.version);
+                let b_len = b.off() - payload_offset;
+                (b, None, b_len, 0_usize)
+            }
         };
 
         let payload_len = b_len + b_ctrl_len;
@@ -5537,7 +5553,7 @@ impl<F: BufFactory> Connection<F> {
         let written = if self.use_hidden_crypt_copy_for_zc {
             let sentry = if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
                 if let Some(frame::Frame::StreamHeader { stream_id, .. }) =
-                    frames.first()
+                    &maybe_stream_header
                 {
                     Some(self.streams.entry(*stream_id))
                 } else {
@@ -8635,7 +8651,11 @@ impl<F: BufFactory> Connection<F> {
                 // best.
                 //
                 if stream.recv.not_in_order(&metadata) {
-                    let data = b.peek_bytes(metadata.len())?;
+                    // We should be at the payload_offset; we can shift the buffer
+                    // to the right and then call get_bytes; or alternatively directly
+                    // read metadata.len() at b's offset.
+                    b.rewind(metadata.len())?;
+                    let data = b.get_bytes(metadata.len())?;
                     // This sucks since it copies; and should be avoided at all
                     // ("let's keep it flexible") cost. (see
                     // comments above).
@@ -10507,10 +10527,11 @@ pub mod testing {
         if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
             b.skip(payload_len)?;
             let mut b_rev = OctetsMutRev::from(b);
-            for frame in frames {
+            for frame in frames.iter().rev() {
                 frame.to_bytes(&mut b_rev)?;
             }
             b = OctetsMut::from(b_rev);
+            b.skip(payload_len)?;
         } else {
             for frame in frames {
                 frame.to_bytes(&mut b)?;
@@ -11783,7 +11804,7 @@ mod tests {
     }
 
     #[test]
-    fn streamv3_large_chunks_send_recv() {
+    fn streamv3_large_chunks_send_recv_with_hidden_send_copy() {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
             config
@@ -11809,6 +11830,8 @@ mod tests {
             let sendbuf = [0; 12000];
 
             let mut pipe = <Pipe>::with_config(&mut config).unwrap();
+
+            env_logger::builder().format_timestamp_nanos().init();
             assert_eq!(pipe.handshake(), Ok(()));
 
             for _ in 1..10 {
@@ -21094,14 +21117,12 @@ mod tests {
         ];
 
         let pkt_type = packet::Type::Short;
-        if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_V1 {
-            pipe.send_pkt_to_server(pkt_type, &frames, &mut buf)
-                .unwrap();
-        } else {
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+            // The order above assumes they'd be read from top to bottom.
             frames.reverse();
-            pipe.send_pkt_to_server(pkt_type, &frames, &mut buf)
-                .unwrap();
         }
+        pipe.send_pkt_to_server(pkt_type, &frames, &mut buf)
+            .unwrap();
 
         let (s1, s2, s3, s4) =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
