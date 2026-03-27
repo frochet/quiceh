@@ -528,6 +528,7 @@ impl Handshake {
     pub fn do_handshake(&mut self, ex_data: &mut ExData) -> Result<()> {
         self.set_ex_data(*QUICHE_EX_DATA_INDEX, ex_data)?;
         let rc = unsafe { SSL_do_handshake(self.as_mut_ptr()) };
+        trace!("SSL_do_handshake returned {}", rc);
         self.set_ex_data::<Connection>(*QUICHE_EX_DATA_INDEX, std::ptr::null())?;
         self.set_transport_error(ex_data, rc);
         self.map_result_ssl(rc)

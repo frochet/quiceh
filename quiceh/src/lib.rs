@@ -5150,6 +5150,7 @@ impl<F: BufFactory> Connection<F> {
                     let wire_len = frame.wire_len();
                     left -= wire_len;
                     // XXX we should refactor to avoid this.
+                    maybe_frame = frame.clone();
                     frames.insert(0, frame);
                     ack_eliciting = true;
                     in_flight = true;
@@ -5241,8 +5242,15 @@ impl<F: BufFactory> Connection<F> {
                 } else {
                     let len = if likely(self.version == PROTOCOL_VERSION_VREVERSO)
                     {
-                        //located potentally after other control frames
-                        b.skip(cumul)?;
+                        //located potentally after the stream frame
+                        let skip_len = if let Some(frame) = &maybe_stream_header {
+                            let skip_len = frame.wire_len();
+                            skip_len
+                        } else {
+                            0
+                        };
+
+                        b.skip(skip_len)?;
                         let (len, _) = pkt_space
                             .crypto_stream
                             .send
@@ -5259,7 +5267,7 @@ impl<F: BufFactory> Connection<F> {
                         b = OctetsMut::from(rev_b);
 
                         // back to the initial index.
-                        b.rewind(len + cumul)?;
+                        b.rewind(len + skip_len)?;
                         len
                     } else {
                         let (mut crypto_hdr, mut crypto_payload) =
@@ -5293,10 +5301,26 @@ impl<F: BufFactory> Connection<F> {
                     }
                 };
 
-                if push_frame_to_vec!(frames, frame, left, cumul) {
+                if !self.use_hidden_crypt_copy_for_zc
+                    && self.version == crate::PROTOCOL_VERSION_VREVERSO
+                {
+                    let wire_len = frame.wire_len();
+                    if maybe_stream_header.is_some() {
+                        frames.insert(1, frame);
+                    } else {
+                        frames.insert(0, frame);
+                    }
+                    left -= wire_len;
+                    cumul += wire_len;
                     ack_eliciting = true;
                     in_flight = true;
                     has_data = true;
+                } else {
+                    if push_frame_to_vec!(frames, frame, left, cumul) {
+                        ack_eliciting = true;
+                        in_flight = true;
+                        has_data = true;
+                    }
                 }
             }
         }
@@ -5448,17 +5472,12 @@ impl<F: BufFactory> Connection<F> {
             }
         } else {
             if self.version == crate::PROTOCOL_VERSION_VREVERSO {
-                let stream_frame_len = if let Some(frame) = &maybe_stream_header {
-                    frame.wire_len()
-                } else {
-                    0_usize
-                };
-                b.skip(stream_frame_len + cumul)?;
+                b.skip(cumul)?;
                 let mut b_rev = OctetsMutRev::from(b);
                 frames.reverse();
                 push_frames_to_pkt!(b_rev, frames, false, self.version);
                 b = OctetsMut::from(b_rev);
-                (b, None, stream_frame_len + cumul, 0_usize)
+                (b, None, cumul, 0_usize)
             } else {
                 push_frames_to_pkt!(b, frames, false, self.version);
                 let b_len = b.off() - payload_offset;
@@ -5551,21 +5570,25 @@ impl<F: BufFactory> Connection<F> {
         };
 
         let written = if self.use_hidden_crypt_copy_for_zc {
-            let sentry = if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
+            // For vreverso, we called reverse(); so it should be the
+            // last.
+            let sentry =
                 if let Some(frame::Frame::StreamHeader { stream_id, .. }) =
-                    &maybe_stream_header
+                    frames.last()
                 {
                     Some(self.streams.entry(*stream_id))
+                } else if self.version == crate::PROTOCOL_VERSION_V1 {
+                    if let Some(frame::Frame::StreamHeader {
+                        stream_id, ..
+                    }) = &maybe_stream_header
+                    {
+                        Some(self.streams.entry(*stream_id))
+                    } else {
+                        None
+                    }
                 } else {
                     None
-                }
-            } else if let Some(frame::Frame::StreamHeader { stream_id, .. }) =
-                frames.last()
-            {
-                Some(self.streams.entry(*stream_id))
-            } else {
-                None
-            };
+                };
 
             let written = if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
                 // We encrypt with the data in inbuf and the ctrl data in extra_in, starting
@@ -8562,9 +8585,16 @@ impl<F: BufFactory> Connection<F> {
 
                 while let Ok((read, _)) = stream.recv.emit(&mut crypto_buf) {
                     let recv_buf = &crypto_buf[..read];
+                    trace!(
+                        "{} providing {} bytes of crypto data at lvl {:?}",
+                        self.trace_id,
+                        read,
+                        level
+                    );
                     self.handshake.provide_data(level, recv_buf)?;
                 }
 
+                trace!("{} calling do_handshake", self.trace_id);
                 self.do_handshake(now)?;
             },
 
@@ -16767,6 +16797,7 @@ mod tests {
         let mut b = [0; 15];
         if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
             pipe.server.stream_peek(stream_id).unwrap();
+            pipe.server.stream_consumed(stream_id, 1).unwrap();
         } else {
             pipe.server.stream_recv(stream_id, &mut b).unwrap();
         }
