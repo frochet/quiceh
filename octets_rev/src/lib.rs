@@ -24,24 +24,137 @@
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+//! Zero-copy abstraction for parsing and constructing network packets.
+//!
+//! This crate provides a set of types for safely and efficiently reading from
+//! and writing to byte buffers. It is designed to be used in performance-critical
+//! applications like network protocol implementations, where minimizing copies
+//! is essential.
+//!
+//! It supports both classical left-to-right (forward) processing and right-to-left
+//! (backward) processing.
+//!
+//! # Examples
+//!
+//! Reading from a buffer:
+//! ```
+//! use octets_rev::Octets;
+//!
+//! let data = [0x01, 0x00, 0x42, 0x05, b'h', b'e', b'l', b'l', b'o'];
+//! let mut b = Octets::with_slice(&data);
+//!
+//! assert_eq!(b.get_u8(), Ok(1));
+//! assert_eq!(b.get_u16(), Ok(0x0042));
+//!
+//! let mut sub = b.get_bytes_with_u8_length().unwrap();
+//! assert_eq!(sub.as_ref(), b"hello");
+//! ```
+//!
+//! # Forward and Backward Processing
+//!
+//! This crate supports both forward and backward processing of buffers.
+//! `Octets` and `OctetsMut` operate from the beginning of the buffer towards the end.
+//! `OctetsRev` and `OctetsMutRev` operate from the end of the buffer towards the beginning.
+//!
+//! This is particularly useful for protocols that define fields relative to the end of a packet
+//! or when building a packet from both ends to avoid moving data.
+//!
+//! ```
+//! use octets_rev::{OctetsMut, OctetsMutRev, Octets, OctetsRev};
+//!
+//! let mut data = [0; 10];
+//!
+//! // Write 0x01 at the beginning
+//! {
+//!     let mut b = OctetsMut::with_slice(&mut data);
+//!     b.put_u8(0x01).unwrap();
+//! }
+//!
+//! // Write 0xFE at the end
+//! {
+//!     let mut b = OctetsMutRev::with_slice(&mut data);
+//!     b.put_u8(0xFE).unwrap();
+//! }
+//!
+//! assert_eq!(data[0], 0x01);
+//! assert_eq!(data[9], 0xFE);
+//!
+//! // Read them back
+//! let mut forward = Octets::with_slice(&data);
+//! assert_eq!(forward.get_u8(), Ok(0x01));
+//!
+//! let mut backward = OctetsRev::with_slice(&data);
+//! assert_eq!(backward.get_u8(), Ok(0xFE));
+//! ```
+//!
+//! # Generic Processing with Traits
+//!
+//! By using the [`OctetsRead`] and [`OctetsWrite`] traits, you can write
+//! generic code that works identically for both forward and backward buffers.
+//! This is possible because `OctetsRev` and `OctetsMutRev` ensure that "reading
+//! the next integer" always moves the cursor in the "natural" direction for
+//! that buffer.
+//!
+//! If a protocol defines a sequence of fields (e.g., [Type, ID]), the same
+//! generic function can parse these fields whether they are stored at the
+//! beginning of the packet (processed forward) or at the end of the packet
+//! (processed backward).
+//!
+//! ```
+//! use octets_rev::{OctetsRead, Octets, OctetsRev, Result};
+//!
+//! struct Frame {
+//!     ty: u8,
+//!     id: u16,
+//! }
+//!
+//! impl Frame {
+//!     /// This code is oblivious to whether R is forward or backward.
+//!     /// It just reads the "next" fields in the defined logical order.
+//!     fn parse<R: OctetsRead>(r: &mut R) -> Result<Self> {
+//!         let ty = r.get_u8()?;
+//!         let id = r.get_u16()?;
+//!         Ok(Frame { ty, id })
+//!     }
+//! }
+//!
+//! // Forward processing: Type=1, ID=0x0042.
+//! // Data is physically [0x01, 0x00, 0x42].
+//! {
+//!     let data = [0x01, 0x00, 0x42];
+//!     let mut forward = Octets::with_slice(&data);
+//!     let f_frame = Frame::parse(&mut forward).unwrap();
+//!     assert_eq!(f_frame.ty, 0x01);
+//!     assert_eq!(f_frame.id, 0x0042);
+//! }
+//!
+//! // Backward processing: Type=1, ID=0x0042.
+//! // Data is physically [0x00, 0x42, 0x01] because OctetsRev reads from the end.
+//! {
+//!     let data = [0x00, 0x42, 0x01];
+//!     let mut backward = OctetsRev::with_slice(&data);
+//!     let b_frame = Frame::parse(&mut backward).unwrap();
+//!     assert_eq!(b_frame.ty, 0x01);
+//!     assert_eq!(b_frame.id, 0x0042);
+//! }
+//! ```
+
 use branches::unlikely;
 /// Zero-copy abstraction for parsing and constructing network packets.
 use std::mem;
 use std::ops::Deref;
 use std::ptr;
 
-/// A specialized [`Result`] type for [`OctetsMut`] operations.
-///
-/// [`Result`]: https://doc.rust-lang.org/std/result/enum.Result.html
-/// [`OctetsMut`]: struct.OctetsMut.html
+/// A specialized [`Result`] type for buffer operations.
 pub type Result<T> = std::result::Result<T, BufferError>;
 
-/// An error indicating that the provided [`OctetsMut`] is not big enough.
-///
-/// [`OctetsMut`]: struct.OctetsMut.html
+/// An error indicating that a buffer operation failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BufferError {
+    /// The provided buffer is not big enough to complete the operation.
     BufferTooShortError,
+
+    /// The buffer contains invalid data according to the protocol rules.
     BufferProtocolError,
 }
 
@@ -699,7 +812,7 @@ impl<'a> AsMut<[u8]> for OctetsMut<'a> {
 }
 
 /// Returns how many bytes it would take to encode `v` as a variable-length
-/// integer.
+/// integer in network byte-order.
 pub const fn varint_len(v: u64) -> usize {
     if v <= 63 {
         1
@@ -725,7 +838,8 @@ pub const fn varint_parse_len(first: u8) -> usize {
     }
 }
 
-/// The length is encoded within the last two bits of the last byte.
+/// Returns how long the variable-length integer is, given its last byte,
+/// when reading in reverse.
 pub const fn varint_parse_len_reverse(last: u8) -> usize {
     match last & !0xfc {
         0 => 1,
@@ -736,49 +850,135 @@ pub const fn varint_parse_len_reverse(last: u8) -> usize {
     }
 }
 
+/// A trait for reading from a byte buffer.
 pub trait OctetsRead {
+    /// The type of bytes returned by `get_bytes` and related functions.
     type Bytes: AsRef<[u8]>;
 
+    /// Reads an unsigned 8-bit integer and advances the buffer.
     fn get_u8(&mut self) -> Result<u8>;
+
+    /// Reads an unsigned 16-bit integer in network byte-order and advances the buffer.
     fn get_u16(&mut self) -> Result<u16>;
+
+    /// Reads an unsigned 24-bit integer in network byte-order and advances the buffer.
     fn get_u24(&mut self) -> Result<u32>;
+
+    /// Reads an unsigned 32-bit integer in network byte-order and advances the buffer.
     fn get_u32(&mut self) -> Result<u32>;
+
+    /// Reads an unsigned 64-bit integer in network byte-order and advances the buffer.
     fn get_u64(&mut self) -> Result<u64>;
+
+    /// Reads an unsigned variable-length integer in network byte-order and advances the buffer.
     fn get_varint(&mut self) -> Result<u64>;
+
+    /// Reads `len` bytes without copying and advances the buffer.
     fn get_bytes(&mut self, len: usize) -> Result<Self::Bytes>;
+
+    /// Reads `len` + 1 bytes without copying and advances the buffer, where `len` is an
+    /// unsigned 8-bit integer prefix.
     fn get_bytes_with_u8_length(&mut self) -> Result<Self::Bytes>;
+
+    /// Reads `len` + 2 bytes without copying and advances the buffer, where `len` is an
+    /// unsigned 16-bit integer prefix in network byte-order.
     fn get_bytes_with_u16_length(&mut self) -> Result<Self::Bytes>;
+
+    /// Reads `len` + varint bytes without copying and advances the buffer, where `len` is an
+    /// unsigned variable-length integer prefix in network byte-order.
     fn get_bytes_with_varint_length(&mut self) -> Result<Self::Bytes>;
+
+    /// Reads an unsigned 8-bit integer without advancing the buffer.
     fn peek_u8(&mut self) -> Result<u8>;
+
+    /// Reads `len` bytes without copying and without advancing the buffer.
     fn peek_bytes(&mut self, len: usize) -> Result<Self::Bytes>;
+
+    /// Advances the buffer's offset.
     fn skip(&mut self, skip: usize) -> Result<()>;
+
+    /// Rewinds the buffer's offset.
     fn rewind(&mut self, rewind: usize) -> Result<()>;
+
+    /// Returns the remaining capacity in the buffer.
     fn cap(&self) -> usize;
+
+    /// Returns the total length of the buffer.
     fn len(&self) -> usize;
+
+    /// Returns `true` if the buffer is empty.
     fn is_empty(&self) -> bool;
+
+    /// Returns the current offset of the buffer.
     fn off(&self) -> usize;
+
+    /// Returns a reference to the internal buffer.
     fn buf(&self) -> &[u8];
-    fn to_vec(&self) -> Vec<u8>;
-}
-pub trait OctetsWrite {
-    fn put_varint(&mut self, v: u64) -> Result<&mut [u8]>;
-    fn put_varint_with_len(&mut self, v: u64, len: usize) -> Result<&mut [u8]>;
-    fn put_u8(&mut self, v: u8) -> Result<&mut [u8]>;
-    fn put_u16(&mut self, v: u16) -> Result<&mut [u8]>;
-    fn put_u24(&mut self, v: u32) -> Result<&mut [u8]>;
-    fn put_u32(&mut self, v: u32) -> Result<&mut [u8]>;
-    fn put_u64(&mut self, v: u64) -> Result<&mut [u8]>;
-    fn put_bytes(&mut self, v: &[u8]) -> Result<()>;
-    fn skip(&mut self, skip: usize) -> Result<()>;
-    fn rewind(&mut self, rewind: usize) -> Result<()>;
-    fn cap(&self) -> usize;
-    fn len(&self) -> usize;
-    fn is_empty(&self) -> bool;
-    fn off(&self) -> usize;
-    fn buf(&self) -> &[u8];
+
+    /// Copies the buffer from the current offset into a new `Vec<u8>`.
     fn to_vec(&self) -> Vec<u8>;
 }
 
+/// A trait for writing to a byte buffer.
+pub trait OctetsWrite {
+    /// Writes an unsigned variable-length integer in network byte-order and advances the buffer.
+    fn put_varint(&mut self, v: u64) -> Result<&mut [u8]>;
+
+    /// Writes an unsigned variable-length integer of the specified length in network byte-order
+    /// and advances the buffer.
+    fn put_varint_with_len(&mut self, v: u64, len: usize) -> Result<&mut [u8]>;
+
+    /// Writes an unsigned 8-bit integer and advances the buffer.
+    fn put_u8(&mut self, v: u8) -> Result<&mut [u8]>;
+
+    /// Writes an unsigned 16-bit integer in network byte-order and advances the buffer.
+    fn put_u16(&mut self, v: u16) -> Result<&mut [u8]>;
+
+    /// Writes an unsigned 24-bit integer in network byte-order and advances the buffer.
+    fn put_u24(&mut self, v: u32) -> Result<&mut [u8]>;
+
+    /// Writes an unsigned 32-bit integer in network byte-order and advances the buffer.
+    fn put_u32(&mut self, v: u32) -> Result<&mut [u8]>;
+
+    /// Writes an unsigned 64-bit integer in network byte-order and advances the buffer.
+    fn put_u64(&mut self, v: u64) -> Result<&mut [u8]>;
+
+    /// Writes `v.len()` bytes by copying and advances the buffer.
+    fn put_bytes(&mut self, v: &[u8]) -> Result<()>;
+
+    /// Advances the buffer's offset.
+    fn skip(&mut self, skip: usize) -> Result<()>;
+
+    /// Rewinds the buffer's offset.
+    fn rewind(&mut self, rewind: usize) -> Result<()>;
+
+    /// Returns the remaining capacity in the buffer.
+    fn cap(&self) -> usize;
+
+    /// Returns the total length of the buffer.
+    fn len(&self) -> usize;
+
+    /// Returns `true` if the buffer is empty.
+    fn is_empty(&self) -> bool;
+
+    /// Returns the current offset of the buffer.
+    fn off(&self) -> usize;
+
+    /// Returns a reference to the internal buffer.
+    fn buf(&self) -> &[u8];
+
+    /// Copies the buffer from the current offset into a new `Vec<u8>`.
+    fn to_vec(&self) -> Vec<u8>;
+}
+
+/// A zero-copy immutable byte buffer for backward processing.
+///
+/// `OctetsRev` is similar to `Octets`, but it operates from the end of the buffer
+/// towards the beginning. The cursor (offset) initially points to the end of the
+/// buffer and moves backwards as data is read.
+///
+/// For each `get_u*` or `get_varint` operation, the offset is first decreased
+/// by the size of the integer, and then the value is read from that new offset.
 #[derive(Debug, PartialEq, Eq)]
 pub struct OctetsRev<'a> {
     buf: &'a [u8],
@@ -786,8 +986,8 @@ pub struct OctetsRev<'a> {
 }
 
 impl<'a> OctetsRev<'a> {
-    /// Instantiate an OctetsRev pointing the cursor at the rightmost
-    /// offset of the slice.
+    /// Creates an `OctetsRev` from the given slice, pointing the cursor at the
+    /// end of the slice.
     pub fn with_slice(buf: &'a [u8]) -> Self {
         OctetsRev {
             buf,
@@ -795,7 +995,8 @@ impl<'a> OctetsRev<'a> {
         }
     }
 
-    /// Decreases the buffer's offset by 1 and reads an unsigned 8-bit integer
+    /// Reads an unsigned 8-bit integer by first decreasing the offset by 1
+    /// and then reading at that offset.
     pub fn get_u8(&mut self) -> Result<u8> {
         get_u_reverse!(self, u8, 1);
     }
@@ -806,31 +1007,37 @@ impl<'a> OctetsRev<'a> {
         peek_u_reverse!(self, u8, 1)
     }
 
-    /// Decreases the buffer's offset by 2 and then reads an unsigned 16-bit integer
+    /// Reads an unsigned 16-bit integer in network byte-order by first
+    /// decreasing the offset by 2 and then reading at that offset.
     pub fn get_u16(&mut self) -> Result<u16> {
         get_u_reverse!(self, u16, 2)
     }
 
-    /// Decreases the buffer's offset by 3 and then reads 24 bits into an unsigned 32-bit integer
+    /// Reads an unsigned 24-bit integer in network byte-order by first
+    /// decreasing the offset by 3 and then reading at that offset.
     pub fn get_u24(&mut self) -> Result<u32> {
         get_u_reverse!(self, u32, 3)
     }
 
-    /// Decreases the buffer's offset by 4 and then reads an unsigned 32-bit integer
+    /// Reads an unsigned 32-bit integer in network byte-order by first
+    /// decreasing the offset by 4 and then reading at that offset.
     pub fn get_u32(&mut self) -> Result<u32> {
         get_u_reverse!(self, u32, 4)
     }
 
-    /// Decreases the buffer's offset by 8 and then reads an unsigned 64-bit integer
+    /// Reads an unsigned 64-bit integer in network byte-order by first
+    /// decreasing the offset by 8 and then reading at that offset.
     pub fn get_u64(&mut self) -> Result<u64> {
         get_u_reverse!(self, u64, 8)
     }
 
-    /// In reversed buffers, variable length integers also need to be
-    /// reversed, with the 2-bits length indicator at the end of the first
-    /// byte in the backward direction.
-    /// Reads an unsigned variable-length integer in network byte-order from
-    /// the current offset and rewinds the buffer.
+    /// Reads an unsigned variable-length integer in network byte-order by
+    /// first decreasing the offset by the integer's length and then reading
+    /// at that offset.
+    ///
+    /// In reversed buffers, variable-length integers have their length indicator
+    /// bits (the 2 most significant bits) in the "first" byte in the backward
+    /// direction (which is the last byte in forward direction).
     pub fn get_varint(&mut self) -> Result<u64> {
         if unlikely(self.off == 0) {
             Err(BufferError::BufferProtocolError)
@@ -848,8 +1055,9 @@ impl<'a> OctetsRev<'a> {
         }
     }
 
-    /// Rewind the buffer of  `len` bytes from the current offset and then
-    /// read without copying.
+    /// Reads `len` bytes from the current offset (moving backwards) without
+    /// copying. The offset is decreased by `len`. The returned `Octets`
+    /// is forward-oriented.
     pub fn get_bytes(&mut self, len: usize) -> Result<Octets<'a>> {
         if unlikely(self.off < len) {
             Err(BufferError::BufferProtocolError)
@@ -863,28 +1071,28 @@ impl<'a> OctetsRev<'a> {
         }
     }
 
-    /// Rewind the buffer of `len` bytes and read `len` bytes  without copying.
+    /// Reads `len` + 1 bytes from the current offset (moving backwards) without
+    /// copying, where `len` is an unsigned 8-bit integer prefix.
     pub fn get_bytes_with_u8_length(&mut self) -> Result<Octets<'a>> {
         let len = self.get_u8()?;
         self.get_bytes(len as usize)
     }
 
-    /// Rewind the buffer of `len`+ 2 bytes and read `len` bytes  without
-    /// copying.
+    /// Reads `len` + 2 bytes from the current offset (moving backwards) without
+    /// copying, where `len` is an unsigned 16-bit integer prefix.
     pub fn get_bytes_with_u16_length(&mut self) -> Result<Octets<'a>> {
         let len = self.get_u16()?;
         self.get_bytes(len as usize)
     }
 
-    /// Rewind the buffer of `len`+ varint bytes and read `len` bytes without
-    /// copying.
+    /// Reads `len` + varint bytes from the current offset (moving backwards)
+    /// without copying, where `len` is an unsigned variable-length integer prefix.
     pub fn get_bytes_with_varint_length(&mut self) -> Result<Octets<'a>> {
         let len = self.get_varint()?;
         self.get_bytes(len as usize)
     }
 
-    /// Advances the buffer's offset, moving the offset towars
-    /// lower values.
+    /// Advances the buffer's offset, moving it towards the beginning (lower values).
     pub fn skip(&mut self, skip: usize) -> Result<()> {
         if self.off < skip {
             return Err(BufferError::BufferTooShortError);
@@ -893,8 +1101,7 @@ impl<'a> OctetsRev<'a> {
         Ok(())
     }
 
-    /// Rewinds the buffer's offset, moving the offset towards
-    /// higher values.
+    /// Rewinds the buffer's offset, moving it towards the end (higher values).
     pub fn rewind(&mut self, rewind: usize) -> Result<()> {
         if rewind > self.buf.len() - self.off {
             return Err(BufferError::BufferTooShortError);
@@ -903,6 +1110,7 @@ impl<'a> OctetsRev<'a> {
         Ok(())
     }
 
+    /// Returns the remaining capacity in the buffer (bytes before the cursor).
     pub fn cap(&self) -> usize {
         self.off
     }
@@ -967,6 +1175,13 @@ impl<'a> From<OctetsRev<'a>> for Octets<'a> {
     }
 }
 
+/// A zero-copy mutable byte buffer for backward processing.
+///
+/// `OctetsMutRev` is the mutable version of `OctetsRev`. It operates from the
+/// end of the buffer towards the beginning.
+///
+/// For each `put_u*` or `put_varint` operation, the offset is first decreased
+/// by the size of the integer, and then the value is written at that new offset.
 #[derive(Debug, PartialEq, Eq)]
 pub struct OctetsMutRev<'a> {
     buf: &'a mut [u8],
@@ -974,43 +1189,54 @@ pub struct OctetsMutRev<'a> {
 }
 
 impl<'a> OctetsMutRev<'a> {
+    /// Creates an `OctetsMutRev` from the given slice, pointing the cursor at
+    /// the end of the slice.
     pub fn with_slice(buf: &'a mut [u8]) -> Self {
         let len = buf.len();
         OctetsMutRev { buf, off: len }
     }
 
-    pub fn from_octetsmut(o: OctetsMut<'a>) -> Self {
-        let off = o.off();
-        OctetsMutRev { buf: o.buf, off }
-    }
-
-    /// Advance the buffer by 1 bytes (decreasing its offset) and
-    /// then write 1 byte at the current offset.
+    /// Writes an unsigned 8-bit integer by first decreasing the offset by 1
+    /// and then writing at that offset.
     pub fn put_u8(&mut self, v: u8) -> Result<&mut [u8]> {
         put_u_reverse!(self, u8, v, 1)
     }
 
+    /// Writes an unsigned 16-bit integer in network byte-order by first
+    /// decreasing the offset by 2 and then writing at that offset.
     pub fn put_u16(&mut self, v: u16) -> Result<&mut [u8]> {
         put_u_reverse!(self, u16, v, 2)
     }
 
+    /// Writes an unsigned 24-bit integer in network byte-order by first
+    /// decreasing the offset by 3 and then writing at that offset.
     pub fn put_u24(&mut self, v: u32) -> Result<&mut [u8]> {
         put_u_reverse!(self, u32, v, 3)
     }
 
+    /// Writes an unsigned 32-bit integer in network byte-order by first
+    /// decreasing the offset by 4 and then writing at that offset.
     pub fn put_u32(&mut self, v: u32) -> Result<&mut [u8]> {
         put_u_reverse!(self, u32, v, 4)
     }
 
+    /// Writes an unsigned 64-bit integer in network byte-order by first
+    /// decreasing the offset by 8 and then writing at that offset.
     pub fn put_u64(&mut self, v: u64) -> Result<&mut [u8]> {
         put_u_reverse!(self, u64, v, 8)
     }
 
+    /// Writes an unsigned variable-length integer in network byte-order by
+    /// first decreasing the offset by the integer's length and then writing
+    /// at that offset.
     #[inline]
     pub fn put_varint(&mut self, v: u64) -> Result<&mut [u8]> {
         self.put_varint_with_len(v, varint_len(v))
     }
 
+    /// Writes an unsigned variable-length integer of the specified length in
+    /// network byte-order by first decreasing the offset by `len` and then
+    /// writing at that offset.
     #[inline]
     pub fn put_varint_with_len(
         &mut self, v: u64, len: usize,
@@ -1040,8 +1266,8 @@ impl<'a> OctetsMutRev<'a> {
         Ok(buf)
     }
 
-    /// Advance the buffer by decreasing the offset of `len` and then Writes `len` bytes
-    /// by copy at the decreased offset value.
+    /// Writes `v.len()` bytes by copying them at the current offset (moving
+    /// backwards). The offset is decreased by `v.len()`.
     pub fn put_bytes(&mut self, v: &[u8]) -> Result<()> {
         let len = v.len();
         if self.cap() < len {
@@ -1055,7 +1281,7 @@ impl<'a> OctetsMutRev<'a> {
         Ok(())
     }
 
-    /// Advances the buffer, moving the offet towards lower values.
+    /// Advances the buffer's offset, moving it towards the beginning (lower values).
     pub fn skip(&mut self, skip: usize) -> Result<()> {
         if self.off < skip {
             return Err(BufferError::BufferTooShortError);
@@ -1064,7 +1290,7 @@ impl<'a> OctetsMutRev<'a> {
         Ok(())
     }
 
-    /// Rewinds the buffer, moving the offet towards higher values.
+    /// Rewinds the buffer's offset, moving it towards the end (higher values).
     pub fn rewind(&mut self, rewind: usize) -> Result<()> {
         if rewind > self.buf.len() - self.off {
             return Err(BufferError::BufferTooShortError);
@@ -1073,6 +1299,7 @@ impl<'a> OctetsMutRev<'a> {
         Ok(())
     }
 
+    /// Returns the remaining capacity in the buffer (bytes before the cursor).
     pub fn cap(&self) -> usize {
         self.off
     }
