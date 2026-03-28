@@ -1,6 +1,6 @@
 [package]
 name = "octets_rev"
-version = "0.1.0"
+version = "1.0.0"
 authors = ["Florentin Rochet <florentin.rochet@unamur.be>"]
 edition = "2018"
 description = "Zero-copy abstraction for parsing and constructing network packets for Reverso and classical left-to-right processing. Extends quiche's octets crate from https://github.com/cloudflare/quiche"
