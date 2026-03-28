@@ -1885,7 +1885,7 @@ pub fn version_is_supported(version: u32) -> bool {
 /// Frames such as Stream, Crypto, etc. have already been written into the
 /// buffer at their intended position.
 macro_rules! push_frames_to_pkt {
-    ($out:expr, $frames:expr, $usehiddencopy:expr, $ver:expr) => {{
+    ($out:expr, $frames:expr, $usehiddencopy:expr, $ver:expr, $is_rev:expr) => {{
         for frame in $frames.iter() {
             match frame {
                 /*
@@ -1919,8 +1919,14 @@ macro_rules! push_frames_to_pkt {
                             *length as u64,
                             &mut $out
                         )?;
-                        for rb in rbvec {
-                            $out.put_bytes(&rb[..])?;
+                        if $is_rev {
+                            for rb in rbvec.iter().rev() {
+                                $out.put_bytes(&rb[..])?;
+                            }
+                        } else {
+                            for rb in rbvec {
+                                $out.put_bytes(&rb[..])?;
+                            }
                         }
                     }
                 }
@@ -5441,7 +5447,7 @@ impl<F: BufFactory> Connection<F> {
                 );
                 b_ctrl.skip(cumul - stream_len)?;
                 let mut b_ctrl_rev = OctetsMutRev::from(b_ctrl);
-                push_frames_to_pkt!(b_ctrl_rev, frames, true, self.version);
+                push_frames_to_pkt!(b_ctrl_rev, frames, true, self.version, true);
                 b_ctrl = OctetsMut::from(b_ctrl_rev);
                 trace!("b_ctrl off at {}", b_ctrl.off());
                 (b, Some(b_ctrl), stream_len, cumul - stream_len)
@@ -5472,7 +5478,7 @@ impl<F: BufFactory> Connection<F> {
                     0_usize
                 };
 
-                push_frames_to_pkt!(b_ctrl, frames, true, self.version);
+                push_frames_to_pkt!(b_ctrl, frames, true, self.version, false);
                 let b_ctrl_len = b_ctrl.off();
                 b_ctrl.rewind(b_ctrl_len)?;
                 (b, Some(b_ctrl), stream_len, b_ctrl_len)
@@ -5482,11 +5488,11 @@ impl<F: BufFactory> Connection<F> {
                 b.skip(cumul)?;
                 let mut b_rev = OctetsMutRev::from(b);
                 frames.reverse();
-                push_frames_to_pkt!(b_rev, frames, false, self.version);
+                push_frames_to_pkt!(b_rev, frames, false, self.version, true);
                 b = OctetsMut::from(b_rev);
                 (b, None, cumul, 0_usize)
             } else {
-                push_frames_to_pkt!(b, frames, false, self.version);
+                push_frames_to_pkt!(b, frames, false, self.version, false);
                 let b_len = b.off() - payload_offset;
                 (b, None, b_len, 0_usize)
             }
