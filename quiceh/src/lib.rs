@@ -5427,16 +5427,23 @@ impl<F: BufFactory> Connection<F> {
                     };
 
                 frames.reverse();
+                trace!("frames {:?}", frames);
                 // ctrl cleartext is written inside the destination buffer,
                 // aligned on a multiple of the AES blocksize.
 
                 let align = stream_len % 16;
                 let (b, mut b_ctrl) =
                     b.split_at(payload_offset + stream_len + align)?;
+                trace!(
+                    "split_at: {}; skipping {} bytes",
+                    payload_offset + stream_len + align,
+                    cumul - stream_len
+                );
                 b_ctrl.skip(cumul - stream_len)?;
                 let mut b_ctrl_rev = OctetsMutRev::from(b_ctrl);
                 push_frames_to_pkt!(b_ctrl_rev, frames, true, self.version);
                 b_ctrl = OctetsMut::from(b_ctrl_rev);
+                trace!("b_ctrl off at {}", b_ctrl.off());
                 (b, Some(b_ctrl), stream_len, cumul - stream_len)
             } else {
                 // In V1 we would start with the ctrl.
@@ -8238,7 +8245,10 @@ impl<F: BufFactory> Connection<F> {
                 return Ok(());
             },
 
-            Err(e) => return Err(e),
+            Err(e) => {
+                trace!("do_handshake returned Error {:?}", e);
+                return Err(e);
+            },
         };
 
         self.handshake_completed = self.handshake.is_completed();
@@ -11855,6 +11865,7 @@ mod tests {
             config.set_initial_max_data(10 * 32 * 1024);
             config.enable_hidden_copy_for_zc_sender(true);
             config.set_expected_chunklen_to_consume(120_000);
+            config.verify_peer(false);
 
             let datasize = 12000;
             let sendbuf = [0; 12000];

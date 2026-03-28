@@ -528,7 +528,6 @@ impl Handshake {
     pub fn do_handshake(&mut self, ex_data: &mut ExData) -> Result<()> {
         self.set_ex_data(*QUICHE_EX_DATA_INDEX, ex_data)?;
         let rc = unsafe { SSL_do_handshake(self.as_mut_ptr()) };
-        trace!("SSL_do_handshake returned {}", rc);
         self.set_ex_data::<Connection>(*QUICHE_EX_DATA_INDEX, std::ptr::null())?;
         self.set_transport_error(ex_data, rc);
         self.map_result_ssl(rc)
@@ -1087,19 +1086,25 @@ unsafe fn SSL_CTX_free(ctx: *mut SSL_CTX) {
 
 #[inline]
 #[allow(non_snake_case)]
-unsafe fn SSL_CTX_use_certificate_chain_file( ctx: *mut SSL_CTX, file: *const c_char, ) -> c_int {
+unsafe fn SSL_CTX_use_certificate_chain_file(
+    ctx: *mut SSL_CTX, file: *const c_char,
+) -> c_int {
     sys::SSL_CTX_use_certificate_chain_file(ctx as _, file as _) as _
 }
 
 #[inline]
 #[allow(non_snake_case)]
-unsafe fn SSL_CTX_use_PrivateKey_file( ctx: *mut SSL_CTX, file: *const c_char, ty: c_int, ) -> c_int {
+unsafe fn SSL_CTX_use_PrivateKey_file(
+    ctx: *mut SSL_CTX, file: *const c_char, ty: c_int,
+) -> c_int {
     sys::SSL_CTX_use_PrivateKey_file(ctx as _, file as _, ty as _) as _
 }
 
 #[inline]
 #[allow(non_snake_case)]
-unsafe fn SSL_CTX_load_verify_locations( ctx: *mut SSL_CTX, file: *const c_char, path: *const c_char, ) -> c_int {
+unsafe fn SSL_CTX_load_verify_locations(
+    ctx: *mut SSL_CTX, file: *const c_char, path: *const c_char,
+) -> c_int {
     sys::SSL_CTX_load_verify_locations(ctx as _, file as _, path as _) as _
 }
 
@@ -1119,31 +1124,59 @@ unsafe fn SSL_CTX_get_cert_store(ctx: *mut SSL_CTX) -> *mut X509_STORE {
 
 #[inline]
 #[allow(non_snake_case)]
-unsafe fn SSL_CTX_set_verify( ctx: *mut SSL_CTX, mode: c_int, cb: Option< unsafe extern "C" fn( ok: c_int, store_ctx: *mut X509_STORE_CTX, ) -> c_int, >, ) {
+unsafe fn SSL_CTX_set_verify(
+    ctx: *mut SSL_CTX, mode: c_int,
+    cb: Option<
+        unsafe extern "C" fn(ok: c_int, store_ctx: *mut X509_STORE_CTX) -> c_int,
+    >,
+) {
     sys::SSL_CTX_set_verify(ctx as _, mode as _, std::mem::transmute(cb));
 }
 
 #[inline]
 #[allow(non_snake_case)]
-unsafe fn SSL_CTX_set_keylog_callback( ctx: *mut SSL_CTX, cb: Option<unsafe extern "C" fn(ssl: *const SSL, line: *const c_char)>, ) {
+unsafe fn SSL_CTX_set_keylog_callback(
+    ctx: *mut SSL_CTX,
+    cb: Option<unsafe extern "C" fn(ssl: *const SSL, line: *const c_char)>,
+) {
     sys::SSL_CTX_set_keylog_callback(ctx as _, std::mem::transmute(cb));
 }
 
 #[inline]
 #[allow(non_snake_case)]
-unsafe fn SSL_CTX_set_alpn_protos( ctx: *mut SSL_CTX, protos: *const u8, protos_len: usize, ) -> c_int {
+unsafe fn SSL_CTX_set_alpn_protos(
+    ctx: *mut SSL_CTX, protos: *const u8, protos_len: usize,
+) -> c_int {
     sys::SSL_CTX_set_alpn_protos(ctx as _, protos as _, protos_len as _) as _
 }
 
 #[inline]
 #[allow(non_snake_case)]
-unsafe fn SSL_CTX_set_alpn_select_cb( ctx: *mut SSL_CTX, cb: Option< unsafe extern "C" fn( ssl: *mut SSL, out: *mut *const u8, out_len: *mut u8, inp: *mut u8, in_len: c_uint, arg: *mut c_void, ) -> c_int, >, arg: *mut c_void, ) {
+unsafe fn SSL_CTX_set_alpn_select_cb(
+    ctx: *mut SSL_CTX,
+    cb: Option<
+        unsafe extern "C" fn(
+            ssl: *mut SSL,
+            out: *mut *const u8,
+            out_len: *mut u8,
+            inp: *mut u8,
+            in_len: c_uint,
+            arg: *mut c_void,
+        ) -> c_int,
+    >,
+    arg: *mut c_void,
+) {
     sys::SSL_CTX_set_alpn_select_cb(ctx as _, std::mem::transmute(cb), arg as _);
 }
 
 #[inline]
 #[allow(non_snake_case)]
-unsafe fn SSL_CTX_sess_set_new_cb( ctx: *mut SSL_CTX, cb: Option< unsafe extern "C" fn( ssl: *mut SSL, session: *mut SSL_SESSION, ) -> c_int, >, ) {
+unsafe fn SSL_CTX_sess_set_new_cb(
+    ctx: *mut SSL_CTX,
+    cb: Option<
+        unsafe extern "C" fn(ssl: *mut SSL, session: *mut SSL_SESSION) -> c_int,
+    >,
+) {
     sys::SSL_CTX_sess_set_new_cb(ctx as _, std::mem::transmute(cb));
 }
 
@@ -1215,13 +1248,18 @@ unsafe fn SSL_set_quiet_shutdown(ssl: *mut SSL, mode: c_int) {
 
 #[inline]
 #[allow(non_snake_case)]
-unsafe fn SSL_set_quic_transport_params( ssl: *mut SSL, params: *const u8, params_len: usize, ) -> c_int {
-    sys::SSL_set_quic_transport_params(ssl as _, params as _, params_len as _) as _
+unsafe fn SSL_set_quic_transport_params(
+    ssl: *mut SSL, params: *const u8, params_len: usize,
+) -> c_int {
+    sys::SSL_set_quic_transport_params(ssl as _, params as _, params_len as _)
+        as _
 }
 
 #[inline]
 #[allow(non_snake_case)]
-unsafe fn SSL_set_quic_method( ssl: *mut SSL, quic_method: *const SSL_QUIC_METHOD, ) -> c_int {
+unsafe fn SSL_set_quic_method(
+    ssl: *mut SSL, quic_method: *const SSL_QUIC_METHOD,
+) -> c_int {
     sys::SSL_set_quic_method(ssl as _, quic_method as _) as _
 }
 
@@ -1240,13 +1278,21 @@ unsafe fn SSL_set_options(ssl: *mut SSL, opts: u32) -> u32 {
 
 #[inline]
 #[allow(non_snake_case)]
-unsafe fn SSL_get_peer_quic_transport_params( ssl: *const SSL, out_params: *mut *const u8, out_params_len: *mut usize, ) {
-    sys::SSL_get_peer_quic_transport_params(ssl as _, out_params as _, out_params_len as _);
+unsafe fn SSL_get_peer_quic_transport_params(
+    ssl: *const SSL, out_params: *mut *const u8, out_params_len: *mut usize,
+) {
+    sys::SSL_get_peer_quic_transport_params(
+        ssl as _,
+        out_params as _,
+        out_params_len as _,
+    );
 }
 
 #[inline]
 #[allow(non_snake_case)]
-unsafe fn SSL_get0_alpn_selected( ssl: *const SSL, out: *mut *const u8, out_len: *mut u32, ) {
+unsafe fn SSL_get0_alpn_selected(
+    ssl: *const SSL, out: *mut *const u8, out_len: *mut u32,
+) {
     sys::SSL_get0_alpn_selected(ssl as _, out as _, out_len as _);
 }
 
@@ -1258,7 +1304,9 @@ unsafe fn SSL_get_servername(ssl: *const SSL, ty: c_int) -> *const c_char {
 
 #[inline]
 #[allow(non_snake_case)]
-unsafe fn SSL_provide_quic_data( ssl: *mut SSL, level: crypto::Level, data: *const u8, len: usize, ) -> c_int {
+unsafe fn SSL_provide_quic_data(
+    ssl: *mut SSL, level: crypto::Level, data: *const u8, len: usize,
+) -> c_int {
     sys::SSL_provide_quic_data(ssl as _, level as _, data as _, len as _) as _
 }
 
@@ -1321,7 +1369,9 @@ unsafe fn SSL_SESSION_free(session: *mut SSL_SESSION) {
 // X509_VERIFY_PARAM
 #[inline]
 #[allow(non_snake_case)]
-unsafe fn X509_VERIFY_PARAM_set1_host( param: *mut X509_VERIFY_PARAM, name: *const c_char, namelen: usize, ) -> c_int {
+unsafe fn X509_VERIFY_PARAM_set1_host(
+    param: *mut X509_VERIFY_PARAM, name: *const c_char, namelen: usize,
+) -> c_int {
     sys::X509_VERIFY_PARAM_set1_host(param as _, name as _, namelen as _) as _
 }
 
@@ -1344,7 +1394,9 @@ unsafe fn X509_free(x: *mut X509) {
 #[cfg(windows)]
 #[inline]
 #[allow(non_snake_case)]
-unsafe fn d2i_X509(px: *mut X509, input: *const *const u8, len: c_int) -> *mut X509 {
+unsafe fn d2i_X509(
+    px: *mut X509, input: *const *const u8, len: c_int,
+) -> *mut X509 {
     sys::d2i_X509(px as _, input as _, len as _) as _
 }
 
@@ -1368,7 +1420,6 @@ unsafe fn ERR_error_string_n(err: c_uint, buf: *mut c_char, len: usize) {
 unsafe fn OPENSSL_free(ptr: *mut c_void) {
     sys::OPENSSL_free(ptr as _);
 }
-
 
 mod boringssl_or_aws;
 use boringssl_or_aws::*;

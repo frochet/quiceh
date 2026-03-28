@@ -1297,7 +1297,6 @@ impl<'a> OctetsRead for OctetsRev<'a> {
 
     #[inline]
     fn peek_bytes(&mut self, len: usize) -> Result<Self::Bytes> {
-        // OctetsRev doesn't have peek_bytes implemented yet.
         // Let's implement it by rewinding and then advancing back.
         if self.off < len {
             return Err(BufferError::BufferTooShortError);
