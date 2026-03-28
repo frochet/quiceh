@@ -422,8 +422,8 @@ impl<'a> Octets<'a> {
         if len > self.cap() {
             return Err(BufferError::BufferTooShortError);
         }
-        let cap = self.cap();
-        Ok(&self.buf[cap - len..])
+        let end = self.buf.len();
+        Ok(&self.buf[end - len..end])
     }
 
     /// Advances the buffer's offset.
@@ -742,8 +742,8 @@ impl<'a> OctetsMut<'a> {
         if len > self.cap() {
             return Err(BufferError::BufferTooShortError);
         }
-        let cap = self.cap();
-        Ok(&mut self.buf[cap - len..])
+        let end = self.buf.len();
+        Ok(&mut self.buf[end - len..end])
     }
 
     /// Advances the buffer's offset.
@@ -914,6 +914,12 @@ pub trait OctetsRead {
 
     /// Returns a reference to the internal buffer.
     fn buf(&self) -> &[u8];
+
+    /// Returns a slice of `len` elements from the current offset.
+    fn slice(&self, len: usize) -> Result<&[u8]>;
+
+    /// Returns a slice of `len` elements from the end of the buffer.
+    fn slice_last(&self, len: usize) -> Result<&[u8]>;
 
     /// Copies the buffer from the current offset into a new `Vec<u8>`.
     fn to_vec(&self) -> Vec<u8>;
@@ -1139,6 +1145,22 @@ impl<'a> OctetsRev<'a> {
     pub fn to_vec(&self) -> Vec<u8> {
         self.as_ref().to_vec()
     }
+
+    /// Returns a slice of `len` elements from the current offset (moving backwards).
+    pub fn slice(&self, len: usize) -> Result<&'a [u8]> {
+        if len > self.cap() {
+            return Err(BufferError::BufferTooShortError);
+        }
+        Ok(&self.buf[self.off - len..self.off])
+    }
+
+    /// Returns a slice of `len` elements from the beginning of the buffer.
+    pub fn slice_last(&self, len: usize) -> Result<&'a [u8]> {
+        if len > self.cap() {
+            return Err(BufferError::BufferTooShortError);
+        }
+        Ok(&self.buf[..len])
+    }
 }
 
 impl<'a> AsRef<[u8]> for OctetsRev<'a> {
@@ -1328,6 +1350,22 @@ impl<'a> OctetsMutRev<'a> {
     pub fn to_vec(&self) -> Vec<u8> {
         self.as_ref().to_vec()
     }
+
+    /// Returns a slice of `len` elements from the current offset (moving backwards).
+    pub fn slice(&'a mut self, len: usize) -> Result<&'a mut [u8]> {
+        if len > self.cap() {
+            return Err(BufferError::BufferTooShortError);
+        }
+        Ok(&mut self.buf[self.off - len..self.off])
+    }
+
+    /// Returns a slice of `len` elements from the beginning of the buffer.
+    pub fn slice_last(&'a mut self, len: usize) -> Result<&'a mut [u8]> {
+        if len > self.cap() {
+            return Err(BufferError::BufferTooShortError);
+        }
+        Ok(&mut self.buf[..len])
+    }
 }
 
 impl<'a> AsRef<[u8]> for OctetsMutRev<'a> {
@@ -1454,8 +1492,18 @@ impl<'a> OctetsRead for Octets<'a> {
     }
 
     #[inline]
-    fn buf(&self) -> &'a [u8] {
+    fn buf(&self) -> &[u8] {
         Octets::buf(self)
+    }
+
+    #[inline]
+    fn slice(&self, len: usize) -> Result<&[u8]> {
+        Octets::slice(self, len)
+    }
+
+    #[inline]
+    fn slice_last(&self, len: usize) -> Result<&[u8]> {
+        Octets::slice_last(self, len)
     }
 
     #[inline]
@@ -1568,8 +1616,18 @@ impl<'a> OctetsRead for OctetsRev<'a> {
     }
 
     #[inline]
-    fn buf(&self) -> &'a [u8] {
+    fn buf(&self) -> &[u8] {
         OctetsRev::buf(self)
+    }
+
+    #[inline]
+    fn slice(&self, len: usize) -> Result<&[u8]> {
+        OctetsRev::slice(self, len)
+    }
+
+    #[inline]
+    fn slice_last(&self, len: usize) -> Result<&[u8]> {
+        OctetsRev::slice_last(self, len)
     }
 
     #[inline]
@@ -1581,42 +1639,42 @@ impl<'a> OctetsRead for OctetsRev<'a> {
 impl OctetsWrite for OctetsMut<'_> {
     #[inline]
     fn put_varint(&mut self, v: u64) -> Result<&mut [u8]> {
-        self.put_varint(v)
+        OctetsMut::put_varint(self, v)
     }
 
     #[inline]
     fn put_varint_with_len(&mut self, v: u64, len: usize) -> Result<&mut [u8]> {
-        self.put_varint_with_len(v, len)
+        OctetsMut::put_varint_with_len(self, v, len)
     }
 
     #[inline]
     fn put_u8(&mut self, v: u8) -> Result<&mut [u8]> {
-        self.put_u8(v)
+        OctetsMut::put_u8(self, v)
     }
 
     #[inline]
     fn put_u16(&mut self, v: u16) -> Result<&mut [u8]> {
-        self.put_u16(v)
+        OctetsMut::put_u16(self, v)
     }
 
     #[inline]
     fn put_u24(&mut self, v: u32) -> Result<&mut [u8]> {
-        self.put_u24(v)
+        OctetsMut::put_u24(self, v)
     }
 
     #[inline]
     fn put_u32(&mut self, v: u32) -> Result<&mut [u8]> {
-        self.put_u32(v)
+        OctetsMut::put_u32(self, v)
     }
 
     #[inline]
     fn put_u64(&mut self, v: u64) -> Result<&mut [u8]> {
-        self.put_u64(v)
+        OctetsMut::put_u64(self, v)
     }
 
     #[inline]
     fn put_bytes(&mut self, v: &[u8]) -> Result<()> {
-        self.put_bytes(v)
+        OctetsMut::put_bytes(self, v)
     }
 
     #[inline]
@@ -1793,6 +1851,14 @@ impl<'a> OctetsRead for Box<dyn OctetsRead<Bytes = Octets<'a>> + '_> {
         (**self).buf()
     }
 
+    fn slice(&self, len: usize) -> Result<&[u8]> {
+        (**self).slice(len)
+    }
+
+    fn slice_last(&self, len: usize) -> Result<&[u8]> {
+        (**self).slice_last(len)
+    }
+
     fn off(&self) -> usize {
         (**self).off()
     }
@@ -1813,82 +1879,82 @@ impl<'a> OctetsRead for Box<dyn OctetsRead<Bytes = Octets<'a>> + '_> {
 impl OctetsWrite for OctetsMutRev<'_> {
     #[inline]
     fn put_varint(&mut self, v: u64) -> Result<&mut [u8]> {
-        self.put_varint(v)
+        OctetsMutRev::put_varint(self, v)
     }
 
     #[inline]
     fn put_u8(&mut self, v: u8) -> Result<&mut [u8]> {
-        self.put_u8(v)
+        OctetsMutRev::put_u8(self, v)
     }
 
     #[inline]
     fn put_u16(&mut self, v: u16) -> Result<&mut [u8]> {
-        self.put_u16(v)
+        OctetsMutRev::put_u16(self, v)
     }
 
     #[inline]
     fn put_u24(&mut self, v: u32) -> Result<&mut [u8]> {
-        self.put_u24(v)
+        OctetsMutRev::put_u24(self, v)
     }
 
     #[inline]
     fn put_u32(&mut self, v: u32) -> Result<&mut [u8]> {
-        self.put_u32(v)
+        OctetsMutRev::put_u32(self, v)
     }
 
     #[inline]
     fn put_u64(&mut self, v: u64) -> Result<&mut [u8]> {
-        self.put_u64(v)
+        OctetsMutRev::put_u64(self, v)
     }
 
     #[inline]
     fn put_varint_with_len(&mut self, v: u64, len: usize) -> Result<&mut [u8]> {
-        self.put_varint_with_len(v, len)
+        OctetsMutRev::put_varint_with_len(self, v, len)
     }
 
     #[inline]
     fn put_bytes(&mut self, v: &[u8]) -> Result<()> {
-        self.put_bytes(v)
+        OctetsMutRev::put_bytes(self, v)
     }
 
     #[inline]
     fn skip(&mut self, skip: usize) -> Result<()> {
-        self.skip(skip)
+        OctetsMutRev::skip(self, skip)
     }
 
     #[inline]
     fn rewind(&mut self, rewind: usize) -> Result<()> {
-        self.rewind(rewind)
+        OctetsMutRev::rewind(self, rewind)
     }
 
     #[inline]
     fn cap(&self) -> usize {
-        self.cap()
+        OctetsMutRev::cap(self)
     }
 
     #[inline]
     fn len(&self) -> usize {
-        self.len()
+        OctetsMutRev::len(self)
     }
 
     #[inline]
     fn is_empty(&self) -> bool {
-        self.is_empty()
+        OctetsMutRev::is_empty(self)
     }
 
     #[inline]
     fn off(&self) -> usize {
-        self.off()
+        OctetsMutRev::off(self)
     }
 
     #[inline]
     fn buf(&self) -> &[u8] {
-        self.buf()
+        OctetsMutRev::buf(self)
     }
 
     #[inline]
     fn to_vec(&self) -> Vec<u8> {
-        self.to_vec()
+        OctetsMutRev::to_vec(self)
     }
 }
 
@@ -2262,5 +2328,169 @@ mod tests {
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
         ];
         assert_eq!(&d, &exp);
+    }
+
+    #[test]
+    fn get_u_rev() {
+        let d = [
+            11, 12, 13, 14, 15, 16, 17, 18, 7, 8, 9, 10, 4, 5, 6, 2, 3, 1,
+        ];
+        let mut b = OctetsRev::with_slice(&d);
+        assert_eq!(b.cap(), 18);
+        assert_eq!(b.off(), 18);
+        assert_eq!(b.get_u8().unwrap(), 1);
+        assert_eq!(b.cap(), 17);
+        assert_eq!(b.off(), 17);
+        assert_eq!(b.get_u16().unwrap(), 0x0203);
+        assert_eq!(b.cap(), 15);
+        assert_eq!(b.off(), 15);
+        assert_eq!(b.get_u24().unwrap(), 0x040506);
+        assert_eq!(b.cap(), 12);
+        assert_eq!(b.off(), 12);
+        assert_eq!(b.get_u32().unwrap(), 0x0708090a);
+        assert_eq!(b.cap(), 8);
+        assert_eq!(b.off(), 8);
+        assert_eq!(b.get_u64().unwrap(), 0x0b0c0d0e0f101112);
+        assert_eq!(b.cap(), 0);
+        assert_eq!(b.off(), 0);
+        assert!(b.get_u8().is_err());
+    }
+
+    #[test]
+    fn put_u_rev() {
+        let mut d = [0; 18];
+        {
+            let mut b = OctetsMutRev::with_slice(&mut d);
+            assert_eq!(b.cap(), 18);
+            assert_eq!(b.off(), 18);
+            assert!(b.put_u8(1).is_ok());
+            assert_eq!(b.cap(), 17);
+            assert_eq!(b.off(), 17);
+            assert!(b.put_u16(0x0203).is_ok());
+            assert_eq!(b.cap(), 15);
+            assert_eq!(b.off(), 15);
+            assert!(b.put_u24(0x040506).is_ok());
+            assert_eq!(b.cap(), 12);
+            assert_eq!(b.off(), 12);
+            assert!(b.put_u32(0x0708090a).is_ok());
+            assert_eq!(b.cap(), 8);
+            assert_eq!(b.off(), 8);
+            assert!(b.put_u64(0x0b0c0d0e0f101112).is_ok());
+            assert_eq!(b.cap(), 0);
+            assert_eq!(b.off(), 0);
+            assert!(b.put_u8(1).is_err());
+        }
+        let exp = [
+            11, 12, 13, 14, 15, 16, 17, 18, 7, 8, 9, 10, 4, 5, 6, 2, 3, 1,
+        ];
+        assert_eq!(&d, &exp);
+    }
+
+    #[test]
+    fn mixed_forward_backward() {
+        let mut d = [0; 10];
+        {
+            // Write 0xAA at the beginning and 0xBB at the end
+            let mut f = OctetsMut::with_slice(&mut d);
+            f.put_u8(0xAA).unwrap();
+
+            // Convert forward to backward, maintaining the same underlying buffer and offset.
+            let mut b = OctetsMutRev::from(f);
+            b.put_u8(0xBB).unwrap();
+        }
+        // Conversion maintains offset, so f.off=1 -> b.off=1, b.put_u8 -> b.off=0, writes d[0]
+        assert_eq!(d[0], 0xBB);
+
+        let mut d = [0; 10];
+        {
+            // d[0] = 0xAA, f.off = 1
+            let mut f = OctetsMut::with_slice(&mut d);
+            f.put_u8(0xAA).unwrap();
+
+            // d[9] = 0xBB, b.off = 9
+            let mut b = OctetsMutRev::with_slice(&mut d);
+            b.put_u8(0xBB).unwrap();
+        }
+        assert_eq!(d[0], 0xAA);
+        assert_eq!(d[9], 0xBB);
+    }
+
+    #[test]
+    fn conversion_test() {
+        let data = [1, 2, 3, 4, 5];
+        let mut f = Octets::with_slice(&data);
+        f.skip(2).unwrap();
+        assert_eq!(f.off(), 2);
+
+        let mut r = OctetsRev::from(f);
+        assert_eq!(r.off(), 2);
+        assert_eq!(r.get_u8().unwrap(), 2);
+        assert_eq!(r.get_u8().unwrap(), 1);
+
+        let mut f2 = Octets::from(r);
+        assert_eq!(f2.off(), 0);
+        assert_eq!(f2.get_u8().unwrap(), 1);
+    }
+
+    #[test]
+    fn slice_last() {
+        let d = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let mut b = Octets::with_slice(&d);
+        b.skip(5).unwrap();
+        assert_eq!(b.slice_last(2).unwrap(), [9, 10]);
+        assert_eq!(b.slice_last(5).unwrap(), [6, 7, 8, 9, 10]);
+        assert!(b.slice_last(6).is_err());
+    }
+
+    #[test]
+    fn slice_last_mut() {
+        let mut d = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        {
+            let mut b = OctetsMut::with_slice(&mut d);
+            b.skip(5).unwrap();
+            assert_eq!(b.slice_last(2).unwrap(), [9, 10]);
+        }
+        {
+            let mut b = OctetsMut::with_slice(&mut d);
+            b.skip(5).unwrap();
+            assert_eq!(b.slice_last(5).unwrap(), [6, 7, 8, 9, 10]);
+        }
+        {
+            let mut b = OctetsMut::with_slice(&mut d);
+            b.skip(5).unwrap();
+            assert!(b.slice_last(6).is_err());
+        }
+    }
+
+    #[test]
+    fn slice_last_rev() {
+        let d = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let mut b = OctetsRev::with_slice(&d);
+        // off points to 10, skip moves it to 5
+        b.skip(5).unwrap();
+        // slice_last for Rev should be relative to the beginning
+        assert_eq!(b.slice_last(2).unwrap(), [1, 2]);
+        assert_eq!(b.slice_last(5).unwrap(), [1, 2, 3, 4, 5]);
+        assert!(b.slice_last(6).is_err());
+    }
+
+    #[test]
+    fn slice_last_mut_rev() {
+        let mut d = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        {
+            let mut b = OctetsMutRev::with_slice(&mut d);
+            b.skip(5).unwrap();
+            assert_eq!(b.slice_last(2).unwrap(), [1, 2]);
+        }
+        {
+            let mut b = OctetsMutRev::with_slice(&mut d);
+            b.skip(5).unwrap();
+            assert_eq!(b.slice_last(5).unwrap(), [1, 2, 3, 4, 5]);
+        }
+        {
+            let mut b = OctetsMutRev::with_slice(&mut d);
+            b.skip(5).unwrap();
+            assert!(b.slice_last(6).is_err());
+        }
     }
 }
