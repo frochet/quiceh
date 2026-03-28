@@ -1278,8 +1278,8 @@ impl std::fmt::Debug for Frame {
     }
 }
 
-fn parse_ack_frame(
-    ty: u64, b: &mut impl octets_rev::OctetsRead,
+fn parse_ack_frame<T: octets_rev::OctetsRead>(
+    ty: u64, b: &mut T,
 ) -> Result<Frame> {
     let first = ty as u8;
     let mut ranges = ranges::RangeSet::default();
@@ -1371,8 +1371,8 @@ pub fn encode_stream_header<T: octets_rev::OctetsWrite>(
     Ok(())
 }
 
-pub fn encode_dgram_header(
-    length: u64, b: &mut impl octets_rev::OctetsWrite,
+pub fn encode_dgram_header<T: octets_rev::OctetsWrite>(
+    length: u64, b: &mut T,
 ) -> Result<()> {
     let mut ty: u8 = 0x30;
 
@@ -1387,8 +1387,8 @@ pub fn encode_dgram_header(
     Ok(())
 }
 
-fn parse_stream_frame(
-    ty: u64, b: &mut impl octets_rev::OctetsRead, version: u32,
+fn parse_stream_frame<T: octets_rev::OctetsRead>(
+    ty: u64, b: &mut T, version: u32,
 ) -> Result<Frame> {
     let first = ty as u8;
 
@@ -1434,8 +1434,8 @@ fn parse_stream_frame(
     }
 }
 
-fn parse_datagram_frame(
-    ty: u64, b: &mut impl octets_rev::OctetsRead,
+fn parse_datagram_frame<T: octets_rev::OctetsRead>(
+    ty: u64, b: &mut T,
 ) -> Result<Frame> {
     let first = ty as u8;
 

@@ -11731,7 +11731,7 @@ mod tests {
     }
 
     #[test]
-    fn streamv3_partial_consume() {
+    fn stream_vreverso_partial_consume() {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
             config
@@ -11787,7 +11787,7 @@ mod tests {
     }
 
     #[test]
-    fn streamv3_not_in_order() {
+    fn stream_vreverso_not_in_order() {
         // Test whether unordered packets containing a Stream frame behave as
         // expected. i.e., the first received packet is not in order; its
         // data is copied internally into the library since the decryption
@@ -11850,7 +11850,7 @@ mod tests {
     }
 
     #[test]
-    fn streamv3_large_chunks_send_recv_with_hidden_send_copy() {
+    fn stream_vreverso_large_chunks_send_recv_with_hidden_send_copy() {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
             config
@@ -11899,7 +11899,7 @@ mod tests {
     }
 
     #[test]
-    fn streamv3_send_recv_various_chunklen() {
+    fn stream_vreverso_send_recv_various_chunklen() {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let mut buf = [0; 65535];
             let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
