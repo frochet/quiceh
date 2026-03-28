@@ -1885,7 +1885,7 @@ pub fn version_is_supported(version: u32) -> bool {
 /// Frames such as Stream, Crypto, etc. have already been written into the
 /// buffer at their intended position.
 macro_rules! push_frames_to_pkt {
-    ($out:expr, $frames:expr, $usehiddencopy:expr, $ver:expr) => {{
+    ($out:expr, $frames:expr, $usehiddencopy:expr, $ver:expr, $is_rev:expr) => {{
         for frame in $frames.iter() {
             match frame {
                 /*
@@ -1894,25 +1894,13 @@ macro_rules! push_frames_to_pkt {
                  **/
                 frame::Frame::StreamHeader { stream_id, offset, length, fin } => {
                     if $usehiddencopy {
-                        if $ver == crate::PROTOCOL_VERSION_VREVERSO {
-                            // not in place VReverso
-                            frame::encode_stream_footer(
-                                *stream_id,
-                                *offset,
-                                *length as u64,
-                                *fin,
-                                &mut $out,
-                            )?;
-                        } else {
-                            // not in place QUIC v1
-                            frame::encode_stream_header(
-                                *stream_id,
-                                *offset,
-                                *length as u64,
-                                *fin,
-                                &mut $out,
-                            )?;
-                        }
+                        frame::encode_stream_header(
+                            *stream_id,
+                            *offset,
+                            *length as u64,
+                            *fin,
+                            &mut $out,
+                        )?;
                     } else {
                         let hdr_len = 1 + // frame type
                             octets_rev::varint_len(*stream_id) + // stream_id
@@ -1926,21 +1914,16 @@ macro_rules! push_frames_to_pkt {
                 },
                 frame::Frame::CryptoVec { offset, length, rbvec } => {
                     if rbvec.len() > 0 {
-                        if $ver == crate::PROTOCOL_VERSION_VREVERSO {
-                            for rb in rbvec {
+                        frame::encode_crypto_header(
+                            *offset,
+                            *length as u64,
+                            &mut $out
+                        )?;
+                        if $is_rev {
+                            for rb in rbvec.iter().rev() {
                                 $out.put_bytes(&rb[..])?;
                             }
-                            frame::encode_crypto_footer(
-                                *offset,
-                                *length as u64,
-                                &mut $out
-                            )?;
                         } else {
-                            frame::encode_crypto_header(
-                                *offset,
-                                *length as u64,
-                                &mut $out
-                            )?;
                             for rb in rbvec {
                                 $out.put_bytes(&rb[..])?;
                             }
@@ -1959,7 +1942,7 @@ macro_rules! push_frames_to_pkt {
                     $out.skip(length + hdr_len)?;
                 }
                 _ => {
-                    frame.to_bytes(&mut $out,  $ver)?;
+                    frame.to_bytes(&mut $out)?;
                 },
             }
         }
@@ -2040,6 +2023,12 @@ impl Default for QlogInfo {
             level: EventImportance::Base,
         }
     }
+}
+
+struct ChunkMetaData {
+    stream_id: u64,
+    start_off: u64,
+    len: usize,
 }
 
 impl<F: BufFactory> Connection<F> {
@@ -3374,7 +3363,7 @@ impl<F: BufFactory> Connection<F> {
 
         // Process packet payload. If a frame cannot be processed, store the
         // error and stop further packet processing.
-        let mut frame_processing_err = None;
+        let frame_processing_err;
 
         // To know if the peer migrated the connection, we need to keep track
         // whether this is a non-probing packet.
@@ -3382,60 +3371,26 @@ impl<F: BufFactory> Connection<F> {
 
         // Process packet payload.
         if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
-            struct ChunkMetaData {
-                stream_id: u64,
-                start_off: u64,
-                len: usize,
-            }
-            let mut smeta = ChunkMetaData {
-                stream_id: 0,
-                start_off: 0,
-                len: 0,
-            };
             //set the offset at the end
             let payload_start_offset = payload.off();
             payload.skip(payload_len)?;
+            let mut payload: OctetsRev = payload.into();
+
             // start reverse buffer processing
-            while payload.off() > payload_start_offset {
-                let frame =
-                    frame::Frame::from_bytes(&mut payload, hdr.ty, self.version)?;
-                qlog_with_type!(QLOG_PACKET_RX, self.qlog, _q, {
-                    qlog_frames.push(frame.to_qlog());
-                });
+            let (err, smeta) = self.process_payload_frames(
+                &mut payload,
+                payload_start_offset,
+                &hdr,
+                recv_pid,
+                epoch,
+                now,
+                &mut ack_elicited,
+                &mut probing,
+                #[cfg(feature = "qlog")]
+                &mut qlog_frames,
+            )?;
+            frame_processing_err = err;
 
-                if frame.ack_eliciting() {
-                    ack_elicited = true;
-                }
-
-                if !frame.probing() {
-                    probing = false;
-                }
-
-                if let frame::Frame::StreamV3 {
-                    stream_id: s,
-                    metadata: ref m,
-                } = frame
-                {
-                    // If this is the stream frame intented for zc.
-                    if payload.off() == payload_start_offset {
-                        smeta.stream_id = s;
-                        smeta.start_off = m.off();
-                        smeta.len = m.len();
-                    }
-                }
-
-                if let Err(e) = self.process_frame(
-                    frame,
-                    &hdr,
-                    &mut payload,
-                    recv_pid,
-                    epoch,
-                    now,
-                ) {
-                    frame_processing_err = Some(e);
-                    break;
-                }
-            }
             // Handle chunks and check wether we can advance contiguous data to avoid the next
             // packet to be believed not in order.
 
@@ -3482,34 +3437,19 @@ impl<F: BufFactory> Connection<F> {
                 }
             }
         } else {
-            while payload.cap() > 0 {
-                let frame =
-                    frame::Frame::from_bytes(&mut payload, hdr.ty, self.version)?;
-
-                qlog_with_type!(QLOG_PACKET_RX, self.qlog, _q, {
-                    qlog_frames.push(frame.to_qlog());
-                });
-
-                if frame.ack_eliciting() {
-                    ack_elicited = true;
-                }
-
-                if !frame.probing() {
-                    probing = false;
-                }
-
-                if let Err(e) = self.process_frame(
-                    frame,
-                    &hdr,
-                    &mut payload,
-                    recv_pid,
-                    epoch,
-                    now,
-                ) {
-                    frame_processing_err = Some(e);
-                    break;
-                }
-            }
+            let (err, _smeta) = self.process_payload_frames(
+                &mut payload,
+                0,
+                &hdr,
+                recv_pid,
+                epoch,
+                now,
+                &mut ack_elicited,
+                &mut probing,
+                #[cfg(feature = "qlog")]
+                &mut qlog_frames,
+            )?;
+            frame_processing_err = err;
         }
 
         qlog_with_type!(QLOG_PACKET_RX, self.qlog, q, {
@@ -5102,15 +5042,20 @@ impl<F: BufFactory> Connection<F> {
                             let (len, fin) =
                                 stream.send.emit(&mut b.as_mut()[..max_len])?;
                             // Advance the buffer
-                            b.skip(len)?;
+                            b.skip(len + hdr_len)?;
+
+                            let mut rev_b = OctetsMutRev::from(b);
 
                             // Encode the header reversed
-                            frame::encode_stream_footer(
-                                stream_id, stream_off, len as u64, fin, &mut b,
+                            frame::encode_stream_header(
+                                stream_id, stream_off, len as u64, fin,
+                                &mut rev_b,
                             )?;
 
+                            b = OctetsMut::from(rev_b);
+
                             // back to the initial index.
-                            b.rewind(len + hdr_len)?;
+                            b.rewind(len)?;
 
                             (len, fin)
                         } else {
@@ -5167,6 +5112,7 @@ impl<F: BufFactory> Connection<F> {
                     let wire_len = frame.wire_len();
                     left -= wire_len;
                     // XXX we should refactor to avoid this.
+                    maybe_frame = frame.clone();
                     frames.insert(0, frame);
                     ack_eliciting = true;
                     in_flight = true;
@@ -5258,20 +5204,32 @@ impl<F: BufFactory> Connection<F> {
                 } else {
                     let len = if likely(self.version == PROTOCOL_VERSION_VREVERSO)
                     {
-                        //located potentally after other control frames
-                        b.skip(cumul)?;
+                        //located potentally after the stream frame
+                        let skip_len = if let Some(frame) = &maybe_stream_header {
+                            let skip_len = frame.wire_len();
+                            skip_len
+                        } else {
+                            0
+                        };
+
+                        b.skip(skip_len)?;
                         let (len, _) = pkt_space
                             .crypto_stream
                             .send
                             .emit(&mut b.as_mut()[..max_len])?;
                         // this advances b to the Crypto Hdr expected location.
-                        b.skip(len)?;
+                        b.skip(len + hdr_len)?;
+
+                        let mut rev_b = OctetsMutRev::from(b);
                         // Encode the header reversed
-                        frame::encode_crypto_footer(
-                            crypto_off, len as u64, &mut b,
+                        frame::encode_crypto_header(
+                            crypto_off, len as u64, &mut rev_b,
                         )?;
+
+                        b = OctetsMut::from(rev_b);
+
                         // back to the initial index.
-                        b.rewind(len + hdr_len + cumul)?;
+                        b.rewind(len + skip_len)?;
                         len
                     } else {
                         let (mut crypto_hdr, mut crypto_payload) =
@@ -5305,10 +5263,26 @@ impl<F: BufFactory> Connection<F> {
                     }
                 };
 
-                if push_frame_to_vec!(frames, frame, left, cumul) {
+                if !self.use_hidden_crypt_copy_for_zc
+                    && self.version == crate::PROTOCOL_VERSION_VREVERSO
+                {
+                    let wire_len = frame.wire_len();
+                    if maybe_stream_header.is_some() {
+                        frames.insert(1, frame);
+                    } else {
+                        frames.insert(0, frame);
+                    }
+                    left -= wire_len;
+                    cumul += wire_len;
                     ack_eliciting = true;
                     in_flight = true;
                     has_data = true;
+                } else {
+                    if push_frame_to_vec!(frames, frame, left, cumul) {
+                        ack_eliciting = true;
+                        in_flight = true;
+                        has_data = true;
+                    }
                 }
             }
         }
@@ -5404,9 +5378,7 @@ impl<F: BufFactory> Connection<F> {
             .use_hidden_crypt_copy_for_zc
         {
             // If we're in VReverso, the frame should be first.
-            let (b_start, mut b_ctrl, stream_len) = if self.version
-                == crate::PROTOCOL_VERSION_VREVERSO
-            {
+            if self.version == crate::PROTOCOL_VERSION_VREVERSO {
                 let stream_len =
                     if let Some(frame::Frame::StreamHeader { length, .. }) =
                         frames.first()
@@ -5415,17 +5387,31 @@ impl<F: BufFactory> Connection<F> {
                     } else {
                         0_usize
                     };
+
+                frames.reverse();
+                trace!("frames {:?}", frames);
                 // ctrl cleartext is written inside the destination buffer,
                 // aligned on a multiple of the AES blocksize.
+
                 let align = stream_len % 16;
-                let (b, b_ctrl) =
+                let (b, mut b_ctrl) =
                     b.split_at(payload_offset + stream_len + align)?;
-                (b, b_ctrl, stream_len)
+                trace!(
+                    "split_at: {}; skipping {} bytes",
+                    payload_offset + stream_len + align,
+                    cumul - stream_len
+                );
+                b_ctrl.skip(cumul - stream_len)?;
+                let mut b_ctrl_rev = OctetsMutRev::from(b_ctrl);
+                push_frames_to_pkt!(b_ctrl_rev, frames, true, self.version, true);
+                b_ctrl = OctetsMut::from(b_ctrl_rev);
+                trace!("b_ctrl off at {}", b_ctrl.off());
+                (b, Some(b_ctrl), stream_len, cumul - stream_len)
             } else {
                 // In V1 we would start with the ctrl.
-                let (b, b_ctrl) = b.split_at(payload_offset)?;
+                let (b, mut b_ctrl) = b.split_at(payload_offset)?;
                 // The StreamHeader frame should be last.
-                if let Some(frame) = maybe_stream_header {
+                let stream_len = if let Some(frame) = &maybe_stream_header {
                     let frame_len = frame.wire_len();
                     //cumul -= frame_len;
                     left += frame_len;
@@ -5433,31 +5419,39 @@ impl<F: BufFactory> Connection<F> {
                         length, ..
                     } = frame
                     {
-                        length
+                        *length
                     } else {
                         0_usize
                     };
 
                     #[allow(unused_assignments)]
-                    if push_frame_to_vec!(frames, frame, left, cumul) {
-                        (b, b_ctrl, len)
+                    if push_frame_to_vec!(frames, frame.clone(), left, cumul) {
+                        len
                     } else {
-                        (b, b_ctrl, 0_usize)
+                        0_usize
                     }
                 } else {
-                    (b, b_ctrl, 0_usize)
-                }
-            };
-            // let mut ctrl = vec![0; cumul-stream_len];
-            // let mut b_ctrl = octets_rev::OctetsMut::with_slice(&mut ctrl);
-            push_frames_to_pkt!(b_ctrl, frames, true, self.version);
-            let b_ctrl_len = b_ctrl.off();
-            b_ctrl.rewind(b_ctrl_len)?;
-            (b_start, Some(b_ctrl), stream_len, b_ctrl_len)
+                    0_usize
+                };
+
+                push_frames_to_pkt!(b_ctrl, frames, true, self.version, false);
+                let b_ctrl_len = b_ctrl.off();
+                b_ctrl.rewind(b_ctrl_len)?;
+                (b, Some(b_ctrl), stream_len, b_ctrl_len)
+            }
         } else {
-            push_frames_to_pkt!(b, frames, false, self.version);
-            let b_len = b.off() - payload_offset;
-            (b, None, b_len, 0_usize)
+            if self.version == crate::PROTOCOL_VERSION_VREVERSO {
+                b.skip(cumul)?;
+                let mut b_rev = OctetsMutRev::from(b);
+                frames.reverse();
+                push_frames_to_pkt!(b_rev, frames, false, self.version, true);
+                b = OctetsMut::from(b_rev);
+                (b, None, cumul, 0_usize)
+            } else {
+                push_frames_to_pkt!(b, frames, false, self.version, false);
+                let b_len = b.off() - payload_offset;
+                (b, None, b_len, 0_usize)
+            }
         };
 
         let payload_len = b_len + b_ctrl_len;
@@ -5545,21 +5539,25 @@ impl<F: BufFactory> Connection<F> {
         };
 
         let written = if self.use_hidden_crypt_copy_for_zc {
-            let sentry = if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
+            // For vreverso, we called reverse(); so it should be the
+            // last.
+            let sentry =
                 if let Some(frame::Frame::StreamHeader { stream_id, .. }) =
-                    frames.first()
+                    frames.last()
                 {
                     Some(self.streams.entry(*stream_id))
+                } else if self.version == crate::PROTOCOL_VERSION_V1 {
+                    if let Some(frame::Frame::StreamHeader {
+                        stream_id, ..
+                    }) = &maybe_stream_header
+                    {
+                        Some(self.streams.entry(*stream_id))
+                    } else {
+                        None
+                    }
                 } else {
                     None
-                }
-            } else if let Some(frame::Frame::StreamHeader { stream_id, .. }) =
-                frames.last()
-            {
-                Some(self.streams.entry(*stream_id))
-            } else {
-                None
-            };
+                };
 
             let written = if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
                 // We encrypt with the data in inbuf and the ctrl data in extra_in, starting
@@ -8209,7 +8207,10 @@ impl<F: BufFactory> Connection<F> {
                 return Ok(());
             },
 
-            Err(e) => return Err(e),
+            Err(e) => {
+                trace!("do_handshake returned Error {:?}", e);
+                return Err(e);
+            },
         };
 
         self.handshake_completed = self.handshake.is_completed();
@@ -8371,10 +8372,9 @@ impl<F: BufFactory> Connection<F> {
     }
 
     /// Processes an incoming frame.
-    fn process_frame(
-        &mut self, frame: frame::Frame, hdr: &packet::Header,
-        b: &mut octets_rev::Octets, recv_path_id: usize, epoch: packet::Epoch,
-        now: time::Instant,
+    fn process_frame<T: octets_rev::OctetsRead>(
+        &mut self, frame: frame::Frame, hdr: &packet::Header, b: &mut T,
+        recv_path_id: usize, epoch: packet::Epoch, now: time::Instant,
     ) -> Result<()> {
         trace!("{} rx frm {:?}", self.trace_id, frame);
 
@@ -8557,9 +8557,16 @@ impl<F: BufFactory> Connection<F> {
 
                 while let Ok((read, _)) = stream.recv.emit(&mut crypto_buf) {
                     let recv_buf = &crypto_buf[..read];
+                    trace!(
+                        "{} providing {} bytes of crypto data at lvl {:?}",
+                        self.trace_id,
+                        read,
+                        level
+                    );
                     self.handshake.provide_data(level, recv_buf)?;
                 }
 
+                trace!("{} calling do_handshake", self.trace_id);
                 self.do_handshake(now)?;
             },
 
@@ -8646,7 +8653,11 @@ impl<F: BufFactory> Connection<F> {
                 // best.
                 //
                 if stream.recv.not_in_order(&metadata) {
-                    let data = b.peek_bytes(metadata.len())?;
+                    // We should be at the payload_offset; we can shift the buffer
+                    // to the right and then call get_bytes; or alternatively directly
+                    // read metadata.len() at b's offset.
+                    b.rewind(metadata.len())?;
+                    let data = b.get_bytes(metadata.len())?;
                     // This sucks since it copies; and should be avoided at all
                     // ("let's keep it flexible") cost. (see
                     // comments above).
@@ -8970,6 +8981,74 @@ impl<F: BufFactory> Connection<F> {
         }
 
         Ok(())
+    }
+
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    fn process_payload_frames<'a, T>(
+        &mut self, payload: &mut T, stop_off: usize, hdr: &packet::Header,
+        recv_pid: usize, epoch: packet::Epoch, now: time::Instant,
+        ack_elicited: &mut bool, probing: &mut bool,
+        #[cfg(feature = "qlog")] qlog_frames: &mut Vec<
+            qlog::events::quic::QuicFrame,
+        >,
+    ) -> Result<(Option<Error>, ChunkMetaData)>
+    where
+        T: octets_rev::OctetsRead<Bytes = octets_rev::Octets<'a>>,
+    {
+        let mut frame_processing_err = None;
+        let mut smeta = ChunkMetaData {
+            stream_id: 0,
+            start_off: 0,
+            len: 0,
+        };
+
+        while payload.cap() > stop_off {
+            let frame =
+                match frame::Frame::from_bytes(payload, hdr.ty, self.version) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        frame_processing_err = Some(e);
+                        break;
+                    },
+                };
+
+            qlog_with_type!(QLOG_PACKET_RX, self.qlog, _q, {
+                qlog_frames.push(frame.to_qlog());
+            });
+
+            if frame.ack_eliciting() {
+                *ack_elicited = true;
+            }
+
+            if !frame.probing() {
+                *probing = false;
+            }
+
+            if self.version == PROTOCOL_VERSION_VREVERSO {
+                if let frame::Frame::StreamV3 {
+                    stream_id: s,
+                    metadata: ref m,
+                } = frame
+                {
+                    // If this is the stream frame intented for zc.
+                    if payload.off() == stop_off {
+                        smeta.stream_id = s;
+                        smeta.start_off = m.off();
+                        smeta.len = m.len();
+                    }
+                }
+            }
+
+            if let Err(e) =
+                self.process_frame(frame, hdr, payload, recv_pid, epoch, now)
+            {
+                frame_processing_err = Some(e);
+                break;
+            }
+        }
+
+        Ok((frame_processing_err, smeta))
     }
 
     /// Drops the keys and recovery state for the given epoch.
@@ -10515,8 +10594,18 @@ pub mod testing {
         };
 
         let payload_offset = b.off();
-        for frame in frames {
-            frame.to_bytes(&mut b, conn.version)?;
+        if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
+            b.skip(payload_len)?;
+            let mut b_rev = OctetsMutRev::from(b);
+            for frame in frames.iter().rev() {
+                frame.to_bytes(&mut b_rev)?;
+            }
+            b = OctetsMut::from(b_rev);
+            b.skip(payload_len)?;
+        } else {
+            for frame in frames {
+                frame.to_bytes(&mut b)?;
+            }
         }
 
         let aead = match space.crypto_seal {
@@ -10728,9 +10817,9 @@ pub mod testing {
 
         let mut frames = Vec::new();
         if likely(conn.version == PROTOCOL_VERSION_VREVERSO) {
-            let payload_start_offset = payload.off();
             payload.skip(payload_len)?;
-            while payload.off() > payload_start_offset {
+            let mut payload: OctetsRev = payload.into();
+            while payload.cap() > 0 {
                 let frame =
                     frame::Frame::from_bytes(&mut payload, hdr.ty, conn.version)?;
                 frames.push(frame);
@@ -11666,7 +11755,7 @@ mod tests {
     }
 
     #[test]
-    fn streamv3_partial_consume() {
+    fn stream_vreverso_partial_consume() {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
             config
@@ -11722,7 +11811,7 @@ mod tests {
     }
 
     #[test]
-    fn streamv3_not_in_order() {
+    fn stream_vreverso_not_in_order() {
         // Test whether unordered packets containing a Stream frame behave as
         // expected. i.e., the first received packet is not in order; its
         // data is copied internally into the library since the decryption
@@ -11785,7 +11874,7 @@ mod tests {
     }
 
     #[test]
-    fn streamv3_large_chunks_send_recv() {
+    fn stream_vreverso_large_chunks_send_recv_with_hidden_send_copy() {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
             config
@@ -11806,11 +11895,14 @@ mod tests {
             config.set_initial_max_data(10 * 32 * 1024);
             config.enable_hidden_copy_for_zc_sender(true);
             config.set_expected_chunklen_to_consume(120_000);
+            config.verify_peer(false);
 
             let datasize = 12000;
             let sendbuf = [0; 12000];
 
             let mut pipe = <Pipe>::with_config(&mut config).unwrap();
+
+            env_logger::builder().format_timestamp_nanos().init();
             assert_eq!(pipe.handshake(), Ok(()));
 
             for _ in 1..10 {
@@ -11831,7 +11923,7 @@ mod tests {
     }
 
     #[test]
-    fn streamv3_send_recv_various_chunklen() {
+    fn stream_vreverso_send_recv_various_chunklen() {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             let mut buf = [0; 65535];
             let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
@@ -15148,7 +15240,7 @@ mod tests {
         let frames = [frame::Frame::Padding { len: 10 }];
 
         for frame in &frames {
-            frame.to_bytes(&mut b, pipe.client.version).unwrap();
+            frame.to_bytes(&mut b).unwrap();
         }
 
         let space = &mut pipe.client.pkt_num_spaces[epoch];
@@ -16746,6 +16838,7 @@ mod tests {
         let mut b = [0; 15];
         if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
             pipe.server.stream_peek(stream_id).unwrap();
+            pipe.server.stream_consumed(stream_id, 1).unwrap();
         } else {
             pipe.server.stream_recv(stream_id, &mut b).unwrap();
         }
@@ -20890,9 +20983,7 @@ mod tests {
         let payload_offset = b.off();
 
         for frame in frames {
-            frame
-                .to_bytes(&mut b, pipe.client.version)
-                .expect("encode frames");
+            frame.to_bytes(&mut b).expect("encode frames");
         }
 
         let aead = space.crypto_seal.as_ref().expect("crypto seal");
@@ -21098,14 +21189,12 @@ mod tests {
         ];
 
         let pkt_type = packet::Type::Short;
-        if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_V1 {
-            pipe.send_pkt_to_server(pkt_type, &frames, &mut buf)
-                .unwrap();
-        } else {
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+            // The order above assumes they'd be read from top to bottom.
             frames.reverse();
-            pipe.send_pkt_to_server(pkt_type, &frames, &mut buf)
-                .unwrap();
         }
+        pipe.send_pkt_to_server(pkt_type, &frames, &mut buf)
+            .unwrap();
 
         let (s1, s2, s3, s4) =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -21152,6 +21241,9 @@ pub use crate::range_buf::BufSplit;
 pub use crate::stream::Chunk;
 
 use crate::stream::Stream;
+use octets_rev::OctetsMut;
+use octets_rev::OctetsMutRev;
+use octets_rev::OctetsRev;
 
 pub mod bufpool;
 mod cid;
