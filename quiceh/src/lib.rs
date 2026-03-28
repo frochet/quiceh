@@ -2025,6 +2025,12 @@ impl Default for QlogInfo {
     }
 }
 
+struct ChunkMetaData {
+    stream_id: u64,
+    start_off: u64,
+    len: usize,
+}
+
 impl<F: BufFactory> Connection<F> {
     fn new(
         scid: &ConnectionId, odcid: Option<&ConnectionId>, local: SocketAddr,
@@ -3357,7 +3363,7 @@ impl<F: BufFactory> Connection<F> {
 
         // Process packet payload. If a frame cannot be processed, store the
         // error and stop further packet processing.
-        let mut frame_processing_err = None;
+        let frame_processing_err;
 
         // To know if the peer migrated the connection, we need to keep track
         // whether this is a non-probing packet.
@@ -3365,61 +3371,26 @@ impl<F: BufFactory> Connection<F> {
 
         // Process packet payload.
         if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
-            struct ChunkMetaData {
-                stream_id: u64,
-                start_off: u64,
-                len: usize,
-            }
-            let mut smeta = ChunkMetaData {
-                stream_id: 0,
-                start_off: 0,
-                len: 0,
-            };
             //set the offset at the end
             let payload_start_offset = payload.off();
             payload.skip(payload_len)?;
             let mut payload: OctetsRev = payload.into();
+
             // start reverse buffer processing
-            while payload.cap() > payload_start_offset {
-                let frame =
-                    frame::Frame::from_bytes(&mut payload, hdr.ty, self.version)?;
-                qlog_with_type!(QLOG_PACKET_RX, self.qlog, _q, {
-                    qlog_frames.push(frame.to_qlog());
-                });
+            let (err, smeta) = self.process_payload_frames(
+                &mut payload,
+                payload_start_offset,
+                &hdr,
+                recv_pid,
+                epoch,
+                now,
+                &mut ack_elicited,
+                &mut probing,
+                #[cfg(feature = "qlog")]
+                &mut qlog_frames,
+            )?;
+            frame_processing_err = err;
 
-                if frame.ack_eliciting() {
-                    ack_elicited = true;
-                }
-
-                if !frame.probing() {
-                    probing = false;
-                }
-
-                if let frame::Frame::StreamV3 {
-                    stream_id: s,
-                    metadata: ref m,
-                } = frame
-                {
-                    // If this is the stream frame intented for zc.
-                    if payload.off() == payload_start_offset {
-                        smeta.stream_id = s;
-                        smeta.start_off = m.off();
-                        smeta.len = m.len();
-                    }
-                }
-
-                if let Err(e) = self.process_frame(
-                    frame,
-                    &hdr,
-                    &mut payload,
-                    recv_pid,
-                    epoch,
-                    now,
-                ) {
-                    frame_processing_err = Some(e);
-                    break;
-                }
-            }
             // Handle chunks and check wether we can advance contiguous data to avoid the next
             // packet to be believed not in order.
 
@@ -3466,34 +3437,19 @@ impl<F: BufFactory> Connection<F> {
                 }
             }
         } else {
-            while payload.cap() > 0 {
-                let frame =
-                    frame::Frame::from_bytes(&mut payload, hdr.ty, self.version)?;
-
-                qlog_with_type!(QLOG_PACKET_RX, self.qlog, _q, {
-                    qlog_frames.push(frame.to_qlog());
-                });
-
-                if frame.ack_eliciting() {
-                    ack_elicited = true;
-                }
-
-                if !frame.probing() {
-                    probing = false;
-                }
-
-                if let Err(e) = self.process_frame(
-                    frame,
-                    &hdr,
-                    &mut payload,
-                    recv_pid,
-                    epoch,
-                    now,
-                ) {
-                    frame_processing_err = Some(e);
-                    break;
-                }
-            }
+            let (err, _smeta) = self.process_payload_frames(
+                &mut payload,
+                0,
+                &hdr,
+                recv_pid,
+                epoch,
+                now,
+                &mut ack_elicited,
+                &mut probing,
+                #[cfg(feature = "qlog")]
+                &mut qlog_frames,
+            )?;
+            frame_processing_err = err;
         }
 
         qlog_with_type!(QLOG_PACKET_RX, self.qlog, q, {
@@ -9025,6 +8981,74 @@ impl<F: BufFactory> Connection<F> {
         }
 
         Ok(())
+    }
+
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    fn process_payload_frames<'a, T>(
+        &mut self, payload: &mut T, stop_off: usize, hdr: &packet::Header,
+        recv_pid: usize, epoch: packet::Epoch, now: time::Instant,
+        ack_elicited: &mut bool, probing: &mut bool,
+        #[cfg(feature = "qlog")] qlog_frames: &mut Vec<
+            qlog::events::quic::QuicFrame,
+        >,
+    ) -> Result<(Option<Error>, ChunkMetaData)>
+    where
+        T: octets_rev::OctetsRead<Bytes = octets_rev::Octets<'a>>,
+    {
+        let mut frame_processing_err = None;
+        let mut smeta = ChunkMetaData {
+            stream_id: 0,
+            start_off: 0,
+            len: 0,
+        };
+
+        while payload.cap() > stop_off {
+            let frame =
+                match frame::Frame::from_bytes(payload, hdr.ty, self.version) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        frame_processing_err = Some(e);
+                        break;
+                    },
+                };
+
+            qlog_with_type!(QLOG_PACKET_RX, self.qlog, _q, {
+                qlog_frames.push(frame.to_qlog());
+            });
+
+            if frame.ack_eliciting() {
+                *ack_elicited = true;
+            }
+
+            if !frame.probing() {
+                *probing = false;
+            }
+
+            if self.version == PROTOCOL_VERSION_VREVERSO {
+                if let frame::Frame::StreamV3 {
+                    stream_id: s,
+                    metadata: ref m,
+                } = frame
+                {
+                    // If this is the stream frame intented for zc.
+                    if payload.off() == stop_off {
+                        smeta.stream_id = s;
+                        smeta.start_off = m.off();
+                        smeta.len = m.len();
+                    }
+                }
+            }
+
+            if let Err(e) =
+                self.process_frame(frame, hdr, payload, recv_pid, epoch, now)
+            {
+                frame_processing_err = Some(e);
+                break;
+            }
+        }
+
+        Ok((frame_processing_err, smeta))
     }
 
     /// Drops the keys and recovery state for the given epoch.
