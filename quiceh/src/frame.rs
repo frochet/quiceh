@@ -1459,30 +1459,41 @@ mod tests {
     use super::*;
     use crate::PROTOCOL_VERSION_VREVERSO;
 
+    /// Helper to encode a frame into a slice based on the current protocol
+    /// version.
+    fn encode_frame(frame: &Frame, buf: &mut [u8]) -> usize {
+        let mut b: Box<dyn octets_rev::OctetsWrite> =
+            if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
+                Box::new(octets_rev::OctetsMutRev::with_slice(buf))
+            } else {
+                Box::new(octets_rev::OctetsMut::with_slice(buf))
+            };
+        frame.to_bytes(&mut b).expect("failed to encode frame")
+    }
+
+    /// Helper to create a reader from a slice based on the current protocol
+    /// version.
+    fn make_reader(
+        buf: &[u8],
+    ) -> Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets<'_>> + '_> {
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+            Box::new(octets_rev::OctetsRev::with_slice(buf))
+        } else {
+            Box::new(octets_rev::Octets::with_slice(buf))
+        }
+    }
+
     #[test]
     fn padding() {
         let mut d = [42; 128];
 
         let frame = Frame::Padding { len: 128 };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 128);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
 
         assert_eq!(
             Frame::from_bytes(
@@ -1524,15 +1535,7 @@ mod tests {
 
         let frame = Frame::Ping { mtu_probe: None };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 1);
         // On V3 it should be 0x01 << 2
@@ -1540,12 +1543,7 @@ mod tests {
             assert_eq!(&d[..wire_len], [0x01_u8]);
         }
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -1596,24 +1594,11 @@ mod tests {
             ecn_counts: None,
         };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 17);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
 
         assert_eq!(
             Frame::from_bytes(
@@ -1671,24 +1656,11 @@ mod tests {
             ecn_counts,
         };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 23);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -1733,24 +1705,11 @@ mod tests {
             final_size: 21_123_767,
         };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 13);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -1794,24 +1753,11 @@ mod tests {
             error_code: 15_352,
         };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 7);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -1856,24 +1802,11 @@ mod tests {
             data: <RangeBuf>::from(&data, 1230976, false),
         };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 19);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -1916,24 +1849,11 @@ mod tests {
             token: Vec::from("this is a token"),
         };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 17);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -1983,24 +1903,11 @@ mod tests {
             data: <RangeBuf>::from(&data, 1230976, true),
         };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 20);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             assert_eq!(
                 Frame::from_bytes(
@@ -2057,24 +1964,11 @@ mod tests {
             data: <RangeBuf>::from(&data, MAX_STREAM_SIZE - 11, true),
         };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 24);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -2091,24 +1985,11 @@ mod tests {
 
         let frame = Frame::MaxData { max: 128_318_273 };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 5);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -2152,24 +2033,11 @@ mod tests {
             max: 128_318_273,
         };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 7);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -2210,23 +2078,10 @@ mod tests {
 
         let frame = Frame::MaxStreamsBidi { max: 128_318_273 };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
         assert_eq!(wire_len, 5);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -2267,24 +2122,11 @@ mod tests {
 
         let frame = Frame::MaxStreamsUni { max: 128_318_273 };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 5);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -2325,24 +2167,11 @@ mod tests {
 
         let frame = Frame::DataBlocked { limit: 128_318_273 };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 5);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -2386,24 +2215,11 @@ mod tests {
             limit: 128_318_273,
         };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 7);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -2444,24 +2260,11 @@ mod tests {
 
         let frame = Frame::StreamsBlockedBidi { limit: 128_318_273 };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 5);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -2502,24 +2305,11 @@ mod tests {
 
         let frame = Frame::StreamsBlockedUni { limit: 128_318_273 };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 5);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -2553,12 +2343,7 @@ mod tests {
         )
         .is_err());
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::ZeroRTT,
@@ -2566,12 +2351,7 @@ mod tests {
         )
         .is_ok());
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::Initial,
@@ -2579,12 +2359,7 @@ mod tests {
         )
         .is_err());
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert!(Frame::from_bytes(
             &mut b,
             packet::Type::Handshake,
@@ -2604,24 +2379,11 @@ mod tests {
             reset_token: [0x42; 16],
         };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 41);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -2662,24 +2424,11 @@ mod tests {
 
         let frame = Frame::RetireConnectionId { seq_num: 123_213 };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 5);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -2722,24 +2471,11 @@ mod tests {
             data: [1, 2, 3, 4, 5, 6, 7, 8],
         };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 9);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -2782,24 +2518,11 @@ mod tests {
             data: [1, 2, 3, 4, 5, 6, 7, 8],
         };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 9);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -2844,24 +2567,11 @@ mod tests {
             reason: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
         };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 22);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -2905,24 +2615,11 @@ mod tests {
             reason: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
         };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 18);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -2963,24 +2660,11 @@ mod tests {
 
         let frame = Frame::HandshakeDone;
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 1);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
@@ -3023,24 +2707,11 @@ mod tests {
 
         let frame = Frame::Datagram { data: data.clone() };
 
-        let wire_len = {
-            let mut b: Box<dyn octets_rev::OctetsWrite> =
-                if crate::PROTOCOL_VERSION == PROTOCOL_VERSION_VREVERSO {
-                    Box::new(octets_rev::OctetsMutRev::with_slice(&mut d))
-                } else {
-                    Box::new(octets_rev::OctetsMut::with_slice(&mut d))
-                };
-            frame.to_bytes(&mut b).unwrap()
-        };
+        let wire_len = encode_frame(&frame, &mut d);
 
         assert_eq!(wire_len, 15);
 
-        let mut b: Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets>> =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-                Box::new(octets_rev::OctetsRev::with_slice(&d))
-            } else {
-                Box::new(octets_rev::Octets::with_slice(&d))
-            };
+        let mut b = make_reader(&d);
         assert_eq!(
             Frame::from_bytes(
                 &mut b,
