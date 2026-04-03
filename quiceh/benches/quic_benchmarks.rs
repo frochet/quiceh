@@ -111,7 +111,7 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
                 b.iter_batched_ref(
                     || {
                         let mut pipe_v3 =
-                            Pipe::with_config(&mut config_v3).unwrap();
+                            Pipe::with_config(&config_v3).unwrap();
                         pipe_v3.handshake().unwrap();
                         // designed to avoid having the receiver's buffer being
                         // initialized as part of the benchmark.
@@ -139,7 +139,7 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
                 b.iter_batched_ref(
                     || {
                         let mut pipe_v1 =
-                            Pipe::with_config(&mut config_v1).unwrap();
+                            Pipe::with_config(&config_v1).unwrap();
                         pipe_v1.handshake().unwrap();
                         pipe_v1.server.stream_send(1, sendbuf, false).unwrap();
                         let flight =

@@ -161,9 +161,9 @@ impl Context {
         ctx
     }
 
-    pub fn new_handshake(&mut self) -> Result<Handshake> {
+    pub fn new_handshake(&self) -> Result<Handshake> {
         unsafe {
-            let ssl = SSL_new(self.as_mut_ptr());
+            let ssl = SSL_new(self.0);
             Ok(Handshake::new(ssl))
         }
     }

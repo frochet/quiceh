@@ -109,7 +109,7 @@ fn main() {
 
     // Create a QUIC connection and initiate handshake.
     let mut conn =
-        quiceh::connect(url.domain(), &scid, local_addr, peer_addr, &mut config)
+        quiceh::connect(url.domain(), &scid, local_addr, peer_addr, &config)
             .unwrap();
 
     info!(

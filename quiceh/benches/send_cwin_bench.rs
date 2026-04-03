@@ -66,7 +66,7 @@ fn bench_stream_send_zc<F: BufFactory<Buf = BenchBuf>>(
 }
 
 fn bench_sender(
-    c: &mut Criterion<CyclesPerByte>, config: &mut quiceh::Config, name: &str,
+    c: &mut Criterion<CyclesPerByte>, config: &quiceh::Config, name: &str,
 ) {
     let mut group = c.benchmark_group(name);
     group.throughput(Throughput::Bytes(10000));
@@ -144,7 +144,7 @@ fn send_bench_hidden_copy(c: &mut Criterion<CyclesPerByte>) {
     config.enable_pacing(false);
     config.enable_hidden_copy_for_zc_sender(true);
 
-    bench_sender(c, &mut config, "send_path_with_hidden_copy");
+    bench_sender(c, &config, "send_path_with_hidden_copy");
 }
 
 fn send_bench_no_hidden_copy(c: &mut Criterion<CyclesPerByte>) {
@@ -175,7 +175,7 @@ fn send_bench_no_hidden_copy(c: &mut Criterion<CyclesPerByte>) {
     config.enable_pacing(false);
     config.enable_hidden_copy_for_zc_sender(false);
 
-    bench_sender(c, &mut config, "send_path_no_hidden_copy");
+    bench_sender(c, &config, "send_path_no_hidden_copy");
 }
 
 criterion_group! {

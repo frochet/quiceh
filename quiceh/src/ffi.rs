@@ -563,7 +563,7 @@ pub extern "C" fn quiceh_header_info(
 pub extern "C" fn quiceh_accept(
     scid: *const u8, scid_len: size_t, odcid: *const u8, odcid_len: size_t,
     local: &sockaddr, local_len: socklen_t, peer: &sockaddr, peer_len: socklen_t,
-    config: &mut Config,
+    config: &Config,
 ) -> *mut Connection {
     let scid = unsafe { slice::from_raw_parts(scid, scid_len) };
     let scid = ConnectionId::from_ref(scid);
@@ -590,7 +590,7 @@ pub extern "C" fn quiceh_accept(
 pub extern "C" fn quiceh_connect(
     server_name: *const c_char, scid: *const u8, scid_len: size_t,
     local: &sockaddr, local_len: socklen_t, peer: &sockaddr, peer_len: socklen_t,
-    config: &mut Config,
+    config: &Config,
 ) -> *mut Connection {
     let server_name = if server_name.is_null() {
         None
