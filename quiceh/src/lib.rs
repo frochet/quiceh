@@ -843,7 +843,7 @@ pub enum QlogLevel {
 }
 
 /// Stores configuration shared between multiple connections.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Config {
     local_transport_params: TransportParams,
 
