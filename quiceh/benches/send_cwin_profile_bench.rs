@@ -18,7 +18,7 @@ const MAX_DATAGRAM_SIZE: usize = 1350;
 // /!\ this code is designed for flamegraph inspection of the send path logic;
 // not to get reliable efficiency measurements.
 fn bench_stream_send(
-    pipe: &mut Pipe, config: &mut quiceh::Config, outbuf: &mut [u8],
+    pipe: &mut Pipe, config: &quiceh::Config, outbuf: &mut [u8],
     sendbuf: &[u8], stream_id: &mut u64,
 ) {
     // Every 1000 iteration we destroy the pipe. Otherwise we have memory issues
@@ -54,7 +54,7 @@ fn bench_stream_send(
 }
 
 fn bench_stream_send_zc<F: BufFactory<Buf = BenchBuf>>(
-    pipe: &mut Pipe<F>, config: &mut quiceh::Config, outbuf: &mut [u8],
+    pipe: &mut Pipe<F>, config: &quiceh::Config, outbuf: &mut [u8],
     benchbuf: &F::Buf, stream_id: &mut u64,
 ) where
     <F as BufFactory>::Buf: BufSplit,
@@ -88,7 +88,7 @@ fn bench_stream_send_zc<F: BufFactory<Buf = BenchBuf>>(
 }
 
 fn bench_sender(
-    c: &mut Criterion<CPUTime>, config: &mut quiceh::Config, name: &str,
+    c: &mut Criterion<CPUTime>, config: &quiceh::Config, name: &str,
 ) {
     let mut group = c.benchmark_group(name);
     group.throughput(Throughput::Bytes(10000));
@@ -179,7 +179,7 @@ fn send_bench_hidden_copy(c: &mut Criterion<CPUTime>) {
     config.enable_pacing(false);
     config.enable_hidden_copy_for_zc_sender(true);
 
-    bench_sender(c, &mut config, "send_path_with_hidden_copy");
+    bench_sender(c, &config, "send_path_with_hidden_copy");
 }
 
 fn send_bench_no_hidden_copy(c: &mut Criterion<CPUTime>) {
@@ -210,7 +210,7 @@ fn send_bench_no_hidden_copy(c: &mut Criterion<CPUTime>) {
     config.enable_pacing(false);
     config.enable_hidden_copy_for_zc_sender(false);
 
-    bench_sender(c, &mut config, "send_path_no_hidden_copy");
+    bench_sender(c, &config, "send_path_no_hidden_copy");
 }
 
 criterion_group! {

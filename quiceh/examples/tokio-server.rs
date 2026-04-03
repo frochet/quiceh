@@ -285,7 +285,7 @@ async fn main() {
                             odcid.as_ref(),
                             socket.local_addr().unwrap(),
                             from,
-                            &mut config,
+                            &config,
                         )
                         .unwrap();
 

@@ -118,7 +118,7 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
             b.iter_batched_ref(
                 || {
                     config_v3.set_expected_chunklen_to_consume(10000);
-                    let mut pipe_v3 = Pipe::with_config(&mut config_v3).unwrap();
+                    let mut pipe_v3 = Pipe::with_config(&config_v3).unwrap();
                     pipe_v3.handshake().unwrap();
                     // designed to avoid having the receiver's buffer being
                     // initialized as part of the benchmark.
@@ -144,7 +144,7 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
             b.iter_batched_ref(
                 || {
                     config_v3.set_expected_chunklen_to_consume(10000);
-                    let mut pipe_v3 = Pipe::with_config(&mut config_v3).unwrap();
+                    let mut pipe_v3 = Pipe::with_config(&config_v3).unwrap();
                     pipe_v3.handshake().unwrap();
                     pipe_v3.server.stream_send(1, b"init", false).unwrap();
                     pipe_v3.advance().unwrap();
@@ -169,7 +169,7 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
             let mut buf = vec![0; 32768];
             b.iter_batched_ref(
                 || {
-                    let mut pipe_v1 = Pipe::with_config(&mut config_v1).unwrap();
+                    let mut pipe_v1 = Pipe::with_config(&config_v1).unwrap();
                     pipe_v1.handshake().unwrap();
                     pipe_v1.server.stream_send(1, sendbuf, false).unwrap();
                     let flight =

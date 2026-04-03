@@ -62,7 +62,7 @@
 //! # let scid = quiceh::ConnectionId::from_ref(&[0xba; 16]);
 //! # let peer = "127.0.0.1:1234".parse().unwrap();
 //! # let local = "127.0.0.1:4321".parse().unwrap();
-//! # let mut conn = quiceh::accept(&scid, None, local, peer, &mut config).unwrap();
+//! # let mut conn = quiceh::accept(&scid, None, local, peer, &config).unwrap();
 //! # let h3_config = quiceh::h3::Config::new()?;
 //! let h3_conn = quiceh::h3::Connection::with_transport(&mut conn, &h3_config)?;
 //! # Ok::<(), quiceh::h3::Error>(())
@@ -79,7 +79,7 @@
 //! # let scid = quiceh::ConnectionId::from_ref(&[0xba; 16]);
 //! # let peer = "127.0.0.1:1234".parse().unwrap();
 //! # let local = "127.0.0.1:4321".parse().unwrap();
-//! # let mut conn = quiceh::connect(None, &scid, local, peer, &mut config).unwrap();
+//! # let mut conn = quiceh::connect(None, &scid, local, peer, &config).unwrap();
 //! # let h3_config = quiceh::h3::Config::new()?;
 //! # let mut h3_conn = quiceh::h3::Connection::with_transport(&mut conn, &h3_config)?;
 //! let req = vec![
@@ -102,7 +102,7 @@
 //! # let scid = quiceh::ConnectionId::from_ref(&[0xba; 16]);
 //! # let peer = "127.0.0.1:1234".parse().unwrap();
 //! # let local = "127.0.0.1:4321".parse().unwrap();
-//! # let mut conn = quiceh::connect(None, &scid, local, peer, &mut config).unwrap();
+//! # let mut conn = quiceh::connect(None, &scid, local, peer, &config).unwrap();
 //! # let h3_config = quiceh::h3::Config::new()?;
 //! # let mut h3_conn = quiceh::h3::Connection::with_transport(&mut conn, &h3_config)?;
 //! let req = vec![
@@ -134,7 +134,7 @@
 //! # let scid = quiceh::ConnectionId::from_ref(&[0xba; 16]);
 //! # let peer = "127.0.0.1:1234".parse().unwrap();
 //! # let local = "127.0.0.1:1234".parse().unwrap();
-//! # let mut conn = quiceh::accept(&scid, None, local, peer, &mut config).unwrap();
+//! # let mut conn = quiceh::accept(&scid, None, local, peer, &config).unwrap();
 //! # let h3_config = quiceh::h3::Config::new()?;
 //! # let mut h3_conn = quiceh::h3::Connection::with_transport(&mut conn, &h3_config)?;
 //! loop {
@@ -201,7 +201,7 @@
 //! # let scid = quiceh::ConnectionId::from_ref(&[0xba; 16]);
 //! # let peer = "127.0.0.1:1234".parse().unwrap();
 //! # let local = "127.0.0.1:1234".parse().unwrap();
-//! # let mut conn = quiceh::connect(None, &scid, local, peer, &mut config).unwrap();
+//! # let mut conn = quiceh::connect(None, &scid, local, peer, &config).unwrap();
 //! # let h3_config = quiceh::h3::Config::new()?;
 //! # let mut h3_conn = quiceh::h3::Connection::with_transport(&mut conn, &h3_config)?;
 //! loop {
@@ -3434,11 +3434,11 @@ pub mod testing {
             config.set_ack_delay_exponent(8);
 
             let h3_config = Config::new()?;
-            Session::<F>::with_configs(&mut config, &h3_config)
+            Session::<F>::with_configs(&config, &h3_config)
         }
 
         pub fn with_configs(
-            config: &mut crate::Config, h3_config: &Config,
+            config: &crate::Config, h3_config: &Config,
         ) -> Result<Session<F>> {
             let pipe = testing::Pipe::with_config(config)?;
             let client_dgram = pipe.client.dgram_enabled();
@@ -3829,14 +3829,14 @@ mod tests {
         let h3_config = Config::new().unwrap();
 
         // Perform initial handshake.
-        let mut pipe = <Pipe>::with_config(&mut config).unwrap();
+        let mut pipe = <Pipe>::with_config(&config).unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
 
         // Extract session,
         let session = pipe.client.session().unwrap();
 
         // Configure session on new connection.
-        let mut pipe = <Pipe>::with_config(&mut config).unwrap();
+        let mut pipe = <Pipe>::with_config(&config).unwrap();
         assert_eq!(pipe.client.set_session(session), Ok(()));
 
         // Can't create an H3 connection until the QUIC connection is determined
@@ -3995,7 +3995,7 @@ mod tests {
 
         let h3_config = Config::new().unwrap();
         let mut s =
-            Session::<BufTestFactory>::with_configs(&mut config, &h3_config)
+            Session::<BufTestFactory>::with_configs(&config, &h3_config)
                 .unwrap();
 
         s.handshake().unwrap();
@@ -4194,7 +4194,7 @@ mod tests {
 
             let h3_config = Config::new().expect("h3 config creation");
             let mut s =
-                Session::<BufTestFactory>::with_configs(&mut config, &h3_config)
+                Session::<BufTestFactory>::with_configs(&config, &h3_config)
                     .unwrap();
             s.handshake().unwrap();
             // Send 32 bytes -- client to server
@@ -5939,7 +5939,7 @@ mod tests {
         let mut h3_config = Config::new().unwrap();
         h3_config.set_max_field_section_size(65);
 
-        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&config, &h3_config).unwrap();
 
         s.handshake().unwrap();
         let off_by =
@@ -6120,7 +6120,7 @@ mod tests {
 
         let h3_config = Config::new().unwrap();
 
-        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&config, &h3_config).unwrap();
 
         s.handshake().unwrap();
         let off_by =
@@ -6185,7 +6185,7 @@ mod tests {
 
         let h3_config = Config::new().unwrap();
 
-        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&config, &h3_config).unwrap();
 
         s.handshake().unwrap();
         let off_by =
@@ -6255,7 +6255,7 @@ mod tests {
 
         let h3_config = Config::new().unwrap();
 
-        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&config, &h3_config).unwrap();
 
         s.handshake().unwrap();
         let off_by =
@@ -6402,7 +6402,7 @@ mod tests {
 
         let h3_config = Config::new().unwrap();
 
-        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&config, &h3_config).unwrap();
 
         s.handshake().unwrap();
         let off_by =
@@ -6485,7 +6485,7 @@ mod tests {
 
         let h3_config = Config::new().unwrap();
 
-        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&config, &h3_config).unwrap();
 
         s.handshake().unwrap();
         let off_by =
@@ -6659,7 +6659,7 @@ mod tests {
 
         let h3_config = Config::new().unwrap();
 
-        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&config, &h3_config).unwrap();
 
         s.handshake().unwrap();
         let off_by =
@@ -6726,7 +6726,7 @@ mod tests {
         config.grease(false);
 
         let h3_config = Config::new().unwrap();
-        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&config, &h3_config).unwrap();
 
         s.handshake().unwrap();
 
@@ -6756,7 +6756,7 @@ mod tests {
 
         let h3_config = Config::new().unwrap();
 
-        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&config, &h3_config).unwrap();
         assert_eq!(s.pipe.handshake(), Ok(()));
 
         s.client.send_settings(&mut s.pipe.client).unwrap();
@@ -6800,7 +6800,7 @@ mod tests {
 
         let h3_config = Config::new().unwrap();
 
-        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&config, &h3_config).unwrap();
         assert_eq!(s.pipe.handshake(), Ok(()));
 
         s.client.control_stream_id = Some(
@@ -6852,7 +6852,7 @@ mod tests {
 
         let h3_config = Config::new().unwrap();
 
-        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&config, &h3_config).unwrap();
         assert_eq!(s.pipe.handshake(), Ok(()));
 
         s.client.control_stream_id = Some(
@@ -6966,7 +6966,7 @@ mod tests {
             .set_additional_settings(vec![(42, 43), (44, 45)])
             .unwrap();
 
-        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&config, &h3_config).unwrap();
         assert_eq!(s.pipe.handshake(), Ok(()));
 
         assert_eq!(s.pipe.advance(), Ok(()));
@@ -7104,7 +7104,7 @@ mod tests {
         config.enable_dgram(true, 100, 100);
 
         let h3_config = Config::new().unwrap();
-        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&config, &h3_config).unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -7154,7 +7154,7 @@ mod tests {
         config.enable_dgram(true, 100, 100);
 
         let h3_config = Config::new().unwrap();
-        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&config, &h3_config).unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -7255,7 +7255,7 @@ mod tests {
         config.enable_dgram(true, 100, 100);
 
         let h3_config = Config::new().unwrap();
-        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&config, &h3_config).unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
@@ -7691,7 +7691,7 @@ mod tests {
         config.enable_dgram(true, 100, 100);
 
         let h3_config = Config::new().unwrap();
-        let mut s = <Session>::with_configs(&mut config, &h3_config).unwrap();
+        let mut s = <Session>::with_configs(&config, &h3_config).unwrap();
         s.handshake().unwrap();
         let off_by =
             if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {

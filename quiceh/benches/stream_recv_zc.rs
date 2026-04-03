@@ -86,7 +86,7 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
         |b, sendbuf| {
             b.iter_batched_ref(
                 || {
-                    let mut pipe = Pipe::with_config(&mut config).unwrap();
+                    let mut pipe = Pipe::with_config(&config).unwrap();
                     let (tx, rx): (Sender<Chunk>, Receiver<Chunk>) =
                         mpsc::channel();
                     let handle = thread::spawn(move || {

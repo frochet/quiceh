@@ -294,7 +294,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             odcid.as_ref(),
                             socket.local_addr().unwrap(),
                             from,
-                            &mut config,
+                            &config,
                         )
                         .unwrap();
 

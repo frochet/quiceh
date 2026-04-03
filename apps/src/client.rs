@@ -263,7 +263,7 @@ where
         &scid,
         local_addr,
         peer_addr,
-        &mut config,
+        &config,
     )
     .unwrap();
 
