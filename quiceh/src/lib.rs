@@ -427,6 +427,7 @@ use qlog::events::RawInfo;
 
 use std::cmp;
 use std::convert::TryInto;
+use std::fmt;
 use std::time;
 
 use std::sync::Arc;
@@ -2029,6 +2030,40 @@ struct ChunkMetaData {
     stream_id: u64,
     start_off: u64,
     len: usize,
+}
+
+impl<F: BufFactory> fmt::Debug for Connection<F> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Connection")
+            .field("version", &self.version)
+            .field("trace_id", &self.trace_id)
+            .field("scid", &self.source_id())
+            .field("dcid", &self.destination_id())
+            .field("is_server", &self.is_server)
+            .field("alpn", &std::str::from_utf8(&self.alpn).unwrap_or(""))
+            .field("handshake_completed", &self.handshake_completed)
+            .field("handshake_confirmed", &self.handshake_confirmed)
+            .field("closed", &self.closed)
+            .field("timed_out", &self.timed_out)
+            .field("rx_data", &self.rx_data)
+            .field("tx_data", &self.tx_data)
+            .field("sent_bytes", &self.sent_bytes)
+            .field("recv_bytes", &self.recv_bytes)
+            .field("acked_bytes", &self.acked_bytes)
+            .field("lost_bytes", &self.lost_bytes)
+            .field("recv_count", &self.recv_count)
+            .field("sent_count", &self.sent_count)
+            .field("lost_count", &self.lost_count)
+            .field("retrans_count", &self.retrans_count)
+            .field("reset_stream_local_count", &self.reset_stream_local_count)
+            .field("stopped_stream_local_count", &self.stopped_stream_local_count)
+            .field("reset_stream_remote_count", &self.reset_stream_remote_count)
+            .field("stopped_stream_remote_count", &self.stopped_stream_remote_count)
+            .field("path_challenge_rx_count", &self.path_challenge_rx_count)
+            .field("peer_transport_params", &self.peer_transport_params)
+            .field("local_transport_params", &self.local_transport_params)
+            .finish()
+    }
 }
 
 impl<F: BufFactory> Connection<F> {
