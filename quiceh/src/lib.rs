@@ -2056,9 +2056,15 @@ impl<F: BufFactory> fmt::Debug for Connection<F> {
             .field("lost_count", &self.lost_count)
             .field("retrans_count", &self.retrans_count)
             .field("reset_stream_local_count", &self.reset_stream_local_count)
-            .field("stopped_stream_local_count", &self.stopped_stream_local_count)
+            .field(
+                "stopped_stream_local_count",
+                &self.stopped_stream_local_count,
+            )
             .field("reset_stream_remote_count", &self.reset_stream_remote_count)
-            .field("stopped_stream_remote_count", &self.stopped_stream_remote_count)
+            .field(
+                "stopped_stream_remote_count",
+                &self.stopped_stream_remote_count,
+            )
             .field("path_challenge_rx_count", &self.path_challenge_rx_count)
             .field("peer_transport_params", &self.peer_transport_params)
             .field("local_transport_params", &self.local_transport_params)
@@ -3963,13 +3969,7 @@ impl<F: BufFactory> Connection<F> {
 
         // Limit output packet size to respect the sender and receiver's
         // maximum UDP payload size limit.
-        let mut left = if self.use_hidden_crypt_copy_for_zc {
-            // We reserve a bit more memory for scatter encryption alignment on
-            // blocksize -- only works for AES for this impl.
-            cmp::min(out.len(), self.max_send_udp_payload_size() + 16) - 16
-        } else {
-            cmp::min(out.len(), self.max_send_udp_payload_size())
-        };
+        let mut left = cmp::min(out.len(), self.max_send_udp_payload_size());
 
         let send_pid = match (from, to) {
             (Some(f), Some(t)) => self
@@ -5428,12 +5428,10 @@ impl<F: BufFactory> Connection<F> {
                 // ctrl cleartext is written inside the destination buffer,
                 // aligned on a multiple of the AES blocksize.
 
-                let align = stream_len % 16;
-                let (b, mut b_ctrl) =
-                    b.split_at(payload_offset + stream_len + align)?;
+                let (b, mut b_ctrl) = b.split_at(payload_offset + stream_len)?;
                 trace!(
                     "split_at: {}; skipping {} bytes",
-                    payload_offset + stream_len + align,
+                    payload_offset + stream_len,
                     cumul - stream_len
                 );
                 b_ctrl.skip(cumul - stream_len)?;
@@ -16028,14 +16026,9 @@ mod tests {
 
         // Server accepts connection.
         let from = "127.0.0.1:1234".parse().unwrap();
-        pipe.server = accept(
-            &scid,
-            Some(&odcid),
-            <Pipe>::server_addr(),
-            from,
-            &config,
-        )
-        .unwrap();
+        pipe.server =
+            accept(&scid, Some(&odcid), <Pipe>::server_addr(), from, &config)
+                .unwrap();
         assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
 
         assert_eq!(pipe.advance(), Ok(()));
@@ -16092,8 +16085,7 @@ mod tests {
         // destination connection ID is ignored.
         let from = "127.0.0.1:1234".parse().unwrap();
         pipe.server =
-            accept(&scid, None, <Pipe>::server_addr(), from, &config)
-                .unwrap();
+            accept(&scid, None, <Pipe>::server_addr(), from, &config).unwrap();
         assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
 
         let flight = testing::emit_flight(&mut pipe.server).unwrap();
@@ -16152,14 +16144,9 @@ mod tests {
         // destination connection ID is invalid.
         let from = "127.0.0.1:1234".parse().unwrap();
         let odcid = ConnectionId::from_ref(b"bogus value");
-        pipe.server = accept(
-            &scid,
-            Some(&odcid),
-            <Pipe>::server_addr(),
-            from,
-            &config,
-        )
-        .unwrap();
+        pipe.server =
+            accept(&scid, Some(&odcid), <Pipe>::server_addr(), from, &config)
+                .unwrap();
         assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
 
         let flight = testing::emit_flight(&mut pipe.server).unwrap();
