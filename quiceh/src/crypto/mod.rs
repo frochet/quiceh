@@ -42,10 +42,10 @@ pub const HP_MASK_LEN: usize = 13;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {
-    Initial = 0,
-    ZeroRTT = 1,
+    Initial   = 0,
+    ZeroRTT   = 1,
     Handshake = 2,
-    OneRTT = 3,
+    OneRTT    = 3,
 }
 
 impl Level {
@@ -564,7 +564,6 @@ unsafe fn EVP_sha384() -> *const EVP_MD {
 unsafe fn CRYPTO_memcmp(a: *const u8, b: *const u8, len: usize) -> c_int {
     sys::CRYPTO_memcmp(a as _, b as _, len as _) as _
 }
-
 
 #[cfg(test)]
 mod tests {

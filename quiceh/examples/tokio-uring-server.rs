@@ -12,7 +12,8 @@ use std::sync::Arc;
 use ring::rand::*;
 
 use tokio::sync::mpsc;
-use tokio_uring::buf::fixed::{FixedBuf, FixedBufPool};
+use tokio_uring::buf::fixed::FixedBuf;
+use tokio_uring::buf::fixed::FixedBufPool;
 use tokio_uring::buf::BoundedBuf;
 
 use quiceh::BufFactory;
@@ -481,11 +482,10 @@ async fn handle_client<T: tokio_uring::buf::IoBufMut>(
                     .await;
 
             match res {
-                Ok(v) => {
+                Ok(v) =>
                     if v < total_write {
                         info!("Wrote {} out of {}", v, total_write);
-                    }
-                },
+                    },
                 Err(e) => {
                     if e.kind() == std::io::ErrorKind::WouldBlock {
                         trace!("send() would block");

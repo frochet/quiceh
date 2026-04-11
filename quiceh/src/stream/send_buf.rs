@@ -240,10 +240,10 @@ impl<F: BufFactory> SendBuf<F> {
 
         while let Some(buf) = self.data.get(self.pos) {
             let off_front = self.off_front();
-            if self.is_empty()
-                || off_front >= self.off
-                || off_front != next_off
-                || off_front >= self.max_data
+            if self.is_empty() ||
+                off_front >= self.off ||
+                off_front != next_off ||
+                off_front >= self.max_data
             {
                 break;
             }
@@ -301,10 +301,10 @@ impl<F: BufFactory> SendBuf<F> {
         while out_len > 0 {
             let off_front = self.off_front();
 
-            if self.is_empty()
-                || off_front >= self.off
-                || off_front != next_off
-                || off_front >= self.max_data
+            if self.is_empty() ||
+                off_front >= self.off ||
+                off_front != next_off ||
+                off_front >= self.max_data
             {
                 break;
             }
@@ -348,10 +348,10 @@ impl<F: BufFactory> SendBuf<F> {
         while out_len > 0 {
             let off_front = self.off_front();
 
-            if self.is_empty()
-                || off_front >= self.off
-                || off_front != next_off
-                || off_front >= self.max_data
+            if self.is_empty() ||
+                off_front >= self.off ||
+                off_front != next_off ||
+                off_front >= self.max_data
             {
                 break;
             }

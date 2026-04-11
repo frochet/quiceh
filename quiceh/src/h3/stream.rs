@@ -263,32 +263,27 @@ impl Stream {
                 // initialized, no more SETTINGS are permitted.
                 match (ty, self.remote_initialized) {
                     // Initialize control stream.
-                    (frame::SETTINGS_FRAME_TYPE_ID, false) => {
-                        self.remote_initialized = true
-                    },
+                    (frame::SETTINGS_FRAME_TYPE_ID, false) =>
+                        self.remote_initialized = true,
 
                     // Non-SETTINGS frames not allowed on control stream
                     // before initialization.
                     (_, false) => return Err(Error::MissingSettings),
 
                     // Additional SETTINGS frame.
-                    (frame::SETTINGS_FRAME_TYPE_ID, true) => {
-                        return Err(Error::FrameUnexpected)
-                    },
+                    (frame::SETTINGS_FRAME_TYPE_ID, true) =>
+                        return Err(Error::FrameUnexpected),
 
                     // Frames that can't be received on control stream
                     // after initialization.
-                    (frame::DATA_FRAME_TYPE_ID, true) => {
-                        return Err(Error::FrameUnexpected)
-                    },
+                    (frame::DATA_FRAME_TYPE_ID, true) =>
+                        return Err(Error::FrameUnexpected),
 
-                    (frame::HEADERS_FRAME_TYPE_ID, true) => {
-                        return Err(Error::FrameUnexpected)
-                    },
+                    (frame::HEADERS_FRAME_TYPE_ID, true) =>
+                        return Err(Error::FrameUnexpected),
 
-                    (frame::PUSH_PROMISE_FRAME_TYPE_ID, true) => {
-                        return Err(Error::FrameUnexpected)
-                    },
+                    (frame::PUSH_PROMISE_FRAME_TYPE_ID, true) =>
+                        return Err(Error::FrameUnexpected),
 
                     // All other frames are ignored after initialization.
                     (_, true) => (),
@@ -300,29 +295,23 @@ impl Stream {
                 // is accepted. Other frames cause an error.
                 if !self.is_local {
                     match (ty, self.remote_initialized) {
-                        (frame::HEADERS_FRAME_TYPE_ID, false) => {
-                            self.remote_initialized = true
-                        },
+                        (frame::HEADERS_FRAME_TYPE_ID, false) =>
+                            self.remote_initialized = true,
 
-                        (frame::DATA_FRAME_TYPE_ID, false) => {
-                            return Err(Error::FrameUnexpected)
-                        },
+                        (frame::DATA_FRAME_TYPE_ID, false) =>
+                            return Err(Error::FrameUnexpected),
 
-                        (frame::CANCEL_PUSH_FRAME_TYPE_ID, _) => {
-                            return Err(Error::FrameUnexpected)
-                        },
+                        (frame::CANCEL_PUSH_FRAME_TYPE_ID, _) =>
+                            return Err(Error::FrameUnexpected),
 
-                        (frame::SETTINGS_FRAME_TYPE_ID, _) => {
-                            return Err(Error::FrameUnexpected)
-                        },
+                        (frame::SETTINGS_FRAME_TYPE_ID, _) =>
+                            return Err(Error::FrameUnexpected),
 
-                        (frame::GOAWAY_FRAME_TYPE_ID, _) => {
-                            return Err(Error::FrameUnexpected)
-                        },
+                        (frame::GOAWAY_FRAME_TYPE_ID, _) =>
+                            return Err(Error::FrameUnexpected),
 
-                        (frame::MAX_PUSH_FRAME_TYPE_ID, _) => {
-                            return Err(Error::FrameUnexpected)
-                        },
+                        (frame::MAX_PUSH_FRAME_TYPE_ID, _) =>
+                            return Err(Error::FrameUnexpected),
 
                         // All other frames can be ignored regardless of stream
                         // state.
@@ -334,25 +323,20 @@ impl Stream {
             Some(Type::Push) => {
                 match ty {
                     // Frames that can never be received on request streams.
-                    frame::CANCEL_PUSH_FRAME_TYPE_ID => {
-                        return Err(Error::FrameUnexpected)
-                    },
+                    frame::CANCEL_PUSH_FRAME_TYPE_ID =>
+                        return Err(Error::FrameUnexpected),
 
-                    frame::SETTINGS_FRAME_TYPE_ID => {
-                        return Err(Error::FrameUnexpected)
-                    },
+                    frame::SETTINGS_FRAME_TYPE_ID =>
+                        return Err(Error::FrameUnexpected),
 
-                    frame::PUSH_PROMISE_FRAME_TYPE_ID => {
-                        return Err(Error::FrameUnexpected)
-                    },
+                    frame::PUSH_PROMISE_FRAME_TYPE_ID =>
+                        return Err(Error::FrameUnexpected),
 
-                    frame::GOAWAY_FRAME_TYPE_ID => {
-                        return Err(Error::FrameUnexpected)
-                    },
+                    frame::GOAWAY_FRAME_TYPE_ID =>
+                        return Err(Error::FrameUnexpected),
 
-                    frame::MAX_PUSH_FRAME_TYPE_ID => {
-                        return Err(Error::FrameUnexpected)
-                    },
+                    frame::MAX_PUSH_FRAME_TYPE_ID =>
+                        return Err(Error::FrameUnexpected),
 
                     _ => (),
                 }
@@ -385,10 +369,10 @@ impl Stream {
                 // These frame types can never have 0 payload length because
                 // they always have fields that must be populated.
                 Some(
-                    frame::GOAWAY_FRAME_TYPE_ID
-                    | frame::PUSH_PROMISE_FRAME_TYPE_ID
-                    | frame::CANCEL_PUSH_FRAME_TYPE_ID
-                    | frame::MAX_PUSH_FRAME_TYPE_ID,
+                    frame::GOAWAY_FRAME_TYPE_ID |
+                    frame::PUSH_PROMISE_FRAME_TYPE_ID |
+                    frame::CANCEL_PUSH_FRAME_TYPE_ID |
+                    frame::MAX_PUSH_FRAME_TYPE_ID,
                 ) => {
                     if len == 0 {
                         return Err(Error::FrameError);
@@ -631,9 +615,9 @@ impl Stream {
             self.state_off += min;
             self.reset_data_event();
             Ok((None, min))
-        } else if buf.len() + self.state_off >= self.state_len
-            && self.state_off > 0
-            && self.state_off < self.state_len
+        } else if buf.len() + self.state_off >= self.state_len &&
+            self.state_off > 0 &&
+            self.state_off < self.state_len
         {
             trace!(
                 "Read across chunk state_off: {}, state_len: {}",
@@ -751,8 +735,8 @@ impl Stream {
         };
 
         // The stream is not readable anymore, so re-arm the Data event.
-        //if !conn.stream_readable(self.id) {
-        //self.reset_data_event();
+        // if !conn.stream_readable(self.id) {
+        // self.reset_data_event();
         //}
 
         Ok((b, len, fin))
@@ -998,8 +982,8 @@ mod tests {
         assert_eq!(stream.state, State::FramePayloadLen);
 
         // Parse the frame payload length.
-        let frame_payload_len = if crate::PROTOCOL_VERSION
-            == crate::PROTOCOL_VERSION_VREVERSO
+        let frame_payload_len = if crate::PROTOCOL_VERSION ==
+            crate::PROTOCOL_VERSION_VREVERSO
         {
             let b = stream.try_acquire_state_buffer_for_tests(cursor)?;
 
@@ -1070,8 +1054,8 @@ mod tests {
         assert_eq!(stream.state, State::FrameType);
 
         // Parse the SETTINGS frame type.
-        let frame_ty = if crate::PROTOCOL_VERSION
-            == crate::PROTOCOL_VERSION_VREVERSO
+        let frame_ty = if crate::PROTOCOL_VERSION ==
+            crate::PROTOCOL_VERSION_VREVERSO
         {
             let b = stream
                 .try_acquire_state_buffer_for_tests(&mut cursor)
@@ -1165,8 +1149,8 @@ mod tests {
         assert_eq!(stream.state, State::FrameType);
 
         // Parse the SETTINGS frame type.
-        let frame_ty = if crate::PROTOCOL_VERSION
-            == crate::PROTOCOL_VERSION_VREVERSO
+        let frame_ty = if crate::PROTOCOL_VERSION ==
+            crate::PROTOCOL_VERSION_VREVERSO
         {
             let b = stream
                 .try_acquire_state_buffer_for_tests(&mut cursor)
@@ -1268,8 +1252,8 @@ mod tests {
         assert_eq!(stream.state, State::FrameType);
 
         // Parse the SETTINGS frame type.
-        let frame_ty = if crate::PROTOCOL_VERSION
-            == crate::PROTOCOL_VERSION_VREVERSO
+        let frame_ty = if crate::PROTOCOL_VERSION ==
+            crate::PROTOCOL_VERSION_VREVERSO
         {
             let b = stream
                 .try_acquire_state_buffer_for_tests(&mut cursor)
@@ -1336,8 +1320,8 @@ mod tests {
         assert_eq!(stream.state, State::FrameType);
 
         // Parse the second SETTINGS frame type.
-        let frame_ty = if crate::PROTOCOL_VERSION
-            == crate::PROTOCOL_VERSION_VREVERSO
+        let frame_ty = if crate::PROTOCOL_VERSION ==
+            crate::PROTOCOL_VERSION_VREVERSO
         {
             let b = stream
                 .try_acquire_state_buffer_for_tests(&mut cursor)
@@ -1395,8 +1379,8 @@ mod tests {
         assert_eq!(stream.state, State::FrameType);
 
         // Parse GOAWAY.
-        let frame_ty = if crate::PROTOCOL_VERSION
-            == crate::PROTOCOL_VERSION_VREVERSO
+        let frame_ty = if crate::PROTOCOL_VERSION ==
+            crate::PROTOCOL_VERSION_VREVERSO
         {
             let b = stream
                 .try_acquire_state_buffer_for_tests(&mut cursor)
@@ -1456,8 +1440,8 @@ mod tests {
         assert_eq!(stream.state, State::FrameType);
 
         // Parse first SETTINGS frame.
-        let frame_ty = if crate::PROTOCOL_VERSION
-            == crate::PROTOCOL_VERSION_VREVERSO
+        let frame_ty = if crate::PROTOCOL_VERSION ==
+            crate::PROTOCOL_VERSION_VREVERSO
         {
             let b = stream
                 .try_acquire_state_buffer_for_tests(&mut cursor)
@@ -1518,8 +1502,8 @@ mod tests {
             stream.try_consume_frame().unwrap();
         }
         // Parse HEADERS.
-        let frame_ty = if crate::PROTOCOL_VERSION
-            == crate::PROTOCOL_VERSION_VREVERSO
+        let frame_ty = if crate::PROTOCOL_VERSION ==
+            crate::PROTOCOL_VERSION_VREVERSO
         {
             let b = stream
                 .try_acquire_state_buffer_for_tests(&mut cursor)
@@ -1571,8 +1555,8 @@ mod tests {
         let mut cursor = std::io::Cursor::new(d);
 
         // Parse the HEADERS frame type.
-        let frame_ty = if crate::PROTOCOL_VERSION
-            == crate::PROTOCOL_VERSION_VREVERSO
+        let frame_ty = if crate::PROTOCOL_VERSION ==
+            crate::PROTOCOL_VERSION_VREVERSO
         {
             let b = stream
                 .try_acquire_state_buffer_for_tests(&mut cursor)
@@ -1640,8 +1624,8 @@ mod tests {
         assert_eq!(stream.state, State::FrameType);
 
         // Parse the DATA frame type.
-        let frame_ty = if crate::PROTOCOL_VERSION
-            == crate::PROTOCOL_VERSION_VREVERSO
+        let frame_ty = if crate::PROTOCOL_VERSION ==
+            crate::PROTOCOL_VERSION_VREVERSO
         {
             let b = stream
                 .try_acquire_state_buffer_for_tests(&mut cursor)
@@ -1763,8 +1747,8 @@ mod tests {
         assert_eq!(stream.state, State::FrameType);
 
         // Parse the HEADERS frame type.
-        let frame_ty = if crate::PROTOCOL_VERSION
-            == crate::PROTOCOL_VERSION_VREVERSO
+        let frame_ty = if crate::PROTOCOL_VERSION ==
+            crate::PROTOCOL_VERSION_VREVERSO
         {
             let b = stream
                 .try_acquire_state_buffer_for_tests(&mut cursor)
@@ -1832,8 +1816,8 @@ mod tests {
         assert_eq!(stream.state, State::FrameType);
 
         // Parse the DATA frame type.
-        let frame_ty = if crate::PROTOCOL_VERSION
-            == crate::PROTOCOL_VERSION_VREVERSO
+        let frame_ty = if crate::PROTOCOL_VERSION ==
+            crate::PROTOCOL_VERSION_VREVERSO
         {
             let b = stream
                 .try_acquire_state_buffer_for_tests(&mut cursor)
@@ -1916,8 +1900,8 @@ mod tests {
         let mut cursor = std::io::Cursor::new(d);
 
         // Parse stream type.
-        let stream_ty = if crate::PROTOCOL_VERSION
-            == crate::PROTOCOL_VERSION_VREVERSO
+        let stream_ty = if crate::PROTOCOL_VERSION ==
+            crate::PROTOCOL_VERSION_VREVERSO
         {
             let b = stream
                 .try_acquire_state_buffer_for_tests(&mut cursor)
@@ -1959,8 +1943,8 @@ mod tests {
         let mut cursor = std::io::Cursor::new(d);
 
         // Parse the DATA frame type.
-        let frame_ty = if crate::PROTOCOL_VERSION
-            == crate::PROTOCOL_VERSION_VREVERSO
+        let frame_ty = if crate::PROTOCOL_VERSION ==
+            crate::PROTOCOL_VERSION_VREVERSO
         {
             let b = stream
                 .try_acquire_state_buffer_for_tests(&mut cursor)
@@ -2016,8 +2000,8 @@ mod tests {
         parse_skip_frame(&mut stream, &mut cursor).unwrap();
 
         // Parse frame type.
-        let frame_ty = if crate::PROTOCOL_VERSION
-            == crate::PROTOCOL_VERSION_VREVERSO
+        let frame_ty = if crate::PROTOCOL_VERSION ==
+            crate::PROTOCOL_VERSION_VREVERSO
         {
             let b = stream
                 .try_acquire_state_buffer_for_tests(&mut cursor)
@@ -2085,8 +2069,8 @@ mod tests {
         let mut cursor = std::io::Cursor::new(d);
 
         // Parse frame type.
-        let frame_ty = if crate::PROTOCOL_VERSION
-            == crate::PROTOCOL_VERSION_VREVERSO
+        let frame_ty = if crate::PROTOCOL_VERSION ==
+            crate::PROTOCOL_VERSION_VREVERSO
         {
             let b = stream
                 .try_acquire_state_buffer_for_tests(&mut cursor)
@@ -2169,8 +2153,8 @@ mod tests {
         parse_skip_frame(&mut stream, &mut cursor).unwrap();
 
         // Parse frame type.
-        let frame_ty = if crate::PROTOCOL_VERSION
-            == crate::PROTOCOL_VERSION_VREVERSO
+        let frame_ty = if crate::PROTOCOL_VERSION ==
+            crate::PROTOCOL_VERSION_VREVERSO
         {
             let b = stream
                 .try_acquire_state_buffer_for_tests(&mut cursor)
@@ -2253,8 +2237,8 @@ mod tests {
         parse_skip_frame(&mut stream, &mut cursor).unwrap();
 
         // Parse frame type.
-        let frame_ty = if crate::PROTOCOL_VERSION
-            == crate::PROTOCOL_VERSION_VREVERSO
+        let frame_ty = if crate::PROTOCOL_VERSION ==
+            crate::PROTOCOL_VERSION_VREVERSO
         {
             let b = stream
                 .try_acquire_state_buffer_for_tests(&mut cursor)

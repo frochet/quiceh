@@ -247,9 +247,8 @@ impl<F: BufFactory> StreamMap<F> {
                     ),
 
                     // Remotely-initiated unidirectional stream.
-                    (false, false) => {
-                        (local_params.initial_max_stream_data_uni, 0)
-                    },
+                    (false, false) =>
+                        (local_params.initial_max_stream_data_uni, 0),
                 };
 
                 // The two least significant bits from a stream id identify the
@@ -459,7 +458,9 @@ impl<F: BufFactory> StreamMap<F> {
 
         Ok(())
     }
-    /// Updates the priority of a stream in-place, avoiding unnecessary allocations.
+
+    /// Updates the priority of a stream in-place, avoiding unnecessary
+    /// allocations.
     pub fn update_priority_inplace(
         &mut self, stream_id: u64, urgency: u8, incremental: bool,
     ) -> Result<()> {
@@ -469,7 +470,8 @@ impl<F: BufFactory> StreamMap<F> {
         };
 
         // Remove from all trees using the current key pointer.
-        // We use unsafe pointer access to avoid cloning the Arc to pass to remove functions.
+        // We use unsafe pointer access to avoid cloning the Arc to pass to remove
+        // functions.
         let pk_ptr = Arc::as_ptr(&stream.priority_key);
 
         // We need to remember which trees it was in.
@@ -733,17 +735,17 @@ impl<F: BufFactory> StreamMap<F> {
     /// Returns true if the max bidirectional streams count needs to be updated
     /// by sending a MAX_STREAMS frame to the peer.
     pub fn should_update_max_streams_bidi(&self) -> bool {
-        self.local_max_streams_bidi_next != self.local_max_streams_bidi
-            && self.local_max_streams_bidi_next / 2
-                > self.local_max_streams_bidi - self.peer_opened_streams_bidi
+        self.local_max_streams_bidi_next != self.local_max_streams_bidi &&
+            self.local_max_streams_bidi_next / 2 >
+                self.local_max_streams_bidi - self.peer_opened_streams_bidi
     }
 
     /// Returns true if the max unidirectional streams count needs to be updated
     /// by sending a MAX_STREAMS frame to the peer.
     pub fn should_update_max_streams_uni(&self) -> bool {
-        self.local_max_streams_uni_next != self.local_max_streams_uni
-            && self.local_max_streams_uni_next / 2
-                > self.local_max_streams_uni - self.peer_opened_streams_uni
+        self.local_max_streams_uni_next != self.local_max_streams_uni &&
+            self.local_max_streams_uni_next / 2 >
+                self.local_max_streams_uni - self.peer_opened_streams_uni
     }
 
     /// Returns the number of active streams in the map.
@@ -814,9 +816,9 @@ impl<F: BufFactory> Stream<F> {
                 self.recv.contiguous_off,
                 self.recv.off
             );
-            self.recv.contiguous_off > self.recv.off
-                || !self.is_consumed()
-                || self.recv.deliver_fin
+            self.recv.contiguous_off > self.recv.off ||
+                !self.is_consumed() ||
+                self.recv.deliver_fin
         } else {
             self.recv.ready()
         }
@@ -825,10 +827,10 @@ impl<F: BufFactory> Stream<F> {
     /// Returns true if the stream has enough flow control capacity to be
     /// written to, and is not finished.
     pub fn is_writable(&self) -> bool {
-        !self.send.is_shutdown()
-            && !self.send.is_fin()
-            && (self.send.off_back() + self.send_lowat as u64)
-                < self.send.max_off()
+        !self.send.is_shutdown() &&
+            !self.send.is_fin() &&
+            (self.send.off_back() + self.send_lowat as u64) <
+                self.send.max_off()
     }
 
     /// Returns true if the stream has data to send and is allowed to send at
@@ -836,9 +838,9 @@ impl<F: BufFactory> Stream<F> {
     pub fn is_flushable(&self) -> bool {
         let off_front = self.send.off_front();
 
-        !self.send.is_empty()
-            && off_front < self.send.off_back()
-            && off_front < self.send.max_off()
+        !self.send.is_empty() &&
+            off_front < self.send.off_back() &&
+            off_front < self.send.max_off()
     }
 
     /// Returns true if the stream is complete.
@@ -1110,7 +1112,8 @@ impl PartialEq for RecvBufInfo {
 }
 #[cfg(test)]
 mod tests {
-    use crate::{range_buf::RangeBuf, DEFAULT_CHUNK_LEN};
+    use crate::range_buf::RangeBuf;
+    use crate::DEFAULT_CHUNK_LEN;
 
     use super::*;
 
@@ -1840,8 +1843,8 @@ mod tests {
     }
 
     fn stream_send_ready(stream: &Stream) -> bool {
-        !stream.send.is_empty()
-            && stream.send.off_front() < stream.send.off_back()
+        !stream.send.is_empty() &&
+            stream.send.off_front() < stream.send.off_back()
     }
 
     #[test]

@@ -11,7 +11,8 @@ use quiceh::testing::Pipe;
 use quiceh::Chunk;
 use std::env;
 use std::sync::mpsc;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
 use std::thread;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;

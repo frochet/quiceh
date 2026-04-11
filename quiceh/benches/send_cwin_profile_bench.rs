@@ -18,8 +18,8 @@ const MAX_DATAGRAM_SIZE: usize = 1350;
 // /!\ this code is designed for flamegraph inspection of the send path logic;
 // not to get reliable efficiency measurements.
 fn bench_stream_send(
-    pipe: &mut Pipe, config: &quiceh::Config, outbuf: &mut [u8],
-    sendbuf: &[u8], stream_id: &mut u64,
+    pipe: &mut Pipe, config: &quiceh::Config, outbuf: &mut [u8], sendbuf: &[u8],
+    stream_id: &mut u64,
 ) {
     // Every 1000 iteration we destroy the pipe. Otherwise we have memory issues
     // since it send may grow the pipe's mem. We don't re-do an handshake at
@@ -87,9 +87,7 @@ fn bench_stream_send_zc<F: BufFactory<Buf = BenchBuf>>(
     black_box(outbuf);
 }
 
-fn bench_sender(
-    c: &mut Criterion<CPUTime>, config: &quiceh::Config, name: &str,
-) {
+fn bench_sender(c: &mut Criterion<CPUTime>, config: &quiceh::Config, name: &str) {
     let mut group = c.benchmark_group(name);
     group.throughput(Throughput::Bytes(10000));
 

@@ -178,8 +178,8 @@ fn main() {
 
             // Lookup a connection based on the packet's connection ID. If there
             // is no connection matching, create a new one.
-            let client = if !clients.contains_key(&hdr.dcid)
-                && !clients.contains_key(&conn_id)
+            let client = if !clients.contains_key(&hdr.dcid) &&
+                !clients.contains_key(&conn_id)
             {
                 if hdr.ty != quiceh::Type::Initial {
                     error!("Packet is not Initial");
@@ -308,8 +308,8 @@ fn main() {
 
             // Create a new HTTP/3 connection as soon as the QUIC connection
             // is established.
-            if (client.conn.is_in_early_data() || client.conn.is_established())
-                && client.http3_conn.is_none()
+            if (client.conn.is_in_early_data() || client.conn.is_established()) &&
+                client.http3_conn.is_none()
             {
                 debug!(
                     "{} QUIC handshake completed, now trying HTTP/3",
@@ -365,9 +365,8 @@ fn main() {
 
                             Ok((_stream_id, quiceh::h3::Event::Finished)) => (),
 
-                            Ok((_stream_id, quiceh::h3::Event::Reset { .. })) => {
-                                ()
-                            },
+                            Ok((_stream_id, quiceh::h3::Event::Reset { .. })) =>
+                                (),
 
                             Ok((
                                 _prioritized_element_id,
@@ -390,8 +389,8 @@ fn main() {
                                 break;
                             },
                         }
-                    } else if client.conn.version()
-                        == quiceh::PROTOCOL_VERSION_VREVERSO
+                    } else if client.conn.version() ==
+                        quiceh::PROTOCOL_VERSION_VREVERSO
                     {
                         match http3_conn.poll(&mut client.conn) {
                             Ok((
@@ -416,9 +415,8 @@ fn main() {
 
                             Ok((_stream_id, quiceh::h3::Event::Finished)) => (),
 
-                            Ok((_stream_id, quiceh::h3::Event::Reset { .. })) => {
-                                ()
-                            },
+                            Ok((_stream_id, quiceh::h3::Event::Reset { .. })) =>
+                                (),
 
                             Ok((
                                 _prioritized_element_id,
@@ -629,11 +627,10 @@ fn build_response(
     // Look for the request's path and method.
     for hdr in request {
         match hdr.name() {
-            b":path" => {
+            b":path" =>
                 path = std::path::Path::new(
                     std::str::from_utf8(hdr.value()).unwrap(),
-                )
-            },
+                ),
 
             b":method" => method = Some(hdr.value()),
 

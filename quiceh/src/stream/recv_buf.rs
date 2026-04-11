@@ -109,8 +109,8 @@ impl StreamChunk {
     #[inline]
     pub(crate) fn fill_from(&mut self, buf: &[u8], start_off: u64) -> usize {
         debug_assert!(
-            start_off >= self.stream_offset_start
-                && start_off < self.stream_offset_start + self.capacity(),
+            start_off >= self.stream_offset_start &&
+                start_off < self.stream_offset_start + self.capacity(),
             "start_off is not into the correct range. start_off:{},\
                       chunk.stream_start_off:{}",
             start_off,
@@ -709,7 +709,8 @@ impl RecvBuf {
         Ok((pooled, self.is_fin()))
     }
 
-    /// Gives contiguous bytes as a mutable slice from the stream buffer's front.
+    /// Gives contiguous bytes as a mutable slice from the stream buffer's
+    /// front.
     ///
     /// This function also increases self.off, which makes quiceh assumes
     /// these bytes have been delivered to the app.
@@ -718,8 +719,8 @@ impl RecvBuf {
         // We have received data in order, we can read it right away.
         let chunk = self.chunks.front_mut().ok_or(Error::Done)?;
 
-        if self.off < self.contiguous_off
-            && chunk.contiguous_off < chunk.capacity() as usize
+        if self.off < self.contiguous_off &&
+            chunk.contiguous_off < chunk.capacity() as usize
         {
             if self.contiguous_off > chunk.max_off() {
                 let len = chunk.capacity() - chunk.consumed as u64;
@@ -743,11 +744,12 @@ impl RecvBuf {
     /// can be collected, and how many bytes are available for read.
     #[inline]
     pub fn mark_consumed(&mut self, consumed: usize) -> Result<(bool, usize)> {
-        // Safe since this function can only be called if we have something to read, and having
-        // something to read means self.chunks isn't empty.
+        // Safe since this function can only be called if we have something to
+        // read, and having something to read means self.chunks isn't
+        // empty.
         let chunk = self.chunks.front_mut().unwrap();
-        if chunk.stream_offset_start == u64::MAX
-            || chunk.consumed + consumed > chunk.capacity() as usize
+        if chunk.stream_offset_start == u64::MAX ||
+            chunk.consumed + consumed > chunk.capacity() as usize
         {
             return Err(Error::InvalidAPICall(
                 "You may consuming more than what is available to read",
@@ -783,8 +785,10 @@ impl RecvBuf {
         let does_consumed_reach_coff = chunk.consumed == chunk.contiguous_off;
 
         // Serveral cases:
-        // - did not consume all contiguous_off bytes (is_fin or !is_fin should be same behavior)
-        // - consumed all contiguous_bytes but contiguous_bytes < chunk.capacity() && !is_fin
+        // - did not consume all contiguous_off bytes (is_fin or !is_fin should be
+        //   same behavior)
+        // - consumed all contiguous_bytes but contiguous_bytes < chunk.capacity()
+        //   && !is_fin
         // - consumed all contiguous_bytes and is_fin
 
         // let's recycle
@@ -806,14 +810,14 @@ impl RecvBuf {
 
         // TODO fixme: make sure we can still stream_peek() as long as
         // stream_consumed() wasn't called up the end of the stream.
-        //else if chunk.contiguous_off == chunk.consumed {
+        // else if chunk.contiguous_off == chunk.consumed {
         //// The stream has been collected, and the application has read
         //// everything. We can collect the buffer as well.
-        //Ok((true, 0))
+        // Ok((true, 0))
         //} else {
         //// The stream has been collected but the application didn't fully read
         //// the available data yet.
-        //Ok((false, chunk.len()))
+        // Ok((false, chunk.len()))
         //}
     }
 
@@ -895,7 +899,8 @@ impl RecvBuf {
         Ok(())
     }
 
-    /// Returns a `Chunk` supposed to hold bytes starting at stream_offset % chunk_len
+    /// Returns a `Chunk` supposed to hold bytes starting at stream_offset %
+    /// chunk_len
     #[inline]
     pub fn get_stream_chunk(&mut self, stream_offset: u64) -> Result<Chunk> {
         if stream_offset < self.contiguous_off {
@@ -927,8 +932,8 @@ impl RecvBuf {
         let relative_buf_offset = stream_offset % self.max_chunklen as u64;
 
         if let Ok(index) = self.chunks.binary_search_by(|chunk| {
-            if (chunk.stream_offset_start
-                ..chunk.stream_offset_start.saturating_add(chunk.capacity()))
+            if (chunk.stream_offset_start..
+                chunk.stream_offset_start.saturating_add(chunk.capacity()))
                 .contains(&stream_offset)
             {
                 std::cmp::Ordering::Equal
@@ -1390,8 +1395,8 @@ mod tests {
         assert_eq!(recv.off, 0);
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            // bytes are contiguous, so they're all available to read. We can read and split it
-            // with consume tho.
+            // bytes are contiguous, so they're all available to read. We can read
+            // and split it with consume tho.
             let (b, fin) = recv.read().unwrap();
             assert_eq!(b.len(), 19);
             assert!(recv.mark_consumed(10).is_ok());
@@ -2203,8 +2208,8 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert_eq!(recv.emit(&mut buf), Err(Error::Done));
         } else {
-            // We're not fin yet but we have nothing to read, so read returns 0 bytes.
-            // Should we do Error::Done?
+            // We're not fin yet but we have nothing to read, so read returns 0
+            // bytes. Should we do Error::Done?
             assert_eq!(recv.read().unwrap().0.len(), 0);
         }
     }

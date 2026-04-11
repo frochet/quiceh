@@ -69,4 +69,3 @@ use boring_sys as sys;
 unsafe fn RAND_bytes(buf: *mut u8, len: libc::size_t) -> libc::c_int {
     sys::RAND_bytes(buf as _, len as _) as _
 }
-
