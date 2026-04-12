@@ -109,8 +109,8 @@ impl StreamChunk {
     #[inline]
     pub(crate) fn fill_from(&mut self, buf: &[u8], start_off: u64) -> usize {
         debug_assert!(
-            start_off >= self.stream_offset_start &&
-                start_off < self.stream_offset_start + self.capacity(),
+            start_off >= self.stream_offset_start
+                && start_off < self.stream_offset_start + self.capacity(),
             "start_off is not into the correct range. start_off:{},\
                       chunk.stream_start_off:{}",
             start_off,
@@ -526,10 +526,8 @@ impl RecvBuf {
 
         self.len = cmp::max(self.len, buf.max_off());
 
-        if !self.drain && self.contiguous_off != buf.start_off {
+        if !self.drain {
             self.heap.insert(buf.start_off, buf);
-        } else if self.contiguous_off == buf.start_off {
-            self.contiguous_off += buf.len as u64;
         }
 
         Ok(())
@@ -562,7 +560,7 @@ impl RecvBuf {
             let mut this_len = recvbufinfo.len as u64;
             let this_offset = recvbufinfo.start_off;
             debug_assert!(
-                this_offset > chunk.stream_offset_start,
+                this_offset >= chunk.stream_offset_start,
                 "Current chunk's starting offest is smaller than expected"
             );
 
@@ -572,9 +570,10 @@ impl RecvBuf {
                     .expect("BUG: we should have a memory chunk");
             }
             // We need to copy in case some out of order packet decryption
-            // happened to avoid data corruption.
+            // happened to avoid data corruption, or in a case of a muliplexec
+            // stream frame.
             if let Some(buf) = recvbufinfo.data() {
-                trace!("Packet wasn't received in order; a copy is necessary");
+                trace!("Packet wasn't received in order or was multiplexed; a copy is necessary");
                 let mut written = chunk.fill_from(buf, this_offset);
                 while written < recvbufinfo.len {
                     // we need to write into the next chunk
@@ -719,8 +718,8 @@ impl RecvBuf {
         // We have received data in order, we can read it right away.
         let chunk = self.chunks.front_mut().ok_or(Error::Done)?;
 
-        if self.off < self.contiguous_off &&
-            chunk.contiguous_off < chunk.capacity() as usize
+        if self.off < self.contiguous_off
+            && chunk.contiguous_off < chunk.capacity() as usize
         {
             if self.contiguous_off > chunk.max_off() {
                 let len = chunk.capacity() - chunk.consumed as u64;
@@ -748,8 +747,8 @@ impl RecvBuf {
         // read, and having something to read means self.chunks isn't
         // empty.
         let chunk = self.chunks.front_mut().unwrap();
-        if chunk.stream_offset_start == u64::MAX ||
-            chunk.consumed + consumed > chunk.capacity() as usize
+        if chunk.stream_offset_start == u64::MAX
+            || chunk.consumed + consumed > chunk.capacity() as usize
         {
             return Err(Error::InvalidAPICall(
                 "You may consuming more than what is available to read",
@@ -932,8 +931,8 @@ impl RecvBuf {
         let relative_buf_offset = stream_offset % self.max_chunklen as u64;
 
         if let Ok(index) = self.chunks.binary_search_by(|chunk| {
-            if (chunk.stream_offset_start..
-                chunk.stream_offset_start.saturating_add(chunk.capacity()))
+            if (chunk.stream_offset_start
+                ..chunk.stream_offset_start.saturating_add(chunk.capacity()))
                 .contains(&stream_offset)
             {
                 std::cmp::Ordering::Equal
@@ -1380,6 +1379,7 @@ mod tests {
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             assert!(recv.write_v3(firstinfo).is_ok());
+            recv.advance_contiguous_bytes_if_any().unwrap();
         } else {
             assert!(recv.write(first).is_ok());
         }
@@ -1388,6 +1388,7 @@ mod tests {
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             assert!(recv.write_v3(secondinfo).is_ok());
+            recv.advance_contiguous_bytes_if_any().unwrap();
         } else {
             assert!(recv.write(second).is_ok());
         }
