@@ -653,9 +653,9 @@ impl Frame {
                 }
 
                 if let Some(ecn) = ecn_counts {
-                    len += octets_rev::varint_len(ecn.ect0_count)
-                        + octets_rev::varint_len(ecn.ect1_count)
-                        + octets_rev::varint_len(ecn.ecn_ce_count);
+                    len += octets_rev::varint_len(ecn.ect0_count) +
+                        octets_rev::varint_len(ecn.ect1_count) +
+                        octets_rev::varint_len(ecn.ecn_ce_count);
                 }
 
                 len
@@ -853,20 +853,20 @@ impl Frame {
         // Any other frame is ack-eliciting (note the `!`).
         !matches!(
             self,
-            Frame::Padding { .. }
-                | Frame::ACK { .. }
-                | Frame::ApplicationClose { .. }
-                | Frame::ConnectionClose { .. }
+            Frame::Padding { .. } |
+                Frame::ACK { .. } |
+                Frame::ApplicationClose { .. } |
+                Frame::ConnectionClose { .. }
         )
     }
 
     pub fn probing(&self) -> bool {
         matches!(
             self,
-            Frame::Padding { .. }
-                | Frame::NewConnectionId { .. }
-                | Frame::PathChallenge { .. }
-                | Frame::PathResponse { .. }
+            Frame::Padding { .. } |
+                Frame::NewConnectionId { .. } |
+                Frame::PathChallenge { .. } |
+                Frame::PathResponse { .. }
         )
     }
 
@@ -940,8 +940,8 @@ impl Frame {
                 length: data.len() as u64,
             },
 
-            Frame::CryptoHeader { offset, length }
-            | Frame::CryptoVec { offset, length, .. } => QuicFrame::Crypto {
+            Frame::CryptoHeader { offset, length } |
+            Frame::CryptoVec { offset, length, .. } => QuicFrame::Crypto {
                 offset: *offset,
                 length: *length as u64,
             },
@@ -1008,16 +1008,14 @@ impl Frame {
                 maximum: *max,
             },
 
-            Frame::DataBlocked { limit } => {
-                QuicFrame::DataBlocked { limit: *limit }
-            },
+            Frame::DataBlocked { limit } =>
+                QuicFrame::DataBlocked { limit: *limit },
 
-            Frame::StreamDataBlocked { stream_id, limit } => {
+            Frame::StreamDataBlocked { stream_id, limit } =>
                 QuicFrame::StreamDataBlocked {
                     stream_id: *stream_id,
                     limit: *limit,
-                }
-            },
+                },
 
             Frame::StreamsBlockedBidi { limit } => QuicFrame::StreamsBlocked {
                 stream_type: StreamType::Bidirectional,
@@ -1044,15 +1042,13 @@ impl Frame {
                 )),
             },
 
-            Frame::RetireConnectionId { seq_num } => {
+            Frame::RetireConnectionId { seq_num } =>
                 QuicFrame::RetireConnectionId {
                     sequence_number: *seq_num as u32,
-                }
-            },
+                },
 
-            Frame::PathChallenge { .. } => {
-                QuicFrame::PathChallenge { data: None }
-            },
+            Frame::PathChallenge { .. } =>
+                QuicFrame::PathChallenge { data: None },
 
             Frame::PathResponse { .. } => QuicFrame::PathResponse { data: None },
 
@@ -1414,8 +1410,8 @@ fn parse_stream_frame<T: octets_rev::OctetsRead>(
     if likely(version == crate::PROTOCOL_VERSION_VREVERSO) {
         // This avoids cloning the buffer, as does the RangeBuf;
         // we can do this because we decrypt into the application's buffer,
-        // overriding the previous packet's control since they're put at the trail. We
-        // are not outliving the caller.
+        // overriding the previous packet's control since they're put at the
+        // trail. We are not outliving the caller.
         b.skip(len)?;
         let metadata = stream::RecvBufInfo::from(offset, len, fin);
 
@@ -1426,8 +1422,8 @@ fn parse_stream_frame<T: octets_rev::OctetsRead>(
     } else {
         let data = b.get_bytes(len)?;
         // QUIC v1 code is cloning the data wihin RangeBuf ; This is necessary
-        // since otherwise a reference may outlive the data provided to quiceh; e.g., if
-        // the data lives on the application's stack frame.
+        // since otherwise a reference may outlive the data provided to quiceh;
+        // e.g., if the data lives on the application's stack frame.
         let data = <RangeBuf>::from(data.as_ref(), offset, fin);
 
         Ok(Frame::Stream { stream_id, data })
@@ -1475,7 +1471,8 @@ mod tests {
     /// version.
     fn make_reader(
         buf: &[u8],
-    ) -> Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets<'_>> + '_> {
+    ) -> Box<dyn octets_rev::OctetsRead<Bytes = octets_rev::Octets<'_>> + '_>
+    {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             Box::new(octets_rev::OctetsRev::with_slice(buf))
         } else {

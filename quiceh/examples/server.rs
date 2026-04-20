@@ -176,8 +176,8 @@ fn main() {
 
             // Lookup a connection based on the packet's connection ID. If there
             // is no connection matching, create a new one.
-            let client = if !clients.contains_key(&hdr.dcid)
-                && !clients.contains_key(&conn_id)
+            let client = if !clients.contains_key(&hdr.dcid) &&
+                !clients.contains_key(&conn_id)
             {
                 if hdr.ty != quiceh::Type::Initial {
                     error!("Packet is not Initial");

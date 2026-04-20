@@ -301,7 +301,9 @@ use boring_sys as sys;
 // SSL_METHOD specific for boringssl.
 #[inline]
 #[allow(non_snake_case)]
-pub(super) unsafe fn SSL_CTX_set_tlsext_ticket_keys( ctx: *mut SSL_CTX, key: *const u8, key_len: usize, ) -> c_int {
+pub(super) unsafe fn SSL_CTX_set_tlsext_ticket_keys(
+    ctx: *mut SSL_CTX, key: *const u8, key_len: usize,
+) -> c_int {
     sys::SSL_CTX_set_tlsext_ticket_keys(ctx as _, key as _, key_len as _) as _
 }
 
@@ -313,14 +315,25 @@ unsafe fn SSL_CTX_set_early_data_enabled(ctx: *mut SSL_CTX, enabled: i32) {
 
 #[inline]
 #[allow(non_snake_case)]
-pub(super) unsafe fn SSL_CTX_set_session_cache_mode( ctx: *mut SSL_CTX, mode: c_int, ) -> c_int {
+pub(super) unsafe fn SSL_CTX_set_session_cache_mode(
+    ctx: *mut SSL_CTX, mode: c_int,
+) -> c_int {
     sys::SSL_CTX_set_session_cache_mode(ctx as _, mode as _) as _
 }
 
 #[inline]
 #[allow(non_snake_case)]
-pub(super) unsafe fn SSL_get_ex_new_index( argl: c_long, argp: *const c_void, unused: *const c_void, dup_unused: *const c_void, free_func: *const c_void, ) -> c_int {
-    sys::SSL_get_ex_new_index(argl as _, argp as _, std::mem::transmute(unused), std::mem::transmute(dup_unused), std::mem::transmute(free_func)) as _
+pub(super) unsafe fn SSL_get_ex_new_index(
+    argl: c_long, argp: *const c_void, unused: *const c_void,
+    dup_unused: *const c_void, free_func: *const c_void,
+) -> c_int {
+    sys::SSL_get_ex_new_index(
+        argl as _,
+        argp as _,
+        std::mem::transmute(unused),
+        std::mem::transmute(dup_unused),
+        std::mem::transmute(free_func),
+    ) as _
 }
 
 #[inline]
@@ -343,7 +356,9 @@ unsafe fn SSL_get_peer_signature_algorithm(ssl: *const SSL) -> u16 {
 
 #[inline]
 #[allow(non_snake_case)]
-unsafe fn SSL_get_signature_algorithm_name( sigalg: u16, include_curve: i32, ) -> *const c_char {
+unsafe fn SSL_get_signature_algorithm_name(
+    sigalg: u16, include_curve: i32,
+) -> *const c_char {
     sys::SSL_get_signature_algorithm_name(sigalg as _, include_curve as _) as _
 }
 
@@ -355,32 +370,43 @@ unsafe fn SSL_get0_peer_certificates(ssl: *const SSL) -> *const STACK_OF {
 
 #[inline]
 #[allow(non_snake_case)]
-pub(super) unsafe fn SSL_set_min_proto_version(ssl: *mut SSL, version: u16) -> c_int {
+pub(super) unsafe fn SSL_set_min_proto_version(
+    ssl: *mut SSL, version: u16,
+) -> c_int {
     sys::SSL_set_min_proto_version(ssl as _, version as _) as _
 }
 
 #[inline]
 #[allow(non_snake_case)]
-pub(super) unsafe fn SSL_set_max_proto_version(ssl: *mut SSL, version: u16) -> c_int {
+pub(super) unsafe fn SSL_set_max_proto_version(
+    ssl: *mut SSL, version: u16,
+) -> c_int {
     sys::SSL_set_max_proto_version(ssl as _, version as _) as _
 }
 
 #[inline]
 #[allow(non_snake_case)]
-pub(super) unsafe fn SSL_set_tlsext_host_name( ssl: *mut SSL, name: *const c_char, ) -> c_int {
+pub(super) unsafe fn SSL_set_tlsext_host_name(
+    ssl: *mut SSL, name: *const c_char,
+) -> c_int {
     sys::SSL_set_tlsext_host_name(ssl as _, name as _) as _
 }
 
 #[inline]
 #[allow(non_snake_case)]
-unsafe fn SSL_set_quic_early_data_context( ssl: *mut SSL, context: *const u8, context_len: usize, ) -> c_int {
-    sys::SSL_set_quic_early_data_context(ssl as _, context as _, context_len as _) as _
+unsafe fn SSL_set_quic_early_data_context(
+    ssl: *mut SSL, context: *const u8, context_len: usize,
+) -> c_int {
+    sys::SSL_set_quic_early_data_context(ssl as _, context as _, context_len as _)
+        as _
 }
 
 #[cfg(test)]
 #[inline]
 #[allow(non_snake_case)]
-unsafe fn SSL_set_private_key_method( ssl: *mut SSL, key_method: *const SSL_PRIVATE_KEY_METHOD, ) {
+unsafe fn SSL_set_private_key_method(
+    ssl: *mut SSL, key_method: *const SSL_PRIVATE_KEY_METHOD,
+) {
     sys::SSL_set_private_key_method(ssl as _, key_method as _);
 }
 
@@ -398,13 +424,17 @@ unsafe fn SSL_in_early_data(ssl: *const SSL) -> c_int {
 
 #[inline]
 #[allow(non_snake_case)]
-unsafe fn SSL_SESSION_to_bytes( session: *const SSL_SESSION, out: *mut *mut u8, out_len: *mut usize, ) -> c_int {
+unsafe fn SSL_SESSION_to_bytes(
+    session: *const SSL_SESSION, out: *mut *mut u8, out_len: *mut usize,
+) -> c_int {
     sys::SSL_SESSION_to_bytes(session as _, out as _, out_len as _) as _
 }
 
 #[inline]
 #[allow(non_snake_case)]
-unsafe fn SSL_SESSION_from_bytes( input: *const u8, input_len: usize, ctx: *const SSL_CTX, ) -> *mut SSL_SESSION {
+unsafe fn SSL_SESSION_from_bytes(
+    input: *const u8, input_len: usize, ctx: *const SSL_CTX,
+) -> *mut SSL_SESSION {
     sys::SSL_SESSION_from_bytes(input as _, input_len as _, ctx as _) as _
 }
 
@@ -449,4 +479,3 @@ unsafe fn CRYPTO_BUFFER_len(buffer: *const CRYPTO_BUFFER) -> usize {
 unsafe fn CRYPTO_BUFFER_data(buffer: *const CRYPTO_BUFFER) -> *const u8 {
     sys::CRYPTO_BUFFER_data(buffer as _) as _
 }
-

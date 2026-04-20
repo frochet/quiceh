@@ -92,8 +92,7 @@
 //! # let peer = "127.0.0.1:1234".parse().unwrap();
 //! # let local = "127.0.0.1:4321".parse().unwrap();
 //! // Client connection.
-//! let conn =
-//!     quiceh::connect(Some(&server_name), &scid, local, peer, &config)?;
+//! let conn = quiceh::connect(Some(&server_name), &scid, local, peer, &config)?;
 //!
 //! // Server connection.
 //! # let peer = "127.0.0.1:1234".parse().unwrap();
@@ -1738,8 +1737,7 @@ pub fn accept_with_buf_factory<F: BufFactory>(
 /// # let scid = quiceh::ConnectionId::from_ref(&[0xba; 16]);
 /// # let local = "127.0.0.1:4321".parse().unwrap();
 /// # let peer = "127.0.0.1:1234".parse().unwrap();
-/// let conn =
-///     quiceh::connect(Some(&server_name), &scid, local, peer, &config)?;
+/// let conn = quiceh::connect(Some(&server_name), &scid, local, peer, &config)?;
 /// # Ok::<(), quiceh::Error>(())
 /// ```
 #[inline]
@@ -2488,10 +2486,7 @@ impl<F: BufFactory> Connection<F> {
     /// loop {
     ///     let (read, from) = socket.recv_from(&mut buf).unwrap();
     ///
-    ///     let recv_info = quiceh::RecvInfo {
-    ///         from,
-    ///         to: local,
-    ///     };
+    ///     let recv_info = quiceh::RecvInfo { from, to: local };
     ///
     ///     let read = match conn.recv(&mut buf[..read], recv_info) {
     ///         Ok(v) => v,
@@ -2973,8 +2968,9 @@ impl<F: BufFactory> Connection<F> {
         ) {
             // let's use this control flow to also add the true enc_hdr_len
             // on V3.
-            // Long Header packets except ZeroRTT should not have a stream_id and truncated offset
-            // bytes A stream_id 0 indicates no stream frame encrypted.
+            // Long Header packets except ZeroRTT should not have a stream_id and
+            // truncated offset bytes A stream_id 0 indicates no
+            // stream frame encrypted.
             if hdr.ty == packet::Type::Short || hdr.ty == packet::Type::ZeroRTT {
                 dec_len += enc_hdr_len;
                 enc_hdr_len += hdr.expected_stream_id_len;
@@ -2997,11 +2993,14 @@ impl<F: BufFactory> Connection<F> {
                         let chunk = match s.get_stream_chunk(offset) {
                             Ok(v) => v,
                             Err(e) => {
-                                // This could happen if the network flipped some bits in the
-                                // header. Or in case of a retransmission of data that is already
+                                // This could happen if the network flipped some
+                                // bits in the
+                                // header. Or in case of a retransmission of data
+                                // that is already
                                 // into the Application's contiguous buffer.
                                 //
-                                // We need to check for integrity of pn and header data before
+                                // We need to check for integrity of pn and header
+                                // data before
                                 // acking it.
                                 if e == Error::InvalidOffset {
                                     match packet::decrypt_pkt(
@@ -3012,8 +3011,10 @@ impl<F: BufFactory> Connection<F> {
                                         aead,
                                     ) {
                                         Ok(_v) => {
-                                            // XXX Maybe we should process control frames --
-                                            // depends on ongoing discussion (i.e., resubmitted
+                                            // XXX Maybe we should process control
+                                            // frames --
+                                            // depends on ongoing discussion
+                                            // (i.e., resubmitted
                                             // stream frame should fly alone.
                                             trace!(
                                                 "Dropping a legit packet due to incorrect decoded offset {}", offset,
@@ -3054,8 +3055,9 @@ impl<F: BufFactory> Connection<F> {
                     None => {
                         // This could have been touch by someone on the network.
                         //
-                        // We should still create a buffer but we should clean it if the
-                        // packet happens to be invalid.
+                        // We should still create a buffer but we should clean it
+                        // if the packet happens to be
+                        // invalid.
                         let s = match self.streams.get_or_create(
                             hdr.expected_stream_id,
                             &self.local_transport_params,
@@ -3091,11 +3093,14 @@ impl<F: BufFactory> Connection<F> {
                                     "A new stream has been created for id {}, and the offset: {} is unexpected",
                                     hdr.expected_stream_id, offset
                                 );
-                                // This could happen if the network flipped some bits in the
-                                // QUIC header. Let's clean the memory for that stream, and drop
+                                // This could happen if the network flipped some
+                                // bits in the
+                                // QUIC header. Let's clean the memory for that
+                                // stream, and drop
                                 // the packet.
                                 //
-                                // This cannot happen if it is a legit spurious retransmission
+                                // This cannot happen if it is a legit spurious
+                                // retransmission
                                 // so we don't touch acks.
                                 self.streams.collect_on_recv_error(
                                     hdr.expected_stream_id,
@@ -3196,7 +3201,8 @@ impl<F: BufFactory> Connection<F> {
                                         hdr.expected_stream_id,
                                     );
                                 } else {
-                                    // The chunk could contain valid data from a previous packet
+                                    // The chunk could contain valid data from a
+                                    // previous packet
                                     // processing. We need to put it back.
                                     let stream_chunk = chunk.clone();
                                     if let Some(s) = self
@@ -3215,8 +3221,8 @@ impl<F: BufFactory> Connection<F> {
                             },
                         }
                     } else {
-                        // We have to decrypt in place and then copy. This happens only at
-                        // chunk boundary.
+                        // We have to decrypt in place and then copy. This happens
+                        // only at chunk boundary.
                         packet::decrypt_pkt(
                             &mut b,
                             pn,
@@ -3230,7 +3236,8 @@ impl<F: BufFactory> Connection<F> {
                                     hdr.expected_stream_id,
                                 );
                             } else {
-                                // The chunk could contain valid data from a previous packet
+                                // The chunk could contain valid data from a
+                                // previous packet
                                 // processing. We need to put it back.
                                 let stream_chunk = chunk.clone();
                                 if let Some(s) =
@@ -3410,7 +3417,7 @@ impl<F: BufFactory> Connection<F> {
 
         // Process packet payload.
         if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
-            //set the offset at the end
+            // set the offset at the end
             let payload_start_offset = payload.off();
             payload.skip(payload_len)?;
             let mut payload: OctetsRev = payload.into();
@@ -3430,12 +3437,16 @@ impl<F: BufFactory> Connection<F> {
             )?;
             frame_processing_err = err;
 
-            // Handle chunks and check wether we can advance contiguous data to avoid the next
-            // packet to be believed not in order.
+            // Handle chunks and check wether we can advance contiguous data to
+            // avoid the next packet to be believed not in order.
 
             // We do not do zero-copy for stream 0.
             if smeta.stream_id > 0 {
                 if let Some(stream) = self.streams.get_mut(smeta.stream_id) {
+                    let was_readable = stream.is_readable();
+                    let priority_key =
+                        std::sync::Arc::clone(&stream.priority_key);
+
                     // Check whether we need copy accross
                     if let Some(mut chunk) = maybe_chunk {
                         let offset = decoded_offset.unwrap();
@@ -3443,11 +3454,13 @@ impl<F: BufFactory> Connection<F> {
                             let stream_chunk = chunk.into_inner();
                             stream.recv.insert_stream_chunk(stream_chunk);
                         } else {
-                            // Assuming the Application is setting large enough chunk length, this
+                            // Assuming the Application is setting large enough
+                            // chunk length, this
                             // would be a rare event.
 
                             // Copy the steam data into the chunk.
-                            // We need rewinding b of payload_len, and start to copy len bits
+                            // We need rewinding b of payload_len, and start to
+                            // copy len bits
                             // into until we filled all necessary chunks.
                             b.rewind(dec_len)?;
                             let written = chunk.fill_from(
@@ -3472,6 +3485,10 @@ impl<F: BufFactory> Connection<F> {
                         }
 
                         stream.recv.advance_contiguous_bytes_if_any()?;
+                    }
+
+                    if !was_readable && stream.is_readable() {
+                        self.streams.insert_readable(&priority_key);
                     }
                 }
             }
@@ -3911,19 +3928,20 @@ impl<F: BufFactory> Connection<F> {
     /// # let local = socket.local_addr().unwrap();
     /// # let mut conn = quiceh::accept(&scid, None, local, peer, &config)?;
     /// loop {
-    ///     let (write, send_info) = match conn.send_on_path(&mut out, Some(local), Some(peer)) {
-    ///         Ok(v) => v,
+    ///     let (write, send_info) =
+    ///         match conn.send_on_path(&mut out, Some(local), Some(peer)) {
+    ///             Ok(v) => v,
     ///
-    ///         Err(quiceh::Error::Done) => {
-    ///             // Done writing.
-    ///             break;
-    ///         },
+    ///             Err(quiceh::Error::Done) => {
+    ///                 // Done writing.
+    ///                 break;
+    ///             },
     ///
-    ///         Err(e) => {
-    ///             // An error occurred, handle it.
-    ///             break;
-    ///         },
-    ///     };
+    ///             Err(e) => {
+    ///                 // An error occurred, handle it.
+    ///                 break;
+    ///             },
+    ///         };
     ///
     ///     socket.send_to(&out[..write], &send_info.to).unwrap();
     /// }
@@ -3967,13 +3985,7 @@ impl<F: BufFactory> Connection<F> {
 
         // Limit output packet size to respect the sender and receiver's
         // maximum UDP payload size limit.
-        let mut left = if self.use_hidden_crypt_copy_for_zc {
-            // We reserve a bit more memory for scatter encryption alignment on
-            // blocksize -- only works for AES for this impl.
-            cmp::min(out.len(), self.max_send_udp_payload_size() + 16) - 16
-        } else {
-            cmp::min(out.len(), self.max_send_udp_payload_size())
-        };
+        let mut left = cmp::min(out.len(), self.max_send_udp_payload_size());
 
         let send_pid = match (from, to) {
             (Some(f), Some(t)) => self
@@ -5076,7 +5088,8 @@ impl<F: BufFactory> Connection<F> {
                     // be inplace.
                     let (len, fin) =
                         if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
-                            // Write stream data into the packet buffer; normally right after
+                            // Write stream data into the packet buffer; normally
+                            // right after
                             // the encrypted header.
                             let (len, fin) =
                                 stream.send.emit(&mut b.as_mut()[..max_len])?;
@@ -5108,9 +5121,11 @@ impl<F: BufFactory> Connection<F> {
 
                             // Encode the frame's header.
                             //
-                            // Due to how `OctetsMut::split_at()` works, `stream_hdr` starts
-                            // from the initial offset of `b` (rather than the current
-                            // offset), so it needs to be advanced to the initial frame
+                            // Due to how `OctetsMut::split_at()` works,
+                            // `stream_hdr` starts
+                            // from the initial offset of `b` (rather than the
+                            // current offset), so it
+                            // needs to be advanced to the initial frame
                             // offset.
                             stream_hdr.skip(hdr_off)?;
 
@@ -5243,7 +5258,7 @@ impl<F: BufFactory> Connection<F> {
                 } else {
                     let len = if likely(self.version == PROTOCOL_VERSION_VREVERSO)
                     {
-                        //located potentally after the stream frame
+                        // located potentally after the stream frame
                         let skip_len = if let Some(frame) = &maybe_stream_header {
                             let skip_len = frame.wire_len();
                             skip_len
@@ -5281,8 +5296,9 @@ impl<F: BufFactory> Connection<F> {
 
                         // Encode the frame's header.
                         //
-                        // Due to how `OctetsMut::split_at()` works, `crypto_hdr` starts
-                        // from the initial offset of `b` (rather than the current
+                        // Due to how `OctetsMut::split_at()` works, `crypto_hdr`
+                        // starts from the initial offset
+                        // of `b` (rather than the current
                         // offset), so it needs to be advanced to the
                         // initial frame offset.
                         crypto_hdr.skip(hdr_off)?;
@@ -5432,12 +5448,10 @@ impl<F: BufFactory> Connection<F> {
                 // ctrl cleartext is written inside the destination buffer,
                 // aligned on a multiple of the AES blocksize.
 
-                let align = stream_len % 16;
-                let (b, mut b_ctrl) =
-                    b.split_at(payload_offset + stream_len + align)?;
+                let (b, mut b_ctrl) = b.split_at(payload_offset + stream_len)?;
                 trace!(
                     "split_at: {}; skipping {} bytes",
-                    payload_offset + stream_len + align,
+                    payload_offset + stream_len,
                     cumul - stream_len
                 );
                 b_ctrl.skip(cumul - stream_len)?;
@@ -5452,7 +5466,7 @@ impl<F: BufFactory> Connection<F> {
                 // The StreamHeader frame should be last.
                 let stream_len = if let Some(frame) = &maybe_stream_header {
                     let frame_len = frame.wire_len();
-                    //cumul -= frame_len;
+                    // cumul -= frame_len;
                     left += frame_len;
                     let len = if let frame::Frame::StreamHeader {
                         length, ..
@@ -5599,8 +5613,9 @@ impl<F: BufFactory> Connection<F> {
                 };
 
             let written = if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
-                // We encrypt with the data in inbuf and the ctrl data in extra_in, starting
-                // with the reversed stream frame
+                // We encrypt with the data in inbuf and the ctrl data in
+                // extra_in, starting with the reversed stream
+                // frame
                 let rangebuf = sentry.as_ref().and_then(|v| match v {
                     std::collections::hash_map::Entry::Occupied(v) => {
                         v.get().send.rangebuf_get().map(|rb| &rb[..b_len])
@@ -5638,8 +5653,8 @@ impl<F: BufFactory> Connection<F> {
                     },
                     _ => None,
                 });
-                // We encrypt with the data in extra_in and the ctrl in inbuf, with
-                // the stream header at the end of the ctrl.
+                // We encrypt with the data in extra_in and the ctrl in inbuf,
+                // with the stream header at the end of the ctrl.
                 if let Some(ctrl) = ctrl {
                     packet::encrypt_pkt(
                         &mut b_start,
@@ -5840,9 +5855,10 @@ impl<F: BufFactory> Connection<F> {
     /// Reading data from a stream may trigger queueing of control messages
     /// (e.g. MAX_STREAM_DATA). [`send()`] should be called after reading.
     ///
-    /// If this call returns StreamReset, the caller should either call [`stream_consumed()`] to
-    /// consumed the fin flag (indicate 0 bytes consumed) or call [`stream_recv_zc()`]. Both calls
-    /// would do internal cleanup and return StreamReset again.
+    /// If this call returns StreamReset, the caller should either call
+    /// [`stream_consumed()`] to consumed the fin flag (indicate 0 bytes
+    /// consumed) or call [`stream_recv_zc()`]. Both calls would do internal
+    /// cleanup and return StreamReset again.
     ///
     /// ## Examples:
     /// ```no_run
@@ -5887,8 +5903,8 @@ impl<F: BufFactory> Connection<F> {
             return Err(Error::Done);
         }
 
-        //let local = stream.local;
-        //let priority_key = Arc::clone(&stream.priority_key);
+        // let local = stream.local;
+        // let priority_key = Arc::clone(&stream.priority_key);
 
         if let Some(e) = stream.recv.has_error() {
             // cleanup recv internals --
@@ -5898,9 +5914,9 @@ impl<F: BufFactory> Connection<F> {
             stream.recv.collect();
             self.stream_cleanups.push(stream_id);
 
-            //self.streams.remove_readable(&priority_key);
-            //TODO we should likely return any contiguous bytes that were not
-            //yet consumed.
+            // self.streams.remove_readable(&priority_key);
+            // TODO we should likely return any contiguous bytes that were not
+            // yet consumed.
             Err(Error::StreamReset(e))
         } else {
             // The stream is ready: we have a reference to some contiguous data
@@ -5974,9 +5990,9 @@ impl<F: BufFactory> Connection<F> {
 
         self.flow_control.add_consumed(consumed as u64);
 
-        //TODO refactor
+        // TODO refactor
         match stream.mark_consumed(consumed) {
-            Ok((_, _)) => {
+            Ok((..)) => {
                 let priority_key = Arc::clone(&stream.priority_key);
                 let local = stream.local;
                 let is_almost_full = stream.recv.almost_full();
@@ -8414,6 +8430,7 @@ impl<F: BufFactory> Connection<F> {
     fn process_frame<T: octets_rev::OctetsRead>(
         &mut self, frame: frame::Frame, hdr: &packet::Header, b: &mut T,
         recv_path_id: usize, epoch: packet::Epoch, now: time::Instant,
+        is_zc: bool,
     ) -> Result<()> {
         trace!("{} rx frm {:?}", self.trace_id, frame);
 
@@ -8691,17 +8708,14 @@ impl<F: BufFactory> Connection<F> {
                 // => Overlap prevents this optimization to work
                 // best.
                 //
-                if stream.recv.not_in_order(&metadata) {
-                    // We should be at the payload_offset; we can shift the buffer
-                    // to the right and then call get_bytes; or alternatively directly
-                    // read metadata.len() at b's offset.
+                if stream.recv.not_in_order(&metadata) || !is_zc {
+                    // Either we have received a stream frame not in order, or
+                    // we have multiple stream frame within the packet, and is_zc was
+                    // set to false
                     b.rewind(metadata.len())?;
                     let data = b.get_bytes(metadata.len())?;
-                    // This sucks since it copies; and should be avoided at all
-                    // ("let's keep it flexible") cost. (see
-                    // comments above).
                     trace!(
-                        "Not in order: attaching a copy at offset {}",
+                        "Not in order or multiplexed: attaching a copy at offset {}",
                         metadata.off()
                     );
                     metadata.attach_data(Vec::from(data.as_ref()));
@@ -8710,6 +8724,10 @@ impl<F: BufFactory> Connection<F> {
                 }
 
                 stream.recv.write_v3(metadata)?;
+
+                if !is_zc {
+                    stream.recv.advance_contiguous_bytes_if_any()?;
+                }
 
                 if !was_readable && stream.is_readable() {
                     self.streams.insert_readable(&priority_key);
@@ -9064,6 +9082,8 @@ impl<F: BufFactory> Connection<F> {
                 *probing = false;
             }
 
+            let mut is_zc = false;
+
             if self.version == PROTOCOL_VERSION_VREVERSO {
                 if let frame::Frame::StreamV3 {
                     stream_id: s,
@@ -9071,16 +9091,17 @@ impl<F: BufFactory> Connection<F> {
                 } = frame
                 {
                     // If this is the stream frame intented for zc.
-                    if payload.off() == stop_off {
+                    if payload.off() == stop_off && s > 0 {
                         smeta.stream_id = s;
                         smeta.start_off = m.off();
                         smeta.len = m.len();
+                        is_zc = true;
                     }
                 }
             }
 
-            if let Err(e) =
-                self.process_frame(frame, hdr, payload, recv_pid, epoch, now)
+            if let Err(e) = self
+                .process_frame(frame, hdr, payload, recv_pid, epoch, now, is_zc)
             {
                 frame_processing_err = Some(e);
                 break;
@@ -10732,8 +10753,10 @@ pub mod testing {
                             Ok(v) => v,
                             Err(e) => {
                                 match e {
-                                    // XXX it assumes the sender is not buffering other control
-                                    // cells. We should process them if decryption succeeds.
+                                    // XXX it assumes the sender is not buffering
+                                    // other control
+                                    // cells. We should process them if decryption
+                                    // succeeds.
                                     Error::InvalidOffset => {
                                         conn.pkt_num_spaces[epoch]
                                             .recv_pkt_num
@@ -10797,7 +10820,8 @@ pub mod testing {
                         let chunk = match s.get_stream_chunk(offset) {
                             Ok(v) => v,
                             Err(e) => {
-                                // This could happen if the network flipped some bits in the
+                                // This could happen if the network flipped some
+                                // bits in the
                                 // header.
                                 conn.streams.collect_on_recv_error(
                                     hdr.expected_stream_id,
@@ -11846,6 +11870,53 @@ mod tests {
             assert_eq!(&b[..20], b", world and goodbye!");
             assert!(pipe.server.stream_consumed(4, len).is_ok());
             assert!(pipe.server.stream_finished(4));
+        }
+    }
+
+    #[test]
+    fn stream_vreverso_multiple_frames_in_packet() {
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+            let mut buf = [0; 65535];
+            let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
+            config
+                .load_cert_chain_from_pem_file("examples/cert.crt")
+                .unwrap();
+            config
+                .load_priv_key_from_pem_file("examples/cert.key")
+                .unwrap();
+            config
+                .set_application_protos(&[b"proto1", b"proto2"])
+                .unwrap();
+            config.set_initial_max_streams_bidi(3);
+            config.set_initial_max_stream_data_bidi_local(30);
+            config.set_initial_max_stream_data_bidi_remote(30);
+            config.set_initial_max_data(30);
+
+            let mut pipe = <Pipe>::with_config(&config).unwrap();
+            assert_eq!(pipe.handshake(), Ok(()));
+            let frames = [
+                frame::Frame::Stream {
+                    stream_id: 4,
+                    data: <RangeBuf>::from(b"aaaaa", 0, false),
+                },
+                frame::Frame::Stream {
+                    stream_id: 8,
+                    data: <RangeBuf>::from(b"bbbbb", 0, false),
+                },
+            ];
+            let pkt_type = packet::Type::Short;
+
+            assert!(pipe.send_pkt_to_server(pkt_type, &frames, &mut buf).is_ok());
+
+            let (b, len, is_fin) = pipe.server.stream_peek(4).unwrap();
+            assert_eq!((len, is_fin), (5, false));
+            assert_eq!(&b[..len], b"aaaaa");
+            assert!(pipe.server.stream_consumed(4, len).is_ok());
+
+            let (b, len, is_fin) = pipe.server.stream_peek(8).unwrap();
+            assert_eq!((len, is_fin), (5, false));
+            assert_eq!(&b[..len], b"bbbbb");
+            assert!(pipe.server.stream_consumed(8, len).is_ok());
         }
     }
 
@@ -17212,7 +17283,8 @@ mod tests {
             };
         }
 
-        // Then are stream 12+off_by and 4+off_by, with the same priority, incrementally.
+        // Then are stream 12+off_by and 4+off_by, with the same priority,
+        // incrementally.
         let mut off = 0;
 
         for _ in 1..=3 {

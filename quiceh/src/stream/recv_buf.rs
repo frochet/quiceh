@@ -526,10 +526,8 @@ impl RecvBuf {
 
         self.len = cmp::max(self.len, buf.max_off());
 
-        if !self.drain && self.contiguous_off != buf.start_off {
+        if !self.drain {
             self.heap.insert(buf.start_off, buf);
-        } else if self.contiguous_off == buf.start_off {
-            self.contiguous_off += buf.len as u64;
         }
 
         Ok(())
@@ -562,7 +560,7 @@ impl RecvBuf {
             let mut this_len = recvbufinfo.len as u64;
             let this_offset = recvbufinfo.start_off;
             debug_assert!(
-                this_offset > chunk.stream_offset_start,
+                this_offset >= chunk.stream_offset_start,
                 "Current chunk's starting offest is smaller than expected"
             );
 
@@ -572,9 +570,10 @@ impl RecvBuf {
                     .expect("BUG: we should have a memory chunk");
             }
             // We need to copy in case some out of order packet decryption
-            // happened to avoid data corruption.
+            // happened to avoid data corruption, or in a case of a muliplexec
+            // stream frame.
             if let Some(buf) = recvbufinfo.data() {
-                trace!("Packet wasn't received in order; a copy is necessary");
+                trace!("Packet wasn't received in order or was multiplexed; a copy is necessary");
                 let mut written = chunk.fill_from(buf, this_offset);
                 while written < recvbufinfo.len {
                     // we need to write into the next chunk
@@ -709,7 +708,8 @@ impl RecvBuf {
         Ok((pooled, self.is_fin()))
     }
 
-    /// Gives contiguous bytes as a mutable slice from the stream buffer's front.
+    /// Gives contiguous bytes as a mutable slice from the stream buffer's
+    /// front.
     ///
     /// This function also increases self.off, which makes quiceh assumes
     /// these bytes have been delivered to the app.
@@ -743,8 +743,9 @@ impl RecvBuf {
     /// can be collected, and how many bytes are available for read.
     #[inline]
     pub fn mark_consumed(&mut self, consumed: usize) -> Result<(bool, usize)> {
-        // Safe since this function can only be called if we have something to read, and having
-        // something to read means self.chunks isn't empty.
+        // Safe since this function can only be called if we have something to
+        // read, and having something to read means self.chunks isn't
+        // empty.
         let chunk = self.chunks.front_mut().unwrap();
         if chunk.stream_offset_start == u64::MAX
             || chunk.consumed + consumed > chunk.capacity() as usize
@@ -783,8 +784,10 @@ impl RecvBuf {
         let does_consumed_reach_coff = chunk.consumed == chunk.contiguous_off;
 
         // Serveral cases:
-        // - did not consume all contiguous_off bytes (is_fin or !is_fin should be same behavior)
-        // - consumed all contiguous_bytes but contiguous_bytes < chunk.capacity() && !is_fin
+        // - did not consume all contiguous_off bytes (is_fin or !is_fin should be
+        //   same behavior)
+        // - consumed all contiguous_bytes but contiguous_bytes < chunk.capacity()
+        //   && !is_fin
         // - consumed all contiguous_bytes and is_fin
 
         // let's recycle
@@ -806,14 +809,14 @@ impl RecvBuf {
 
         // TODO fixme: make sure we can still stream_peek() as long as
         // stream_consumed() wasn't called up the end of the stream.
-        //else if chunk.contiguous_off == chunk.consumed {
+        // else if chunk.contiguous_off == chunk.consumed {
         //// The stream has been collected, and the application has read
         //// everything. We can collect the buffer as well.
-        //Ok((true, 0))
+        // Ok((true, 0))
         //} else {
         //// The stream has been collected but the application didn't fully read
         //// the available data yet.
-        //Ok((false, chunk.len()))
+        // Ok((false, chunk.len()))
         //}
     }
 
@@ -895,7 +898,8 @@ impl RecvBuf {
         Ok(())
     }
 
-    /// Returns a `Chunk` supposed to hold bytes starting at stream_offset % chunk_len
+    /// Returns a `Chunk` supposed to hold bytes starting at stream_offset %
+    /// chunk_len
     #[inline]
     pub fn get_stream_chunk(&mut self, stream_offset: u64) -> Result<Chunk> {
         if stream_offset < self.contiguous_off {
@@ -1375,6 +1379,7 @@ mod tests {
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             assert!(recv.write_v3(firstinfo).is_ok());
+            recv.advance_contiguous_bytes_if_any().unwrap();
         } else {
             assert!(recv.write(first).is_ok());
         }
@@ -1383,6 +1388,7 @@ mod tests {
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
             assert!(recv.write_v3(secondinfo).is_ok());
+            recv.advance_contiguous_bytes_if_any().unwrap();
         } else {
             assert!(recv.write(second).is_ok());
         }
@@ -1390,8 +1396,8 @@ mod tests {
         assert_eq!(recv.off, 0);
 
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            // bytes are contiguous, so they're all available to read. We can read and split it
-            // with consume tho.
+            // bytes are contiguous, so they're all available to read. We can read
+            // and split it with consume tho.
             let (b, fin) = recv.read().unwrap();
             assert_eq!(b.len(), 19);
             assert!(recv.mark_consumed(10).is_ok());
@@ -2203,8 +2209,8 @@ mod tests {
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_V1 {
             assert_eq!(recv.emit(&mut buf), Err(Error::Done));
         } else {
-            // We're not fin yet but we have nothing to read, so read returns 0 bytes.
-            // Should we do Error::Done?
+            // We're not fin yet but we have nothing to read, so read returns 0
+            // bytes. Should we do Error::Done?
             assert_eq!(recv.read().unwrap().0.len(), 0);
         }
     }

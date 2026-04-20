@@ -199,8 +199,8 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
             b.iter_batched_ref(
                 || {
                     // init called for each run
-                    let mut s = Session::with_configs(&config_v3, &h3_config)
-                        .unwrap();
+                    let mut s =
+                        Session::with_configs(&config_v3, &h3_config).unwrap();
                     s.handshake().unwrap();
                     let mut response_map = StreamIdHashMap::default();
                     let resp = vec![
@@ -253,8 +253,8 @@ fn criterion_benchmark(c: &mut Criterion<CPUTime>) {
             b.iter_batched_ref(
                 || {
                     // init called for each run
-                    let mut s = Session::with_configs(&config_v1, &h3_config)
-                        .unwrap();
+                    let mut s =
+                        Session::with_configs(&config_v1, &h3_config).unwrap();
                     s.handshake().unwrap();
                     let mut response_map = StreamIdHashMap::default();
                     let resp = vec![
