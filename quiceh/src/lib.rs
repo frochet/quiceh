@@ -442,8 +442,6 @@ use std::collections::VecDeque;
 use branches::likely;
 use smallvec::SmallVec;
 
-use range_buf::DefaultBufFactory;
-
 /// The current QUIC wire version.
 pub const PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_VREVERSO;
 
@@ -2056,9 +2054,15 @@ impl<F: BufFactory> fmt::Debug for Connection<F> {
             .field("lost_count", &self.lost_count)
             .field("retrans_count", &self.retrans_count)
             .field("reset_stream_local_count", &self.reset_stream_local_count)
-            .field("stopped_stream_local_count", &self.stopped_stream_local_count)
+            .field(
+                "stopped_stream_local_count",
+                &self.stopped_stream_local_count,
+            )
             .field("reset_stream_remote_count", &self.reset_stream_remote_count)
-            .field("stopped_stream_remote_count", &self.stopped_stream_remote_count)
+            .field(
+                "stopped_stream_remote_count",
+                &self.stopped_stream_remote_count,
+            )
             .field("path_challenge_rx_count", &self.path_challenge_rx_count)
             .field("peer_transport_params", &self.peer_transport_params)
             .field("local_transport_params", &self.local_transport_params)
@@ -16028,14 +16032,9 @@ mod tests {
 
         // Server accepts connection.
         let from = "127.0.0.1:1234".parse().unwrap();
-        pipe.server = accept(
-            &scid,
-            Some(&odcid),
-            <Pipe>::server_addr(),
-            from,
-            &config,
-        )
-        .unwrap();
+        pipe.server =
+            accept(&scid, Some(&odcid), <Pipe>::server_addr(), from, &config)
+                .unwrap();
         assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
 
         assert_eq!(pipe.advance(), Ok(()));
@@ -16092,8 +16091,7 @@ mod tests {
         // destination connection ID is ignored.
         let from = "127.0.0.1:1234".parse().unwrap();
         pipe.server =
-            accept(&scid, None, <Pipe>::server_addr(), from, &config)
-                .unwrap();
+            accept(&scid, None, <Pipe>::server_addr(), from, &config).unwrap();
         assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
 
         let flight = testing::emit_flight(&mut pipe.server).unwrap();
@@ -16152,14 +16150,9 @@ mod tests {
         // destination connection ID is invalid.
         let from = "127.0.0.1:1234".parse().unwrap();
         let odcid = ConnectionId::from_ref(b"bogus value");
-        pipe.server = accept(
-            &scid,
-            Some(&odcid),
-            <Pipe>::server_addr(),
-            from,
-            &config,
-        )
-        .unwrap();
+        pipe.server =
+            accept(&scid, Some(&odcid), <Pipe>::server_addr(), from, &config)
+                .unwrap();
         assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
 
         let flight = testing::emit_flight(&mut pipe.server).unwrap();
@@ -21273,6 +21266,7 @@ pub use crate::stream::StreamIter;
 
 pub use crate::range_buf::BufFactory;
 pub use crate::range_buf::BufSplit;
+pub use crate::range_buf::DefaultBufFactory;
 pub use crate::stream::Chunk;
 
 use crate::stream::Stream;
