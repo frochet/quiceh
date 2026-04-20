@@ -54,7 +54,7 @@ where
 /// [`Arc`].
 pub trait BufFactory: Clone + Default + Debug {
     /// The type of the generated buffer.
-    type Buf: Clone + Debug + AsRef<[u8]>;
+    type Buf: Clone + Debug + AsRef<[u8]> + Send + Sync;
 
     /// Generate a new buffer from a given slice, the buffer must contain the
     /// same data as the original slice.
