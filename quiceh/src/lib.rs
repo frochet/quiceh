@@ -810,6 +810,20 @@ pub struct ConnectionError {
     pub reason: Vec<u8>,
 }
 
+impl fmt::Display for ConnectionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Connection closed (app: {}, code: {}): {}",
+            self.is_app,
+            self.error_code,
+            String::from_utf8_lossy(&self.reason)
+        )
+    }
+}
+
+impl std::error::Error for ConnectionError {}
+
 /// The side of the stream to be shut down.
 ///
 /// This should be used when calling [`stream_shutdown()`].
