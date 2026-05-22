@@ -9577,6 +9577,11 @@ impl<F: BufFactory> Connection<F> {
     pub fn version(&self) -> u32 {
         self.version
     }
+
+    /// Get this connection's expected chunk length to consume.
+    pub fn expected_chunklen(&self) -> usize {
+        self.chunk_len
+    }
 }
 
 #[cfg(feature = "boringssl-boring-crate")]
@@ -21354,6 +21359,7 @@ pub use crate::range_buf::BufFactory;
 pub use crate::range_buf::BufSplit;
 pub use crate::range_buf::DefaultBufFactory;
 pub use crate::stream::Chunk;
+pub use crate::stream::recv_buf::StreamChunk;
 
 use crate::stream::Stream;
 use octets_rev::OctetsMut;

@@ -57,13 +57,13 @@ const MAX_STREAM_FRAME_LENGTH: usize = 1310;
 #[derive(Eq, PartialEq, Ord, PartialOrd, Default, Debug, Clone)]
 pub struct StreamChunk {
     /// The offset value beginning this chunk of memory.
-    pub(crate) stream_offset_start: u64,
+    pub stream_offset_start: u64,
     /// Data chunk.
-    pub(crate) inner: Vec<u8>,
+    pub inner: Vec<u8>,
     /// number of bytes already consumed from inner.
-    pub(crate) consumed: usize,
+    pub consumed: usize,
     /// offset indicating the position of the lowest non-readable byte.
-    pub(crate) contiguous_off: usize,
+    pub contiguous_off: usize,
 }
 
 impl Reuse for StreamChunk {
@@ -86,6 +86,7 @@ fn streamchunk_init(
             capacity
         );
         chunk.inner.reserve_exact(capacity - len);
+        // SAFETY: u8 is always initialized and we reserved the additional capacity.
         unsafe {
             chunk.inner.set_len(capacity);
         }
@@ -97,12 +98,14 @@ fn streamchunk_init(
 
 impl StreamChunk {
     /// How many bytes are available to read in this chunk.
+    #[inline]
     pub fn len(&self) -> usize {
         self.contiguous_off.saturating_sub(self.consumed)
     }
 
+    /// How many bytes are contained in the chunk.
     #[inline]
-    pub(crate) fn capacity(&self) -> u64 {
+    pub fn capacity(&self) -> u64 {
         self.inner.len() as u64
     }
 
@@ -122,11 +125,20 @@ impl StreamChunk {
         written
     }
 
+    /// expands the chunk's capacity to `count` additional bytes. Does nothing if the capacity was
+    /// sufficient to hold `count` bytes.
+    pub fn expand(&mut self, count: usize) {
+        self.inner.reserve_exact(count);
+        // SAFETY: u8 is always initialized and we reserved the capacity.
+        unsafe { self.inner.set_len(count) };
+    }
+
     /// Tells whether the chunk is fully consumed.
-    pub(crate) fn is_consumed(&self) -> bool {
+    pub fn is_consumed(&self) -> bool {
         self.consumed == self.capacity() as usize
     }
 
+    #[inline]
     /// Returns the maximum offset this chunk may contain
     pub(crate) fn max_off(&self) -> u64 {
         self.stream_offset_start.saturating_add(self.capacity())

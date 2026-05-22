@@ -2683,5 +2683,5 @@ mod tests {
     }
 }
 
-mod recv_buf;
+pub mod recv_buf;
 mod send_buf;
