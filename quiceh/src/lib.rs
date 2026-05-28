@@ -4137,6 +4137,12 @@ impl<F: BufFactory> Connection<F> {
             None
         };
 
+        if has_initial {
+            if let Some(idle_timeout) = self.idle_timeout() {
+                self.idle_timer = Some(now + idle_timeout);
+            }
+        }
+
         // Overhead calculations are first made based on these expectations.
         let mut expected_stream_id_len = 1;
         let mut truncated_offset_len = 1;
@@ -21358,8 +21364,8 @@ pub use crate::stream::StreamIter;
 pub use crate::range_buf::BufFactory;
 pub use crate::range_buf::BufSplit;
 pub use crate::range_buf::DefaultBufFactory;
-pub use crate::stream::Chunk;
 pub use crate::stream::recv_buf::StreamChunk;
+pub use crate::stream::Chunk;
 
 use crate::stream::Stream;
 use octets_rev::OctetsMut;
