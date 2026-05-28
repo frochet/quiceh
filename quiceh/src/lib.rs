@@ -6812,8 +6812,8 @@ impl<F: BufFactory> Connection<F> {
     /// future.
     ///
     /// Basically this returns true when the peer either set the `fin` flag
-    /// for the stream, or sent `RESET_STREAM`, and that all available data
-    /// was consumed by the application.
+    /// for the stream and that all available data was consumed by the application, or sent
+    /// `RESET_STREAM`
     #[inline]
     pub fn stream_finished_v3(&self, stream_id: u64) -> bool {
         let stream = match self.streams.get(stream_id) {
