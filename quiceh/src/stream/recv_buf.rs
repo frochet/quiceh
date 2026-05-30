@@ -691,7 +691,7 @@ impl RecvBuf {
             if self.contiguous_off > chunk.max_off() {
                 //let len = chunk.capacity() - chunk.consumed as u64;
                 chunk.contiguous_off = chunk.capacity() as usize;
-                self.off = chunk.capacity();
+                self.off = chunk.max_off();
             } else {
                 let len = self.contiguous_off - self.off;
                 self.off += len;
@@ -699,7 +699,10 @@ impl RecvBuf {
             }
         }
 
-        assert!(self.off <= self.contiguous_off, "self.off is bigger than contiguous_off");
+        assert!(
+            self.off <= self.contiguous_off,
+            "self.off is bigger than contiguous_off"
+        );
 
         if self.contiguous_off < chunk.max_off() && !self.is_fin() {
             return Err(Error::Done); // Maybe add a new error type to tell how
@@ -738,9 +741,9 @@ impl RecvBuf {
             && chunk.contiguous_off < chunk.capacity() as usize
         {
             if self.contiguous_off > chunk.max_off() {
-                let len = chunk.capacity() - chunk.consumed as u64;
+                //let len = chunk.capacity() - chunk.consumed as u64;
                 chunk.contiguous_off = chunk.capacity() as usize;
-                self.off = chunk.capacity();
+                self.off = chunk.max_off();
             } else {
                 let len = self.contiguous_off - self.off;
                 self.off += len;
