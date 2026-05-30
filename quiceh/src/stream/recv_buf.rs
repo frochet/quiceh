@@ -685,7 +685,9 @@ impl RecvBuf {
         }
 
         let chunk = self.chunks.front_mut().ok_or(Error::Done)?;
-        if self.off < self.contiguous_off {
+        if self.off < self.contiguous_off
+            && chunk.contiguous_off < chunk.capacity() as usize
+        {
             if self.contiguous_off > chunk.max_off() {
                 let len = chunk.capacity() - chunk.consumed as u64;
                 chunk.contiguous_off = chunk.capacity() as usize;
