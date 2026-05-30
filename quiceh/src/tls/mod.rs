@@ -129,7 +129,7 @@ pub static QUICHE_EX_DATA_INDEX: Lazy<c_int> = Lazy::new(|| unsafe {
     SSL_get_ex_new_index(0, ptr::null(), ptr::null(), ptr::null(), ptr::null())
 });
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Context(*mut SSL_CTX);
 
 impl Context {
@@ -344,6 +344,15 @@ unsafe impl std::marker::Sync for Context {}
 impl Drop for Context {
     fn drop(&mut self) {
         unsafe { SSL_CTX_free(self.as_mut_ptr()) }
+    }
+}
+
+impl Clone for Context {
+    fn clone(&self) -> Self {
+        unsafe {
+            SSL_CTX_up_ref(self.0);
+        }
+        Context(self.0)
     }
 }
 
@@ -1071,6 +1080,12 @@ unsafe fn SSL_CTX_new(method: *const SSL_METHOD) -> *mut SSL_CTX {
 #[allow(non_snake_case)]
 unsafe fn SSL_CTX_free(ctx: *mut SSL_CTX) {
     sys::SSL_CTX_free(ctx as _);
+}
+
+#[inline]
+#[allow(non_snake_case)]
+unsafe fn SSL_CTX_up_ref(ctx: *mut SSL_CTX) -> c_int {
+    sys::SSL_CTX_up_ref(ctx as _) as _
 }
 
 #[inline]
