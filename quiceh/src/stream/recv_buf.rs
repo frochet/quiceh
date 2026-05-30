@@ -689,9 +689,9 @@ impl RecvBuf {
             && chunk.contiguous_off < chunk.capacity() as usize
         {
             if self.contiguous_off > chunk.max_off() {
-                let len = chunk.capacity() - chunk.consumed as u64;
+                //let len = chunk.capacity() - chunk.consumed as u64;
                 chunk.contiguous_off = chunk.capacity() as usize;
-                self.off += len;
+                self.off = chunk.capacity();
             } else {
                 let len = self.contiguous_off - self.off;
                 self.off += len;
@@ -740,7 +740,7 @@ impl RecvBuf {
             if self.contiguous_off > chunk.max_off() {
                 let len = chunk.capacity() - chunk.consumed as u64;
                 chunk.contiguous_off = chunk.capacity() as usize;
-                self.off += len;
+                self.off = chunk.capacity();
             } else {
                 let len = self.contiguous_off - self.off;
                 self.off += len;
