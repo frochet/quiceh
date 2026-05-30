@@ -9200,7 +9200,21 @@ impl<F: BufFactory> Connection<F> {
         };
 
         let idle_timeout = time::Duration::from_millis(idle_timeout);
-        let idle_timeout = cmp::max(idle_timeout, 3 * path_pto);
+
+        // Under RFC 9000 Section 10.2, the idle timeout should not be set to a value
+        // less than three times the Probe Timeout (PTO) to prevent premature timeouts
+        // due to transient packet loss.
+        // However, before the handshake is completed, the path RTT has not yet been
+        // measured, and we rely on a default Initial RTT (333ms), which yields a PTO
+        // of 999ms. Enforcing the 3 * PTO lower bound (2997ms) during the handshake
+        // would override any smaller configured max_idle_timeout (such as 500ms)
+        // and delay handshake failures.
+        // Therefore, we only apply this safety margin once the connection is established.
+        let idle_timeout = if self.is_established() {
+            cmp::max(idle_timeout, 3 * path_pto)
+        } else {
+            idle_timeout
+        };
 
         Some(idle_timeout)
     }
