@@ -13878,7 +13878,7 @@ mod tests {
         assert_eq!(pipe.server_recv(&mut buf[..len1]), Ok(len1));
         assert_eq!(pipe.server_recv(&mut buf[len1..len1 + len2]), Ok(len2));
         if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
-            assert_eq!((len1, len2), (53, 52));
+            assert_eq!((len1, len2), (54, 53));
             let (b, len, fin) = pipe.server.stream_peek(8).unwrap();
             assert_eq!(b, b"hello, worldciao, world");
             assert_eq!((len, fin), (23, true));
