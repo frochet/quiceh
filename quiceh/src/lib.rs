@@ -2085,8 +2085,7 @@ impl<F: BufFactory> fmt::Debug for Connection<F> {
 impl<F: BufFactory> Connection<F> {
     #[inline]
     fn put_chunk_back(
-        streams: &mut stream::StreamMap<F>,
-        stream_id: u64,
+        streams: &mut stream::StreamMap<F>, stream_id: u64,
         maybe_chunk: &mut Option<Chunk>,
     ) {
         if let Some(chunk) = maybe_chunk.take() {
@@ -3009,8 +3008,7 @@ impl<F: BufFactory> Connection<F> {
             if hdr.expected_stream_id > 0 {
                 match self.streams.get_mut(hdr.expected_stream_id) {
                     Some(s) => {
-                        let mut offset =
-                            s.recv.contiguous_off().saturating_sub(1);
+                        let mut offset = s.recv.contiguous_off().saturating_sub(1);
                         offset = packet::decode_pkt_offset(
                             offset,
                             hdr.truncated_offset,
@@ -3106,8 +3104,7 @@ impl<F: BufFactory> Connection<F> {
                                 ));
                             },
                         };
-                        let mut offset =
-                            s.recv.contiguous_off().saturating_sub(1);
+                        let mut offset = s.recv.contiguous_off().saturating_sub(1);
                         offset = packet::decode_pkt_offset(
                             offset,
                             hdr.truncated_offset,
@@ -3313,13 +3310,21 @@ impl<F: BufFactory> Connection<F> {
 
         if self.pkt_num_spaces[epoch].recv_pkt_num.contains(pn) {
             trace!("{} ignored duplicate packet {}", self.trace_id, pn);
-            Connection::put_chunk_back(&mut self.streams, hdr.expected_stream_id, &mut maybe_chunk);
+            Connection::put_chunk_back(
+                &mut self.streams,
+                hdr.expected_stream_id,
+                &mut maybe_chunk,
+            );
             return Err(Error::Done);
         }
 
         // Packets with no frames are invalid.
         if payload.cap() == 0 {
-            Connection::put_chunk_back(&mut self.streams, hdr.expected_stream_id, &mut maybe_chunk);
+            Connection::put_chunk_back(
+                &mut self.streams,
+                hdr.expected_stream_id,
+                &mut maybe_chunk,
+            );
             return Err(Error::InvalidPacket);
         }
 
@@ -3327,21 +3332,31 @@ impl<F: BufFactory> Connection<F> {
         // existing path.
         let recv_pid = if hdr.ty == packet::Type::Short && self.got_peer_conn_id {
             let pkt_dcid = ConnectionId::from_ref(&hdr.dcid);
-            match self.get_or_create_recv_path_id(recv_pid, &pkt_dcid, buf_len, info) {
+            match self
+                .get_or_create_recv_path_id(recv_pid, &pkt_dcid, buf_len, info)
+            {
                 Ok(v) => v,
                 Err(e) => {
-                    Connection::put_chunk_back(&mut self.streams, hdr.expected_stream_id, &mut maybe_chunk);
+                    Connection::put_chunk_back(
+                        &mut self.streams,
+                        hdr.expected_stream_id,
+                        &mut maybe_chunk,
+                    );
                     return Err(e);
-                }
+                },
             }
         } else {
             // During handshake, we are on the initial path.
             match self.paths.get_active_path_id() {
                 Ok(v) => v,
                 Err(e) => {
-                    Connection::put_chunk_back(&mut self.streams, hdr.expected_stream_id, &mut maybe_chunk);
+                    Connection::put_chunk_back(
+                        &mut self.streams,
+                        hdr.expected_stream_id,
+                        &mut maybe_chunk,
+                    );
                     return Err(e);
-                }
+                },
             }
         };
 
@@ -3354,7 +3369,11 @@ impl<F: BufFactory> Connection<F> {
                 .is_none_or(|prev| prev.update_acked)
             {
                 // Peer has updated keys twice without awaiting confirmation.
-                Connection::put_chunk_back(&mut self.streams, hdr.expected_stream_id, &mut maybe_chunk);
+                Connection::put_chunk_back(
+                    &mut self.streams,
+                    hdr.expected_stream_id,
+                    &mut maybe_chunk,
+                );
                 return Err(Error::KeyUpdate);
             }
             trace!("{} key update verified", self.trace_id);
@@ -3369,9 +3388,13 @@ impl<F: BufFactory> Connection<F> {
             let recv_path = match self.paths.get_mut(recv_pid) {
                 Ok(v) => v,
                 Err(e) => {
-                    Connection::put_chunk_back(&mut self.streams, hdr.expected_stream_id, &mut maybe_chunk);
+                    Connection::put_chunk_back(
+                        &mut self.streams,
+                        hdr.expected_stream_id,
+                        &mut maybe_chunk,
+                    );
                     return Err(e);
-                }
+                },
             };
 
             self.pkt_num_spaces[epoch].key_update = Some(packet::KeyUpdate {
@@ -3426,7 +3449,11 @@ impl<F: BufFactory> Connection<F> {
                 self.peer_transport_params.stateless_reset_token,
                 recv_pid,
             ) {
-                Connection::put_chunk_back(&mut self.streams, hdr.expected_stream_id, &mut maybe_chunk);
+                Connection::put_chunk_back(
+                    &mut self.streams,
+                    hdr.expected_stream_id,
+                    &mut maybe_chunk,
+                );
                 return Err(e);
             }
 
@@ -3434,8 +3461,14 @@ impl<F: BufFactory> Connection<F> {
         }
 
         if self.is_server && !self.got_peer_conn_id {
-            if let Err(e) = self.set_initial_dcid(hdr.scid.clone(), None, recv_pid) {
-                Connection::put_chunk_back(&mut self.streams, hdr.expected_stream_id, &mut maybe_chunk);
+            if let Err(e) =
+                self.set_initial_dcid(hdr.scid.clone(), None, recv_pid)
+            {
+                Connection::put_chunk_back(
+                    &mut self.streams,
+                    hdr.expected_stream_id,
+                    &mut maybe_chunk,
+                );
                 return Err(e);
             }
             if !self.did_retry {
@@ -3444,7 +3477,11 @@ impl<F: BufFactory> Connection<F> {
                     Some(hdr.dcid.to_vec().into());
 
                 if let Err(e) = self.encode_transport_params() {
-                    Connection::put_chunk_back(&mut self.streams, hdr.expected_stream_id, &mut maybe_chunk);
+                    Connection::put_chunk_back(
+                        &mut self.streams,
+                        hdr.expected_stream_id,
+                        &mut maybe_chunk,
+                    );
                     return Err(e);
                 }
             }
@@ -3487,9 +3524,13 @@ impl<F: BufFactory> Connection<F> {
             ) {
                 Ok(v) => v,
                 Err(e) => {
-                    Connection::put_chunk_back(&mut self.streams, hdr.expected_stream_id, &mut maybe_chunk);
+                    Connection::put_chunk_back(
+                        &mut self.streams,
+                        hdr.expected_stream_id,
+                        &mut maybe_chunk,
+                    );
                     return Err(e);
-                }
+                },
             };
             frame_processing_err = err;
 
@@ -10823,8 +10864,7 @@ pub mod testing {
             if hdr.expected_stream_id > 0 {
                 match conn.streams.get_mut(hdr.expected_stream_id) {
                     Some(s) => {
-                        let mut offset =
-                            s.recv.contiguous_off().saturating_sub(1);
+                        let mut offset = s.recv.contiguous_off().saturating_sub(1);
                         offset = packet::decode_pkt_offset(
                             offset,
                             hdr.truncated_offset,
@@ -10891,8 +10931,7 @@ pub mod testing {
                                 ));
                             },
                         };
-                        let mut offset =
-                            s.recv.contiguous_off().saturating_sub(1);
+                        let mut offset = s.recv.contiguous_off().saturating_sub(1);
                         offset = packet::decode_pkt_offset(
                             offset,
                             hdr.truncated_offset,
@@ -12103,25 +12142,44 @@ mod tests {
                 stream_id: 4,
                 data: <RangeBuf>::from(b"bbbbb", 25, false),
             };
-            let written2 = testing::encode_pkt(&mut pipe.client, pkt_type, &[frame2], &mut buf).unwrap();
+            let written2 = testing::encode_pkt(
+                &mut pipe.client,
+                pkt_type,
+                &[frame2],
+                &mut buf,
+            )
+            .unwrap();
 
             let mut buf_dup = buf;
 
             // Deliver Packet 2 once
-            assert!(testing::recv_send(&mut pipe.server, &mut buf, written2).is_ok());
+            assert!(
+                testing::recv_send(&mut pipe.server, &mut buf, written2).is_ok()
+            );
 
             // Deliver duplicate of Packet 2 (triggers duplicate check!)
-            assert!(matches!(testing::recv_send(&mut pipe.server, &mut buf_dup, written2), Ok(_) | Err(Error::Done)));
+            assert!(matches!(
+                testing::recv_send(&mut pipe.server, &mut buf_dup, written2),
+                Ok(_) | Err(Error::Done)
+            ));
 
             // Packet 1 at offset 0 (length 25, completely filling chunk 1)
             let frame1 = frame::Frame::Stream {
                 stream_id: 4,
                 data: <RangeBuf>::from(b"aaaaaaaaaaaaaaaaaaaaaaaaa", 0, false),
             };
-            let written1 = testing::encode_pkt(&mut pipe.client, pkt_type, &[frame1], &mut buf).unwrap();
+            let written1 = testing::encode_pkt(
+                &mut pipe.client,
+                pkt_type,
+                &[frame1],
+                &mut buf,
+            )
+            .unwrap();
 
             // Deliver Packet 1
-            assert!(testing::recv_send(&mut pipe.server, &mut buf, written1).is_ok());
+            assert!(
+                testing::recv_send(&mut pipe.server, &mut buf, written1).is_ok()
+            );
 
             // Check if we can read Packet 1 first (fills chunk 1)
             let (b, len, is_fin) = pipe.server.stream_peek(4).unwrap();
@@ -12461,6 +12519,8 @@ mod tests {
             assert!(!pipe.server.is_readable());
         }
     }
+
+
 
     #[test]
     fn stream_recv_zc_send_recv() {
