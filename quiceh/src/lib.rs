@@ -3008,7 +3008,8 @@ impl<F: BufFactory> Connection<F> {
             if hdr.expected_stream_id > 0 {
                 match self.streams.get_mut(hdr.expected_stream_id) {
                     Some(s) => {
-                        let mut offset = s.recv.contiguous_off().saturating_sub(1);
+                        let mut offset =
+                            s.recv.contiguous_off().saturating_sub(1);
                         offset = packet::decode_pkt_offset(
                             offset,
                             hdr.truncated_offset,
@@ -3104,7 +3105,8 @@ impl<F: BufFactory> Connection<F> {
                                 ));
                             },
                         };
-                        let mut offset = s.recv.contiguous_off().saturating_sub(1);
+                        let mut offset =
+                            s.recv.contiguous_off().saturating_sub(1);
                         offset = packet::decode_pkt_offset(
                             offset,
                             hdr.truncated_offset,
@@ -6925,6 +6927,22 @@ impl<F: BufFactory> Connection<F> {
         };
 
         stream.recv.is_fin()
+    }
+
+    /// Returns true if all the data has been acknowledged from the specified stream.
+    ///
+    /// This instructs the application that all the data sent within this stream
+    /// has been acknowledged.
+    ///
+    /// Basically this returns true when we have sent the `fin` flag to the peer and
+    /// it was then acknowledged.
+    pub fn stream_send_complete(&self, stream_id: u64) -> bool {
+        let stream = match self.streams.get(stream_id) {
+            Some(v) => v,
+            None => return true,
+        };
+
+        stream.send.is_complete()
     }
 
     /// Returns the number of bidirectional streams that can be created
@@ -10864,7 +10882,8 @@ pub mod testing {
             if hdr.expected_stream_id > 0 {
                 match conn.streams.get_mut(hdr.expected_stream_id) {
                     Some(s) => {
-                        let mut offset = s.recv.contiguous_off().saturating_sub(1);
+                        let mut offset =
+                            s.recv.contiguous_off().saturating_sub(1);
                         offset = packet::decode_pkt_offset(
                             offset,
                             hdr.truncated_offset,
@@ -10931,7 +10950,8 @@ pub mod testing {
                                 ));
                             },
                         };
-                        let mut offset = s.recv.contiguous_off().saturating_sub(1);
+                        let mut offset =
+                            s.recv.contiguous_off().saturating_sub(1);
                         offset = packet::decode_pkt_offset(
                             offset,
                             hdr.truncated_offset,
@@ -12519,8 +12539,6 @@ mod tests {
             assert!(!pipe.server.is_readable());
         }
     }
-
-
 
     #[test]
     fn stream_recv_zc_send_recv() {
@@ -21534,6 +21552,72 @@ mod tests {
             let (chunk, fin) = pipe.server.stream_recv_zc(s3).expect("recv_zc");
             assert_eq!((chunk.len(), fin), (4, true));
         }
+    }
+
+    #[test]
+    fn stream_send_complete_check() {
+        let mut pipe = <Pipe>::new().unwrap();
+        assert_eq!(pipe.handshake(), Ok(()));
+
+        // Non-existent stream ID should return true
+        assert!(pipe.client.stream_send_complete(999));
+        assert!(pipe.server.stream_send_complete(999));
+
+        // Active client-initiated bidirectional stream 4
+        // Before creating/sending, the stream doesn't exist, so it returns true.
+        assert!(pipe.client.stream_send_complete(4));
+
+        // Send some data without fin
+        assert_eq!(pipe.client.stream_send(4, b"hello", false), Ok(5));
+
+        // Since stream 4 now exists and fin has not been sent, it is not complete.
+        assert!(!pipe.client.stream_send_complete(4));
+
+        // Even after we advance and deliver the data, it's still not complete because fin was not sent.
+        assert_eq!(pipe.advance(), Ok(()));
+        assert!(!pipe.client.stream_send_complete(4));
+
+        // Send the zero-length fin.
+        assert_eq!(pipe.client.stream_send(4, b"", true), Ok(0));
+
+        // Note: Since `b"hello"` (5 bytes) was already acknowledged in the previous
+        // advance(), writing a zero-length FIN sets the final offset `fin_off` to 5.
+        // Since `0..5` is already fully acknowledged, the stream immediately becomes
+        // send-complete.
+        assert!(pipe.client.stream_send_complete(4));
+
+        // Advance to cleanly flush everything.
+        assert_eq!(pipe.advance(), Ok(()));
+        assert!(pipe.client.stream_send_complete(4));
+
+        // Active client-initiated unidirectional stream 2
+        // Send data with fin = false
+        assert_eq!(pipe.client.stream_send(2, b"hello", false), Ok(5));
+        assert!(!pipe.client.stream_send_complete(2));
+
+        // Advance, still not complete (no fin)
+        assert_eq!(pipe.advance(), Ok(()));
+        assert!(!pipe.client.stream_send_complete(2));
+
+        // Send zero-length fin
+        assert_eq!(pipe.client.stream_send(2, b"", true), Ok(0));
+
+        // As explained above, since the data was already acknowledged, the zero-length FIN
+        // makes the stream send-complete immediately.
+        assert!(pipe.client.stream_send_complete(2));
+
+        // Advance to cleanly flush everything.
+        assert_eq!(pipe.advance(), Ok(()));
+        assert!(pipe.client.stream_send_complete(2));
+
+        // Send all data and fin in a single call on stream 8.
+        // In this case, since the data has NOT been acknowledged yet, the stream is not complete.
+        assert_eq!(pipe.client.stream_send(8, b"single", true), Ok(6));
+        assert!(!pipe.client.stream_send_complete(8));
+
+        // After advance, the data and FIN are sent and acknowledged, so it becomes complete.
+        assert_eq!(pipe.advance(), Ok(()));
+        assert!(pipe.client.stream_send_complete(8));
     }
 }
 
