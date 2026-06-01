@@ -2083,6 +2083,20 @@ impl<F: BufFactory> fmt::Debug for Connection<F> {
 }
 
 impl<F: BufFactory> Connection<F> {
+    #[inline]
+    fn put_chunk_back(
+        streams: &mut stream::StreamMap<F>,
+        stream_id: u64,
+        maybe_chunk: &mut Option<Chunk>,
+    ) {
+        if let Some(chunk) = maybe_chunk.take() {
+            let stream_chunk = chunk.into_inner();
+            if let Some(s) = streams.get_mut(stream_id) {
+                s.recv.insert_stream_chunk(stream_chunk);
+            }
+        }
+    }
+
     fn new(
         scid: &ConnectionId, odcid: Option<&ConnectionId>, local: SocketAddr,
         peer: SocketAddr, config: &Config, is_server: bool,
@@ -3299,19 +3313,13 @@ impl<F: BufFactory> Connection<F> {
 
         if self.pkt_num_spaces[epoch].recv_pkt_num.contains(pn) {
             trace!("{} ignored duplicate packet {}", self.trace_id, pn);
+            Connection::put_chunk_back(&mut self.streams, hdr.expected_stream_id, &mut maybe_chunk);
             return Err(Error::Done);
         }
 
         // Packets with no frames are invalid.
         if payload.cap() == 0 {
-            if let Some(chunk) = maybe_chunk {
-                // The chunk could contain valid data from a previous packet
-                // processing. We need to put it back.
-                let stream_chunk = chunk.into_inner();
-                if let Some(s) = self.streams.get_mut(hdr.expected_stream_id) {
-                    s.recv.insert_stream_chunk(stream_chunk);
-                }
-            }
+            Connection::put_chunk_back(&mut self.streams, hdr.expected_stream_id, &mut maybe_chunk);
             return Err(Error::InvalidPacket);
         }
 
@@ -3319,10 +3327,22 @@ impl<F: BufFactory> Connection<F> {
         // existing path.
         let recv_pid = if hdr.ty == packet::Type::Short && self.got_peer_conn_id {
             let pkt_dcid = ConnectionId::from_ref(&hdr.dcid);
-            self.get_or_create_recv_path_id(recv_pid, &pkt_dcid, buf_len, info)?
+            match self.get_or_create_recv_path_id(recv_pid, &pkt_dcid, buf_len, info) {
+                Ok(v) => v,
+                Err(e) => {
+                    Connection::put_chunk_back(&mut self.streams, hdr.expected_stream_id, &mut maybe_chunk);
+                    return Err(e);
+                }
+            }
         } else {
             // During handshake, we are on the initial path.
-            self.paths.get_active_path_id()?
+            match self.paths.get_active_path_id() {
+                Ok(v) => v,
+                Err(e) => {
+                    Connection::put_chunk_back(&mut self.streams, hdr.expected_stream_id, &mut maybe_chunk);
+                    return Err(e);
+                }
+            }
         };
 
         // The key update is verified oce a packet is successfully decrypted
@@ -3334,6 +3354,7 @@ impl<F: BufFactory> Connection<F> {
                 .is_none_or(|prev| prev.update_acked)
             {
                 // Peer has updated keys twice without awaiting confirmation.
+                Connection::put_chunk_back(&mut self.streams, hdr.expected_stream_id, &mut maybe_chunk);
                 return Err(Error::KeyUpdate);
             }
             trace!("{} key update verified", self.trace_id);
@@ -3345,7 +3366,13 @@ impl<F: BufFactory> Connection<F> {
                 .replace(open_next)
                 .unwrap();
 
-            let recv_path = self.paths.get_mut(recv_pid)?;
+            let recv_path = match self.paths.get_mut(recv_pid) {
+                Ok(v) => v,
+                Err(e) => {
+                    Connection::put_chunk_back(&mut self.streams, hdr.expected_stream_id, &mut maybe_chunk);
+                    return Err(e);
+                }
+            };
 
             self.pkt_num_spaces[epoch].key_update = Some(packet::KeyUpdate {
                 crypto_open: open_prev,
@@ -3394,23 +3421,32 @@ impl<F: BufFactory> Connection<F> {
 
             // Replace the randomly generated destination connection ID with
             // the one supplied by the server.
-            self.set_initial_dcid(
+            if let Err(e) = self.set_initial_dcid(
                 hdr.scid.clone(),
                 self.peer_transport_params.stateless_reset_token,
                 recv_pid,
-            )?;
+            ) {
+                Connection::put_chunk_back(&mut self.streams, hdr.expected_stream_id, &mut maybe_chunk);
+                return Err(e);
+            }
 
             self.got_peer_conn_id = true;
         }
 
         if self.is_server && !self.got_peer_conn_id {
-            self.set_initial_dcid(hdr.scid.clone(), None, recv_pid)?;
+            if let Err(e) = self.set_initial_dcid(hdr.scid.clone(), None, recv_pid) {
+                Connection::put_chunk_back(&mut self.streams, hdr.expected_stream_id, &mut maybe_chunk);
+                return Err(e);
+            }
             if !self.did_retry {
                 self.local_transport_params
                     .original_destination_connection_id =
                     Some(hdr.dcid.to_vec().into());
 
-                self.encode_transport_params()?;
+                if let Err(e) = self.encode_transport_params() {
+                    Connection::put_chunk_back(&mut self.streams, hdr.expected_stream_id, &mut maybe_chunk);
+                    return Err(e);
+                }
             }
 
             self.got_peer_conn_id = true;
@@ -3437,7 +3473,7 @@ impl<F: BufFactory> Connection<F> {
             let mut payload: OctetsRev = payload.into();
 
             // start reverse buffer processing
-            let (err, smeta) = self.process_payload_frames(
+            let (err, smeta) = match self.process_payload_frames(
                 &mut payload,
                 payload_start_offset,
                 &hdr,
@@ -3448,7 +3484,13 @@ impl<F: BufFactory> Connection<F> {
                 &mut probing,
                 #[cfg(feature = "qlog")]
                 &mut qlog_frames,
-            )?;
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    Connection::put_chunk_back(&mut self.streams, hdr.expected_stream_id, &mut maybe_chunk);
+                    return Err(e);
+                }
+            };
             frame_processing_err = err;
 
             // Handle chunks and check wether we can advance contiguous data to
@@ -3462,7 +3504,7 @@ impl<F: BufFactory> Connection<F> {
                         std::sync::Arc::clone(&stream.priority_key);
 
                     // Check whether we need copy accross
-                    if let Some(mut chunk) = maybe_chunk {
+                    if let Some(mut chunk) = maybe_chunk.take() {
                         let offset = decoded_offset.unwrap();
                         if chunk.max_off() - offset >= dec_len as u64 {
                             let stream_chunk = chunk.into_inner();
@@ -10936,6 +10978,15 @@ pub mod testing {
 
         debug!("All frames: {:?}", frames);
 
+        if conn.version == PROTOCOL_VERSION_VREVERSO {
+            if let Some(chunk) = maybe_chunk {
+                let stream_chunk = chunk.into_inner();
+                if let Some(s) = conn.streams.get_mut(hdr.expected_stream_id) {
+                    s.recv.insert_stream_chunk(stream_chunk);
+                }
+            }
+        }
+
         Ok(frames)
     }
 
@@ -12019,6 +12070,69 @@ mod tests {
             assert_eq!((len, is_fin), (15, false));
             assert_eq!(&b[..len], b"aaaaabbbbbccccc");
             assert!(pipe.server.stream_consumed(4, len).is_ok());
+        }
+    }
+
+    #[test]
+    fn stream_vreverso_duplicate_packets() {
+        if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+            let mut buf = [0; 65535];
+            let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
+            config
+                .load_cert_chain_from_pem_file("examples/cert.crt")
+                .unwrap();
+            config
+                .load_priv_key_from_pem_file("examples/cert.key")
+                .unwrap();
+            config
+                .set_application_protos(&[b"proto1", b"proto2"])
+                .unwrap();
+            config.set_initial_max_streams_bidi(3);
+            config.set_initial_max_stream_data_bidi_local(100000);
+            config.set_initial_max_stream_data_bidi_remote(100000);
+            config.set_initial_max_data(100000);
+            config.set_expected_chunklen_to_consume(25);
+
+            let mut pipe = <Pipe>::with_config(&config).unwrap();
+            assert_eq!(pipe.handshake(), Ok(()));
+
+            let pkt_type = packet::Type::Short;
+
+            // Packet 2 at offset 25 (out-of-order, start of chunk 2)
+            let frame2 = frame::Frame::Stream {
+                stream_id: 4,
+                data: <RangeBuf>::from(b"bbbbb", 25, false),
+            };
+            let written2 = testing::encode_pkt(&mut pipe.client, pkt_type, &[frame2], &mut buf).unwrap();
+
+            let mut buf_dup = buf;
+
+            // Deliver Packet 2 once
+            assert!(testing::recv_send(&mut pipe.server, &mut buf, written2).is_ok());
+
+            // Deliver duplicate of Packet 2 (triggers duplicate check!)
+            assert!(matches!(testing::recv_send(&mut pipe.server, &mut buf_dup, written2), Ok(_) | Err(Error::Done)));
+
+            // Packet 1 at offset 0 (length 25, completely filling chunk 1)
+            let frame1 = frame::Frame::Stream {
+                stream_id: 4,
+                data: <RangeBuf>::from(b"aaaaaaaaaaaaaaaaaaaaaaaaa", 0, false),
+            };
+            let written1 = testing::encode_pkt(&mut pipe.client, pkt_type, &[frame1], &mut buf).unwrap();
+
+            // Deliver Packet 1
+            assert!(testing::recv_send(&mut pipe.server, &mut buf, written1).is_ok());
+
+            // Check if we can read Packet 1 first (fills chunk 1)
+            let (b, len, is_fin) = pipe.server.stream_peek(4).unwrap();
+            assert_eq!((len, is_fin), (25, false));
+            assert_eq!(&b[..len], b"aaaaaaaaaaaaaaaaaaaaaaaaa");
+            assert!(pipe.server.stream_consumed(4, len).is_ok());
+
+            // Check if we can read Packet 2 (chunk 2)
+            let (b, len, is_fin) = pipe.server.stream_peek(4).unwrap();
+            assert_eq!((len, is_fin), (5, false));
+            assert_eq!(&b[..len], b"bbbbb");
         }
     }
 
