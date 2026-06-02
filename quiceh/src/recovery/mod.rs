@@ -81,8 +81,6 @@ struct RecoveryEpoch {
     /// far.
     largest_acked_packet: Option<u64>,
 
-    largest_stream_off_acked: crate::stream::StreamIdHashMap<u64>,
-
     /// The time at which the next packet in that packet number space can be
     /// considered lost based on exceeding the reordering window in time.
     loss_time: Option<Instant>,
@@ -168,31 +166,6 @@ impl RecoveryEpoch {
                         acked_bytes += unacked.size;
                     }
 
-                    // If we send a StreamFrame in VReverso, the first frame
-                    // should be it. We remember which
-                    // max_offset we sent on each stream, since we need
-                    // the max_offset acknowledged to encode offsets.
-                    if let Some(frame::Frame::StreamHeader {
-                        stream_id,
-                        offset,
-                        length,
-                        ..
-                    }) = unacked.frames.first()
-                    {
-                        let max_off = *offset + *length as u64;
-                        trace!(
-                            "{} acking stream {} max_off {}",
-                            trace_id,
-                            stream_id,
-                            max_off,
-                        );
-
-                        self.largest_stream_off_acked
-                            .entry(*stream_id)
-                            .and_modify(|off| *off += *length as u64)
-                            .or_insert(max_off);
-                    }
-
                     newly_acked.push(Acked {
                         pkt_num: unacked.pkt_num,
                         time_sent: unacked.time_sent,
@@ -257,8 +230,8 @@ impl RecoveryEpoch {
 
         for unacked in unacked_iter {
             // Mark packet as lost, or set time when it should be marked.
-            if unacked.time_sent <= lost_send_time ||
-                largest_acked >= unacked.pkt_num + pkt_thresh
+            if unacked.time_sent <= lost_send_time
+                || largest_acked >= unacked.pkt_num + pkt_thresh
             {
                 self.lost_frames.extend(unacked.frames.drain(..));
 
@@ -294,8 +267,9 @@ impl RecoveryEpoch {
                 let loss_time = match self.loss_time {
                     None => unacked.time_sent + loss_delay,
 
-                    Some(loss_time) =>
-                        cmp::min(loss_time, unacked.time_sent + loss_delay),
+                    Some(loss_time) => {
+                        cmp::min(loss_time, unacked.time_sent + loss_delay)
+                    },
                 };
 
                 self.loss_time = Some(loss_time);
@@ -451,8 +425,8 @@ impl RecoveryConfig {
 
 impl Recovery {
     pub fn new_with_config(recovery_config: &RecoveryConfig) -> Self {
-        let initial_congestion_window = recovery_config.max_send_udp_payload_size *
-            recovery_config.initial_congestion_window_packets;
+        let initial_congestion_window = recovery_config.max_send_udp_payload_size
+            * recovery_config.initial_congestion_window_packets;
 
         Recovery {
             epochs: Default::default(),
@@ -547,9 +521,9 @@ impl Recovery {
     /// Returns whether or not we should elicit an ACK even if we wouldn't
     /// otherwise have constructed an ACK eliciting packet.
     pub fn should_elicit_ack(&self, epoch: packet::Epoch) -> bool {
-        self.epochs[epoch].loss_probes > 0 ||
-            self.outstanding_non_ack_eliciting >=
-                MAX_OUTSTANDING_NON_ACK_ELICITING
+        self.epochs[epoch].loss_probes > 0
+            || self.outstanding_non_ack_eliciting
+                >= MAX_OUTSTANDING_NON_ACK_ELICITING
     }
 
     pub fn get_acked_frames(
@@ -568,15 +542,6 @@ impl Recovery {
         &self, epoch: packet::Epoch,
     ) -> Option<u64> {
         self.epochs[epoch].largest_acked_packet
-    }
-
-    pub fn get_largest_stream_off_acked_on_epoch(
-        &self, stream_id: u64, epoch: packet::Epoch,
-    ) -> u64 {
-        *self.epochs[epoch]
-            .largest_stream_off_acked
-            .get(&stream_id)
-            .unwrap_or(&0)
     }
 
     pub fn has_lost_frames(&self, epoch: packet::Epoch) -> bool {
@@ -627,11 +592,11 @@ impl Recovery {
         self.bytes_sent += sent_bytes;
 
         // Pacing: Set the pacing rate if CC doesn't do its own.
-        if !(self.cc_ops.has_custom_pacing)() &&
-            self.rtt_stats.first_rtt_sample.is_some()
+        if !(self.cc_ops.has_custom_pacing)()
+            && self.rtt_stats.first_rtt_sample.is_some()
         {
-            let rate = PACING_MULTIPLIER * self.congestion_window as f64 /
-                self.rtt_stats.smoothed_rtt.as_secs_f64();
+            let rate = PACING_MULTIPLIER * self.congestion_window as f64
+                / self.rtt_stats.smoothed_rtt.as_secs_f64();
             self.set_pacing_rate(rate as u64, now);
         }
 
@@ -683,8 +648,8 @@ impl Recovery {
         //   * Packet contains no data.
         //   * The congestion window is within initcwnd.
 
-        let in_initcwnd = self.bytes_sent <
-            self.max_datagram_size * self.initial_congestion_window_packets;
+        let in_initcwnd = self.bytes_sent
+            < self.max_datagram_size * self.initial_congestion_window_packets;
 
         let sent_bytes = if !self.pacer.enabled() || in_initcwnd {
             0
@@ -888,8 +853,8 @@ impl Recovery {
         }
 
         // Open more space (snd_cnt) for PRR when allowed.
-        self.congestion_window.saturating_sub(self.bytes_in_flight) +
-            self.prr.snd_cnt
+        self.congestion_window.saturating_sub(self.bytes_in_flight)
+            + self.prr.snd_cnt
     }
 
     pub fn rtt(&self) -> Duration {
@@ -920,8 +885,8 @@ impl Recovery {
         &mut self, new_max_datagram_size: usize,
     ) {
         // Congestion Window is updated only when it's not updated already.
-        if self.congestion_window ==
-            self.max_datagram_size * self.initial_congestion_window_packets
+        if self.congestion_window
+            == self.max_datagram_size * self.initial_congestion_window_packets
         {
             self.congestion_window =
                 new_max_datagram_size * self.initial_congestion_window_packets;
@@ -942,8 +907,8 @@ impl Recovery {
             cmp::min(self.max_datagram_size, new_max_datagram_size);
 
         // Update cwnd if it hasn't been updated yet.
-        if self.congestion_window ==
-            self.max_datagram_size * self.initial_congestion_window_packets
+        if self.congestion_window
+            == self.max_datagram_size * self.initial_congestion_window_packets
         {
             self.congestion_window =
                 max_datagram_size * self.initial_congestion_window_packets;
@@ -1095,8 +1060,9 @@ impl Recovery {
 
     fn in_congestion_recovery(&self, sent_time: Instant) -> bool {
         match self.congestion_recovery_start_time {
-            Some(congestion_recovery_start_time) =>
-                sent_time <= congestion_recovery_start_time,
+            Some(congestion_recovery_start_time) => {
+                sent_time <= congestion_recovery_start_time
+            },
 
             None => false,
         }
@@ -1182,13 +1148,13 @@ impl Recovery {
 #[repr(C)]
 pub enum CongestionControlAlgorithm {
     /// Reno congestion control algorithm. `reno` in a string form.
-    Reno  = 0,
+    Reno = 0,
     /// CUBIC congestion control algorithm (default). `cubic` in a string form.
     CUBIC = 1,
     /// BBR congestion control algorithm. `bbr` in a string form.
-    BBR   = 2,
+    BBR = 2,
     /// BBRv2 congestion control algorithm. `bbr2` in a string form.
-    BBR2  = 3,
+    BBR2 = 3,
 }
 
 impl FromStr for CongestionControlAlgorithm {

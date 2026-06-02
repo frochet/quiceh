@@ -5093,15 +5093,11 @@ impl<F: BufFactory> Connection<F> {
                 };
 
                 let stream_off = stream.send.off_front();
-                let largest_off_acked = path
-                    .recovery
-                    .get_largest_stream_off_acked_on_epoch(stream_id, epoch)
-                    .saturating_sub(1);
-
+                let largest_contiguous_off_acked = stream.send.ack_off();
                 trace!(
-                    "stream_off: {}, Largest_off_acked:{}",
+                    "stream_off: {}, Largest_contiguous_off_acked:{}",
                     stream_off,
-                    largest_off_acked
+                    largest_contiguous_off_acked
                 );
                 // if V3, we need to rewind a re-encode the QUIC header.
                 // b.off is currently at payload_offset.
@@ -5119,7 +5115,7 @@ impl<F: BufFactory> Connection<F> {
                     )?;
                     truncated_offset_len = packet::truncated_offset_len(
                         stream_off,
-                        largest_off_acked,
+                        largest_contiguous_off_acked,
                     );
                     packet::encode_u64_num_and_nextelem_len(
                         stream_id,
