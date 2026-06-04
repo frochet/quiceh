@@ -538,8 +538,11 @@ impl RecvBuf {
 
         self.len = cmp::max(self.len, buf.max_off());
 
-        if !self.drain {
-            self.heap.insert(buf.start_off, buf);
+
+        if !self.drain && (self.contiguous_off != buf.start_off || buf.data().is_some()) {
+             self.heap.insert(buf.start_off, buf);
+        } else if self.contiguous_off == buf.start_off {
+            self.contiguous_off += buf.len as u64;
         }
 
         Ok(())
