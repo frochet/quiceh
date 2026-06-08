@@ -342,10 +342,15 @@ impl RecvBuf {
             .get_with(|pooled| streamchunk_init(pooled, max_chunklen, 0));
 
         chunks.push_back(chunk.into_inner());
+        let initial_window = if version == crate::PROTOCOL_VERSION_VREVERSO {
+            max_data
+        } else {
+            cmp::min(max_data, DEFAULT_STREAM_WINDOW)
+        };
         RecvBuf {
             flow_control: flowcontrol::FlowControl::new(
                 max_data,
-                cmp::min(max_data, DEFAULT_STREAM_WINDOW),
+                initial_window,
                 max_window,
             ),
             chunks,
