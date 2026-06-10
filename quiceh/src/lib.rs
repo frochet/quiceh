@@ -442,7 +442,7 @@ use branches::likely;
 use smallvec::SmallVec;
 
 /// The current QUIC wire version.
-pub const PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_VREVERSO;
+pub const PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_V1;
 
 /// Supported QUIC versions.
 pub const PROTOCOL_VERSION_V1: u32 = 0x0000_0001;
@@ -8294,6 +8294,7 @@ impl<F: BufFactory> Connection<F> {
     fn process_peer_transport_params(
         &mut self, peer_params: TransportParams,
     ) -> Result<()> {
+        trace!("Parsing peer transport params");
         self.max_tx_data = peer_params.initial_max_data;
 
         // Update send capacity.

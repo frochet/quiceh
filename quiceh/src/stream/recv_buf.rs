@@ -37,7 +37,6 @@ use crate::flowcontrol;
 
 use super::Chunk;
 use super::RecvBufInfo;
-use super::DEFAULT_STREAM_WINDOW;
 use crate::bufpool::pool_or_default;
 use crate::range_buf::RangeBuf;
 use buffer_pool::Reuse;
@@ -342,11 +341,12 @@ impl RecvBuf {
             .get_with(|pooled| streamchunk_init(pooled, max_chunklen, 0));
 
         chunks.push_back(chunk.into_inner());
-        let initial_window = if version == crate::PROTOCOL_VERSION_VREVERSO {
-            max_data
-        } else {
-            cmp::min(max_data, DEFAULT_STREAM_WINDOW)
-        };
+        //let initial_window = if version == crate::PROTOCOL_VERSION_VREVERSO {
+        //max_data
+        //} else {
+        //cmp::min(max_data, DEFAULT_STREAM_WINDOW)
+        //};
+        let initial_window = max_data;
         RecvBuf {
             flow_control: flowcontrol::FlowControl::new(
                 max_data,
@@ -543,9 +543,10 @@ impl RecvBuf {
 
         self.len = cmp::max(self.len, buf.max_off());
 
-
-        if !self.drain && (self.contiguous_off != buf.start_off || buf.data().is_some()) {
-             self.heap.insert(buf.start_off, buf);
+        if !self.drain
+            && (self.contiguous_off != buf.start_off || buf.data().is_some())
+        {
+            self.heap.insert(buf.start_off, buf);
         } else if self.contiguous_off == buf.start_off {
             self.contiguous_off += buf.len as u64;
         }
@@ -1186,6 +1187,7 @@ impl RecvBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stream::DEFAULT_STREAM_WINDOW;
     use crate::DEFAULT_CHUNK_LEN;
 
     #[test]
