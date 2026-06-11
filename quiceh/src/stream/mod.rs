@@ -59,6 +59,13 @@ pub const MAX_STREAM_WINDOW: u64 = 16 * 1024 * 1024;
 /// Memory chunk exposed to applications
 pub type Chunk = Pooled<StreamChunk>;
 
+impl crate::BufSplit for Chunk {
+    fn split_at(&mut self, at: usize) -> Self {
+        let new_chunk = (**self).split_at(at);
+        crate::bufpool::pool_or_default().from_owned(new_chunk)
+    }
+}
+
 /// A simple no-op hasher for Stream IDs.
 ///
 /// The QUIC protocol and quiceh library guarantees stream ID uniqueness, so

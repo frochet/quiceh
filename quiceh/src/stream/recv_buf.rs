@@ -68,38 +68,68 @@ pub(crate) struct StreamChunkMut {
 }
 
 /// Memory chunk containing contiguous stream frames' data
-#[derive(Debug, Clone, Default)]
-pub struct StreamChunk(Bytes);
+#[derive(Debug, Clone)]
+pub struct StreamChunk {
+    pub(crate) bytes: Bytes,
+    pub(crate) reusable: bool,
+}
+
+impl Default for StreamChunk {
+    fn default() -> Self {
+        StreamChunk {
+            bytes: Bytes::new(),
+            reusable: true,
+        }
+    }
+}
 
 impl Reuse for StreamChunk {
     fn reuse(&mut self, _trim: usize) -> bool {
-        !self.0.is_empty()
+        self.reusable && !self.bytes.is_empty()
     }
 }
 
 impl Deref for StreamChunk {
     type Target = Bytes;
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.bytes
     }
 }
 
 impl crate::BufSplit for StreamChunk {
     fn split_at(&mut self, at: usize) -> Self {
-        StreamChunk(self.0.split_off(at))
+        let remaining = self.bytes.split_off(at);
+        let remaining_empty = remaining.is_empty();
+        let new_reusable = self.reusable && !remaining_empty;
+        if !remaining_empty {
+            self.reusable = false;
+        }
+        StreamChunk {
+            bytes: remaining,
+            reusable: new_reusable,
+        }
     }
 }
 
 impl From<StreamChunk> for BytesMut {
     fn from(chunk: StreamChunk) -> Self {
-        chunk.0.into()
+        chunk.bytes.into()
+    }
+}
+
+impl From<Bytes> for StreamChunk {
+    fn from(bytes: Bytes) -> Self {
+        StreamChunk {
+            bytes,
+            reusable: true,
+        }
     }
 }
 
 fn streamchunk_init(
     chunk: StreamChunk, capacity: usize, stream_offset_start: u64,
 ) -> StreamChunkMut {
-    trace!("streamchunk_init: is_unique={}", chunk.0.is_unique());
+    trace!("streamchunk_init: is_unique={}", chunk.bytes.is_unique());
     let chunk: BytesMut = chunk.into();
     let mut stream_chunk = StreamChunkMut {
         stream_offset_start,
@@ -109,11 +139,7 @@ fn streamchunk_init(
     };
     let len = stream_chunk.inner.len();
     if len < capacity {
-        trace!(
-            "Changing inner size. Was {}, now: {}",
-            len,
-            capacity
-        );
+        trace!("Changing inner size. Was {}, now: {}", len, capacity);
         stream_chunk.inner.reserve(capacity - len);
         // SAFETY: u8 is always initialized and we reserved the additional capacity.
         unsafe {
@@ -754,7 +780,13 @@ impl RecvBuf {
 
         self.flow_control.add_consumed(chunk.len() as u64);
 
-        let chunk = StreamChunk(chunk.inner.freeze());
+        let mut inner = chunk.inner;
+        inner.truncate(chunk.contiguous_off);
+        let bytes = inner.freeze().slice(chunk.consumed..);
+        let chunk = StreamChunk {
+            bytes,
+            reusable: true,
+        };
         let pooled = pool_or_default().from_owned(chunk);
 
         Ok((pooled, self.is_fin()))
@@ -847,7 +879,10 @@ impl RecvBuf {
             trace!("Chunk fully consumed. Sending it back to the pool");
             let chunk =
                 self.chunks.pop_front().expect("BUG: self.chunks is empty");
-            pool_or_default().from_owned(StreamChunk(chunk.inner.freeze()));
+            pool_or_default().from_owned(StreamChunk {
+                bytes: chunk.inner.freeze(),
+                reusable: true,
+            });
         }
 
         if self.is_fin() && self.deliver_fin {
@@ -1020,8 +1055,10 @@ impl RecvBuf {
 
     pub(crate) fn collect(&mut self) {
         for chunk in self.chunks.drain(..) {
-            let _ =
-                pool_or_default().from_owned(StreamChunk(chunk.inner.freeze()));
+            let _ = pool_or_default().from_owned(StreamChunk {
+                bytes: chunk.inner.freeze(),
+                reusable: true,
+            });
         }
     }
 
@@ -2442,6 +2479,62 @@ mod tests {
 
             // There is nothing else to emit.
             assert!(recv.emit_zc().is_err());
+        }
+    }
+
+    #[test]
+    fn chunk_split_reusability() {
+        use crate::BufSplit;
+
+        // Case 1: Split in the middle
+        {
+            let mut chunk = StreamChunk {
+                bytes: Bytes::from_static(b"helloworld"),
+                reusable: true,
+            };
+            let split = chunk.split_at(5);
+
+            // The first split (prefix: "hello") is marked non-reusable
+            assert_eq!(&chunk[..], b"hello");
+            assert!(!chunk.reusable);
+
+            // The last split (suffix: "world") gets reused
+            assert_eq!(&split[..], b"world");
+            assert!(split.reusable);
+        }
+
+        // Case 2: Split at the end (no split)
+        {
+            let mut chunk = StreamChunk {
+                bytes: Bytes::from_static(b"helloworld"),
+                reusable: true,
+            };
+            let split = chunk.split_at(10);
+
+            // The original chunk contains the full buffer and remains reusable
+            assert_eq!(&chunk[..], b"helloworld");
+            assert!(chunk.reusable);
+
+            // The split-off part is empty and is not reusable
+            assert_eq!(&split[..], b"");
+            assert!(!split.reusable);
+        }
+
+        // Case 3: Split at the start
+        {
+            let mut chunk = StreamChunk {
+                bytes: Bytes::from_static(b"helloworld"),
+                reusable: true,
+            };
+            let split = chunk.split_at(0);
+
+            // The first part is empty and is not reusable
+            assert_eq!(&chunk[..], b"");
+            assert!(!chunk.reusable);
+
+            // The last split (full chunk) gets reused
+            assert_eq!(&split[..], b"helloworld");
+            assert!(split.reusable);
         }
     }
 }
