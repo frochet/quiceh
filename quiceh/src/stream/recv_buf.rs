@@ -40,6 +40,7 @@ use super::RecvBufInfo;
 use crate::bufpool::pool_or_default;
 use crate::range_buf::RangeBuf;
 use buffer_pool::Reuse;
+use bytes::{Bytes, BytesMut};
 use std::collections::btree_map;
 use std::ops::Index;
 use std::ops::IndexMut;
@@ -49,53 +50,77 @@ use std::ops::RangeFull;
 use std::ops::RangeTo;
 
 use branches::likely;
+use std::ops::Deref;
 
+// TODO! FIXME; use ranges instead
 const MAX_STREAM_FRAME_LENGTH: usize = 1310;
 
-/// Memory chunk containing contiguous stream frames' data
 #[derive(Eq, PartialEq, Ord, PartialOrd, Default, Debug, Clone)]
-pub struct StreamChunk {
+pub(crate) struct StreamChunkMut {
     /// The offset value beginning this chunk of memory.
     pub stream_offset_start: u64,
     /// Data chunk.
-    pub inner: Vec<u8>,
+    pub inner: BytesMut,
     /// number of bytes already consumed from inner.
     pub consumed: usize,
     /// offset indicating the position of the lowest non-readable byte.
     pub contiguous_off: usize,
 }
 
+/// Memory chunk containing contiguous stream frames' data
+#[derive(Debug, Clone, Default)]
+pub struct StreamChunk(Bytes);
+
 impl Reuse for StreamChunk {
     fn reuse(&mut self, _trim: usize) -> bool {
-        self.consumed = 0;
-        self.contiguous_off = 0;
-        self.stream_offset_start = u64::MAX;
-        !self.inner.is_empty()
+        !self.0.is_empty()
+    }
+}
+
+impl Deref for StreamChunk {
+    type Target = Bytes;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl crate::BufSplit for StreamChunk {
+    fn split_at(&mut self, at: usize) -> Self {
+        StreamChunk(self.0.split_off(at))
     }
 }
 
 fn streamchunk_init(
-    chunk: &mut StreamChunk, capacity: usize, stream_offset_start: u64,
-) {
-    let len = chunk.inner.len();
+    chunk: StreamChunk, capacity: usize, stream_offset_start: u64,
+) -> StreamChunkMut {
+    trace!("streamchunk_init: is_unique={}", chunk.0.is_unique());
+    let chunk: BytesMut = chunk.0.into();
+    let mut stream_chunk = StreamChunkMut {
+        stream_offset_start,
+        inner: chunk,
+        consumed: 0,
+        contiguous_off: 0,
+    };
+    let len = stream_chunk.len();
     if len < capacity {
         trace!(
             "Changing inner size. Was {}, now: {}",
-            chunk.inner.len(),
+            stream_chunk.len(),
             capacity
         );
-        chunk.inner.reserve_exact(capacity - len);
+        stream_chunk.inner.reserve(capacity - len);
         // SAFETY: u8 is always initialized and we reserved the additional capacity.
         unsafe {
-            chunk.inner.set_len(capacity);
+            stream_chunk.inner.set_len(capacity);
         }
     } else if len > capacity {
-        chunk.inner.truncate(capacity);
+        stream_chunk.inner.truncate(capacity);
     }
-    chunk.stream_offset_start = stream_offset_start;
+    stream_chunk.stream_offset_start = stream_offset_start;
+    stream_chunk
 }
 
-impl StreamChunk {
+impl StreamChunkMut {
     /// How many bytes are available to read in this chunk.
     #[inline]
     pub fn len(&self) -> usize {
@@ -124,14 +149,6 @@ impl StreamChunk {
         written
     }
 
-    /// expands the chunk's capacity to `count` additional bytes. Does nothing if the capacity was
-    /// sufficient to hold `count` bytes.
-    pub fn expand(&mut self, count: usize) {
-        self.inner.reserve_exact(count);
-        // SAFETY: u8 is always initialized and we reserved the capacity.
-        unsafe { self.inner.set_len(count) };
-    }
-
     /// Tells whether the chunk is fully consumed.
     pub fn is_consumed(&self) -> bool {
         self.consumed == self.capacity() as usize
@@ -150,7 +167,7 @@ impl StreamChunk {
     }
 }
 
-impl Index<usize> for StreamChunk {
+impl Index<usize> for StreamChunkMut {
     type Output = u8;
 
     fn index(&self, idx: usize) -> &Self::Output {
@@ -163,7 +180,7 @@ impl Index<usize> for StreamChunk {
     }
 }
 
-impl IndexMut<usize> for StreamChunk {
+impl IndexMut<usize> for StreamChunkMut {
     fn index_mut(&mut self, idx: usize) -> &mut Self::Output {
         let index = self.consumed + idx;
         if index > self.contiguous_off {
@@ -174,7 +191,7 @@ impl IndexMut<usize> for StreamChunk {
     }
 }
 
-impl Index<Range<usize>> for StreamChunk {
+impl Index<Range<usize>> for StreamChunkMut {
     type Output = [u8];
 
     fn index(&self, range: Range<usize>) -> &Self::Output {
@@ -188,7 +205,7 @@ impl Index<Range<usize>> for StreamChunk {
     }
 }
 
-impl IndexMut<Range<usize>> for StreamChunk {
+impl IndexMut<Range<usize>> for StreamChunkMut {
     fn index_mut(&mut self, range: Range<usize>) -> &mut Self::Output {
         let start = range.start + self.consumed;
         let end = range.end + self.consumed;
@@ -200,7 +217,7 @@ impl IndexMut<Range<usize>> for StreamChunk {
     }
 }
 
-impl Index<RangeFrom<usize>> for StreamChunk {
+impl Index<RangeFrom<usize>> for StreamChunkMut {
     type Output = [u8];
 
     fn index(&self, rangefrom: RangeFrom<usize>) -> &Self::Output {
@@ -213,7 +230,7 @@ impl Index<RangeFrom<usize>> for StreamChunk {
     }
 }
 
-impl IndexMut<RangeFrom<usize>> for StreamChunk {
+impl IndexMut<RangeFrom<usize>> for StreamChunkMut {
     fn index_mut(&mut self, rangefrom: RangeFrom<usize>) -> &mut Self::Output {
         let start = rangefrom.start + self.consumed;
         if start > self.contiguous_off {
@@ -224,7 +241,7 @@ impl IndexMut<RangeFrom<usize>> for StreamChunk {
     }
 }
 
-impl Index<RangeTo<usize>> for StreamChunk {
+impl Index<RangeTo<usize>> for StreamChunkMut {
     type Output = [u8];
 
     fn index(&self, rangeto: RangeTo<usize>) -> &Self::Output {
@@ -237,7 +254,7 @@ impl Index<RangeTo<usize>> for StreamChunk {
     }
 }
 
-impl IndexMut<RangeTo<usize>> for StreamChunk {
+impl IndexMut<RangeTo<usize>> for StreamChunkMut {
     fn index_mut(&mut self, rangeto: RangeTo<usize>) -> &mut Self::Output {
         let end = rangeto.end + self.consumed;
         if end > self.contiguous_off {
@@ -248,7 +265,7 @@ impl IndexMut<RangeTo<usize>> for StreamChunk {
     }
 }
 
-impl Index<RangeFull> for StreamChunk {
+impl Index<RangeFull> for StreamChunkMut {
     type Output = [u8];
 
     fn index(&self, _rangefull: RangeFull) -> &Self::Output {
@@ -256,19 +273,19 @@ impl Index<RangeFull> for StreamChunk {
     }
 }
 
-impl IndexMut<RangeFull> for StreamChunk {
+impl IndexMut<RangeFull> for StreamChunkMut {
     fn index_mut(&mut self, _rangefull: RangeFull) -> &mut Self::Output {
         &mut self.inner[self.consumed..self.contiguous_off]
     }
 }
 
-impl AsRef<[u8]> for StreamChunk {
+impl AsRef<[u8]> for StreamChunkMut {
     fn as_ref(&self) -> &[u8] {
         &self.inner[..]
     }
 }
 
-impl AsMut<[u8]> for StreamChunk {
+impl AsMut<[u8]> for StreamChunkMut {
     fn as_mut(&mut self) -> &mut [u8] {
         &mut self.inner[..]
     }
@@ -289,7 +306,7 @@ pub struct RecvBuf {
     data: BTreeMap<u64, RangeBuf>,
 
     /// chunks of the stream buf
-    pub chunks: VecDeque<StreamChunk>,
+    pub chunks: VecDeque<StreamChunkMut>,
     /// Max size of a StreamChunk's buffer
     max_chunklen: usize,
 
@@ -337,10 +354,10 @@ impl RecvBuf {
         max_data: u64, max_window: u64, max_chunklen: usize, version: u32,
     ) -> RecvBuf {
         let mut chunks = VecDeque::new();
-        let chunk = pool_or_default()
-            .get_with(|pooled| streamchunk_init(pooled, max_chunklen, 0));
+        let buf = pool_or_default().get();
+        let chunk = streamchunk_init(buf.into_inner(), max_chunklen, 0);
 
-        chunks.push_back(chunk.into_inner());
+        chunks.push_back(chunk);
         //let initial_window = if version == crate::PROTOCOL_VERSION_VREVERSO {
         //max_data
         //} else {
@@ -731,6 +748,7 @@ impl RecvBuf {
 
         self.flow_control.add_consumed(chunk.len() as u64);
 
+        let chunk = StreamChunk(chunk.inner.freeze());
         let pooled = pool_or_default().from_owned(chunk);
 
         Ok((pooled, self.is_fin()))
@@ -821,9 +839,9 @@ impl RecvBuf {
         // let's recycle
         if is_fully_consumed || (does_consumed_reach_coff && self.is_fin()) {
             trace!("Chunk fully consumed. Sending it back to the pool");
-            pool_or_default().from_owned(
-                self.chunks.pop_front().expect("BUG: Chunks is empty"),
-            );
+            let chunk =
+                self.chunks.pop_front().expect("BUG: self.chunks is empty");
+            pool_or_default().from_owned(StreamChunk(chunk.inner.freeze()));
         }
 
         if self.is_fin() && self.deliver_fin {
@@ -859,7 +877,7 @@ impl RecvBuf {
     }
 
     #[inline]
-    pub(crate) fn insert_stream_chunk(&mut self, chunk: StreamChunk) -> usize {
+    pub(crate) fn insert_stream_chunk(&mut self, chunk: StreamChunkMut) -> usize {
         let idx = self.chunks.partition_point(|ch| {
             ch.stream_offset_start < chunk.stream_offset_start
         });
@@ -887,12 +905,15 @@ impl RecvBuf {
                         trace!(
                             "Copying across chunks: Adding a chunk to fill a gap"
                         );
-                        let mut chunk = pool_or_default().get_with(|pooled| {
-                            streamchunk_init(pooled, self.max_chunklen, toffset)
-                        });
+                        let pooled_buf = pool_or_default().get();
+                        let mut chunk = streamchunk_init(
+                            pooled_buf.into_inner(),
+                            self.max_chunklen,
+                            toffset,
+                        );
                         written += chunk.fill_from(&buf[written..], toffset);
                         toffset += chunk.capacity();
-                        self.chunks.insert(idx, chunk.into_inner());
+                        self.chunks.insert(idx, chunk);
                     } else {
                         debug_assert!(
                             toffset == chunk.stream_offset_start,
@@ -910,10 +931,12 @@ impl RecvBuf {
                 },
                 None => {
                     trace!("Creating missing memory chunk at offset {} and {} bytes left to write", toffset, buf.len() - written);
-                    let chunk = pool_or_default().get_with(|pooled| {
-                        streamchunk_init(pooled, self.max_chunklen, toffset)
-                    });
-                    let mut chunk = chunk.into_inner();
+                    let pooled_buf = pool_or_default().get();
+                    let mut chunk = streamchunk_init(
+                        pooled_buf.into_inner(),
+                        self.max_chunklen,
+                        toffset,
+                    );
                     written += chunk
                         .fill_from(&buf[written..], chunk.stream_offset_start);
                     toffset += chunk.capacity();
@@ -929,7 +952,9 @@ impl RecvBuf {
     /// Returns a `Chunk` supposed to hold bytes starting at stream_offset %
     /// chunk_len
     #[inline]
-    pub fn get_stream_chunk(&mut self, stream_offset: u64) -> Result<Chunk> {
+    pub fn get_stream_chunk(
+        &mut self, stream_offset: u64,
+    ) -> Result<StreamChunkMut> {
         if stream_offset < self.contiguous_off {
             trace!(
                 "We've received a packet holding an offset {} already \
@@ -945,15 +970,14 @@ impl RecvBuf {
         }
 
         if self.chunks.is_empty() {
-            let chunk = pool_or_default().get_with(|pooled| {
-                streamchunk_init(
-                    pooled,
-                    self.max_chunklen,
-                    stream_offset - (stream_offset % self.max_chunklen as u64),
-                )
-            });
+            let pooled_buf = pool_or_default().get();
+            let chunk = streamchunk_init(
+                pooled_buf.into_inner(),
+                self.max_chunklen,
+                stream_offset - (stream_offset % self.max_chunklen as u64),
+            );
 
-            self.chunks.push_back(chunk.into_inner());
+            self.chunks.push_back(chunk);
         }
 
         let relative_buf_offset = stream_offset % self.max_chunklen as u64;
@@ -973,20 +997,25 @@ impl RecvBuf {
             // We have found the chunk which should the decrypted data. Does the
             // data fits within the chunk or is it data across chunks?
             let chunk = self.chunks.remove(index).unwrap();
-            Ok(pool_or_default().from_owned(chunk))
+            Ok(chunk)
         } else {
             // Not found. We have a hole, so we need a new chunk.
             let stream_offset_start = stream_offset - relative_buf_offset;
             trace!("Creating missing memory chunk");
-            Ok(pool_or_default().get_with(|pooled| {
-                streamchunk_init(pooled, self.max_chunklen, stream_offset_start)
-            }))
+            let buf_pooled = pool_or_default().get();
+            let chunk = streamchunk_init(
+                buf_pooled.into_inner(),
+                self.max_chunklen,
+                stream_offset_start,
+            );
+            Ok(chunk)
         }
     }
 
     pub(crate) fn collect(&mut self) {
         for chunk in self.chunks.drain(..) {
-            let _ = pool_or_default().from_owned(chunk);
+            let _ =
+                pool_or_default().from_owned(StreamChunk(chunk.inner.freeze()));
         }
     }
 
@@ -1024,11 +1053,12 @@ impl RecvBuf {
             self.collect();
             // chunks should always have at least one element as long as
             // the fin flag is not consumed.
-            let chunk = pool_or_default().get_with(|pooled| {
-                streamchunk_init(pooled, self.max_chunklen, 0)
-            });
 
-            self.chunks.push_back(chunk.into_inner());
+            let pooled_buf = pool_or_default().get();
+            let chunk =
+                streamchunk_init(pooled_buf.into_inner(), self.max_chunklen, 0);
+
+            self.chunks.push_back(chunk);
 
             let bufinfo = RecvBufInfo::from(final_size, 0, true);
             self.write_v3(bufinfo)?;
@@ -2355,10 +2385,9 @@ mod tests {
 
     #[test]
     fn indexable_chunks() {
-        let mut chunk = pool_or_default()
-            .get_with(|pooled| streamchunk_init(pooled, 42, 0))
-            .into_inner();
-        chunk.inner = vec![0; 42]; // override init
+        let pooled_buf = pool_or_default().get();
+        let mut chunk = streamchunk_init(pooled_buf.into_inner(), 42, 0);
+        chunk.inner = BytesMut::zeroed(42);
         chunk.contiguous_off = 42;
         assert_eq!(chunk.len(), 42);
         chunk[10] = 66;

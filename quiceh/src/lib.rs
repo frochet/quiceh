@@ -2086,12 +2086,11 @@ impl<F: BufFactory> Connection<F> {
     #[inline]
     fn put_chunk_back(
         streams: &mut stream::StreamMap<F>, stream_id: u64,
-        maybe_chunk: &mut Option<Chunk>,
+        maybe_chunk: &mut Option<StreamChunkMut>,
     ) {
         if let Some(chunk) = maybe_chunk.take() {
-            let stream_chunk = chunk.into_inner();
             if let Some(s) = streams.get_mut(stream_id) {
-                s.recv.insert_stream_chunk(stream_chunk);
+                s.recv.insert_stream_chunk(chunk);
             }
         }
     }
@@ -3550,8 +3549,7 @@ impl<F: BufFactory> Connection<F> {
                     if let Some(mut chunk) = maybe_chunk.take() {
                         let offset = decoded_offset.unwrap();
                         if chunk.max_off() - offset >= dec_len as u64 {
-                            let stream_chunk = chunk.into_inner();
-                            stream.recv.insert_stream_chunk(stream_chunk);
+                            stream.recv.insert_stream_chunk(chunk);
                         } else {
                             // Assuming the Application is setting large enough
                             // chunk length, this
@@ -3569,9 +3567,7 @@ impl<F: BufFactory> Connection<F> {
                             b.skip(written)?;
                             let from_target_offset = chunk.max_off();
 
-                            let idx = stream
-                                .recv
-                                .insert_stream_chunk(chunk.into_inner());
+                            let idx = stream.recv.insert_stream_chunk(chunk);
                             stream.recv.create_missing_chunks_and_copy(
                                 idx,
                                 &b.as_ref()[..smeta.len - written],
@@ -11036,9 +11032,8 @@ pub mod testing {
 
         if conn.version == PROTOCOL_VERSION_VREVERSO {
             if let Some(chunk) = maybe_chunk {
-                let stream_chunk = chunk.into_inner();
                 if let Some(s) = conn.streams.get_mut(hdr.expected_stream_id) {
-                    s.recv.insert_stream_chunk(stream_chunk);
+                    s.recv.insert_stream_chunk(chunk);
                 }
             }
         }
@@ -21636,6 +21631,7 @@ pub use crate::range_buf::DefaultBufFactory;
 pub use crate::stream::recv_buf::StreamChunk;
 pub use crate::stream::Chunk;
 
+use crate::stream::recv_buf::StreamChunkMut;
 use crate::stream::Stream;
 use octets_rev::OctetsMut;
 use octets_rev::OctetsMutRev;

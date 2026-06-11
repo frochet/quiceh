@@ -41,6 +41,7 @@ use smallvec::SmallVec;
 
 use crate::range_buf::DefaultBufFactory;
 pub use crate::stream::recv_buf::StreamChunk;
+use crate::stream::recv_buf::StreamChunkMut;
 use crate::BufFactory;
 use crate::Error;
 use crate::Result;
@@ -872,7 +873,7 @@ impl<F: BufFactory> Stream<F> {
 
     pub(crate) fn get_stream_chunk(
         &mut self, stream_offset: u64,
-    ) -> Result<Chunk> {
+    ) -> Result<StreamChunkMut> {
         self.recv.get_stream_chunk(stream_offset)
     }
 
