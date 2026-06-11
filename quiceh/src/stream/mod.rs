@@ -41,6 +41,7 @@ use smallvec::SmallVec;
 
 use crate::range_buf::DefaultBufFactory;
 pub use crate::stream::recv_buf::StreamChunk;
+use crate::stream::recv_buf::StreamChunkMut;
 use crate::BufFactory;
 use crate::Error;
 use crate::Result;
@@ -57,6 +58,13 @@ pub const MAX_STREAM_WINDOW: u64 = 16 * 1024 * 1024;
 
 /// Memory chunk exposed to applications
 pub type Chunk = Pooled<StreamChunk>;
+
+impl crate::BufSplit for Chunk {
+    fn split_at(&mut self, at: usize) -> Self {
+        let new_chunk = (**self).split_at(at);
+        crate::bufpool::pool_or_default().from_owned(new_chunk)
+    }
+}
 
 /// A simple no-op hasher for Stream IDs.
 ///
@@ -872,7 +880,7 @@ impl<F: BufFactory> Stream<F> {
 
     pub(crate) fn get_stream_chunk(
         &mut self, stream_offset: u64,
-    ) -> Result<Chunk> {
+    ) -> Result<StreamChunkMut> {
         self.recv.get_stream_chunk(stream_offset)
     }
 

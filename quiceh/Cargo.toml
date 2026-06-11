@@ -63,6 +63,7 @@ smallvec = { version = "1.15", features = ["serde", "union"] }
 branches = "0.4.4"
 itertools = "0.12.1"
 buffer-pool = "0.1.0"
+bytes = "1.11.1"
 
 [target."cfg(windows)".dependencies]
 winapi = { version = "0.3", features = ["wincrypt", "ws2def", "ws2ipdef", "ws2tcpip"] }
