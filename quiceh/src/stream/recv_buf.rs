@@ -90,11 +90,17 @@ impl crate::BufSplit for StreamChunk {
     }
 }
 
+impl From<StreamChunk> for BytesMut {
+    fn from(chunk: StreamChunk) -> Self {
+        chunk.0.into()
+    }
+}
+
 fn streamchunk_init(
     chunk: StreamChunk, capacity: usize, stream_offset_start: u64,
 ) -> StreamChunkMut {
     trace!("streamchunk_init: is_unique={}", chunk.0.is_unique());
-    let chunk: BytesMut = chunk.0.into();
+    let chunk: BytesMut = chunk.into();
     let mut stream_chunk = StreamChunkMut {
         stream_offset_start,
         inner: chunk,
