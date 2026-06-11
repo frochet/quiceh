@@ -67,7 +67,7 @@ pub(crate) struct StreamChunkMut {
     pub contiguous_off: usize,
 }
 
-/// Memory chunk containing contiguous stream frames' data
+/// Memory chunk containing contiguous stream frames' data. Cheap to clone.
 #[derive(Debug, Clone)]
 pub struct StreamChunk {
     pub(crate) bytes: Bytes,
@@ -78,7 +78,7 @@ impl Default for StreamChunk {
     fn default() -> Self {
         StreamChunk {
             bytes: Bytes::new(),
-            reusable: true,
+            reusable: false,
         }
     }
 }
@@ -129,7 +129,12 @@ impl From<Bytes> for StreamChunk {
 fn streamchunk_init(
     chunk: StreamChunk, capacity: usize, stream_offset_start: u64,
 ) -> StreamChunkMut {
-    trace!("streamchunk_init: is_unique={}", chunk.bytes.is_unique());
+    trace!(
+        "streamchunk_init: is_unique={}, len={}",
+        chunk.bytes.is_unique(),
+        chunk.bytes.len()
+    );
+    // If the underyling byte is unique, converting to BytesMut is without copy.
     let chunk: BytesMut = chunk.into();
     let mut stream_chunk = StreamChunkMut {
         stream_offset_start,
@@ -2486,13 +2491,13 @@ mod tests {
     fn chunk_split_reusability() {
         use crate::BufSplit;
 
-        // Case 1: Split in the middle
+        // Case 1: Split in the middle (twice)
         {
             let mut chunk = StreamChunk {
                 bytes: Bytes::from_static(b"helloworld"),
                 reusable: true,
             };
-            let split = chunk.split_at(5);
+            let mut split = chunk.split_at(5);
 
             // The first split (prefix: "hello") is marked non-reusable
             assert_eq!(&chunk[..], b"hello");
@@ -2501,6 +2506,11 @@ mod tests {
             // The last split (suffix: "world") gets reused
             assert_eq!(&split[..], b"world");
             assert!(split.reusable);
+
+            let split2 = split.split_at(3);
+            assert_eq!(&split2[..], b"ld");
+            assert!(split2.reusable);
+            assert!(!split.reusable);
         }
 
         // Case 2: Split at the end (no split)
