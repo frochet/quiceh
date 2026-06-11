@@ -101,11 +101,11 @@ fn streamchunk_init(
         consumed: 0,
         contiguous_off: 0,
     };
-    let len = stream_chunk.len();
+    let len = stream_chunk.inner.len();
     if len < capacity {
         trace!(
             "Changing inner size. Was {}, now: {}",
-            stream_chunk.len(),
+            len,
             capacity
         );
         stream_chunk.inner.reserve(capacity - len);
@@ -977,7 +977,7 @@ impl RecvBuf {
                 stream_offset - (stream_offset % self.max_chunklen as u64),
             );
 
-            self.chunks.push_back(chunk);
+            return Ok(chunk);
         }
 
         let relative_buf_offset = stream_offset % self.max_chunklen as u64;
