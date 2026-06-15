@@ -214,6 +214,7 @@ impl PacketKey {
 
         // Make sure it fits in the buffer.
         if !scatter_crypt && in_len + tag_len > buf.len() {
+            debug!("Buffer too small");
             return Err(Error::CryptoFail);
         }
 
@@ -244,6 +245,7 @@ impl PacketKey {
             )
         };
         if rc != 1 {
+            debug!("seal_scatter returned -1");
             return Err(Error::CryptoFail);
         }
 
