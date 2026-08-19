@@ -1890,6 +1890,73 @@ pub fn version_is_supported(version: u32) -> bool {
     matches!(version, PROTOCOL_VERSION_V1 | PROTOCOL_VERSION_VREVERSO)
 }
 
+#[inline]
+fn encode_frame_to_packet<T: octets_rev::OctetsWrite>(
+    frame: &frame::Frame,
+    out: &mut T,
+    use_hidden_copy: bool,
+    is_rev: bool,
+) -> Result<()> {
+    match frame {
+        /*
+         * Some frames have been already been encoded to avoid a copy from
+         * frame.to_bytes(). We just need to out.skip them.
+         **/
+        frame::Frame::StreamHeader { stream_id, offset, length, fin } => {
+            if use_hidden_copy {
+                frame::encode_stream_header(
+                    *stream_id,
+                    *offset,
+                    *length as u64,
+                    *fin,
+                    out,
+                )?;
+            } else {
+                let hdr_len = 1 + // frame type
+                    octets_rev::varint_len(*stream_id) + // stream_id
+                    octets_rev::varint_len(*offset) + // offset
+                    2; // length, always encode as 2-byte varint
+
+                // this has already been added to the buffer.
+                out.skip(length + hdr_len)?;
+            }
+        },
+        frame::Frame::CryptoVec { offset, length, rbvec } => {
+            if rbvec.len() > 0 {
+                frame::encode_crypto_header(
+                    *offset,
+                    *length as u64,
+                    out,
+                )?;
+                if is_rev {
+                    for rb in rbvec.iter().rev() {
+                        out.put_bytes(&rb[..])?;
+                    }
+                } else {
+                    for rb in rbvec {
+                        out.put_bytes(&rb[..])?;
+                    }
+                }
+            }
+        },
+        frame::Frame::DatagramHeader { length } => {
+            let hdr_len = 1 + // frame type
+                2; // length, always encode as 2-byte varint
+            out.skip(length + hdr_len)?;
+        },
+        frame::Frame::CryptoHeader { offset, length } => {
+            let hdr_len = 1 + // frame type
+                octets_rev::varint_len(*offset) + // offset
+                2; // length, always encode as 2-byte varint
+            out.skip(length + hdr_len)?;
+        },
+        _ => {
+            frame.to_bytes(out)?;
+        },
+    }
+    Ok(())
+}
+
 /// Push frames to the output packet. Frames in $frames should already have
 /// their wire_len() reserved.
 ///
@@ -1897,64 +1964,13 @@ pub fn version_is_supported(version: u32) -> bool {
 /// buffer at their intended position.
 macro_rules! push_frames_to_pkt {
     ($out:expr, $frames:expr, $usehiddencopy:expr, $ver:expr, $is_rev:expr) => {{
-        for frame in $frames.iter() {
-            match frame {
-                /*
-                 * Some frames have been already been encoded to avoid a copy from
-                 * frame.to_bytes(). We just need to $out.skip them.
-                 **/
-                frame::Frame::StreamHeader { stream_id, offset, length, fin } => {
-                    if $usehiddencopy {
-                        frame::encode_stream_header(
-                            *stream_id,
-                            *offset,
-                            *length as u64,
-                            *fin,
-                            &mut $out,
-                        )?;
-                    } else {
-                        let hdr_len = 1 + // frame type
-                            octets_rev::varint_len(*stream_id) + // stream_id
-                            octets_rev::varint_len(*offset) + // offset
-                            2; // length, always encode as 2-byte varint
-
-                        //this has already been added to the buffer.
-                        $out.skip(length + hdr_len)?;
-                    }
-
-                },
-                frame::Frame::CryptoVec { offset, length, rbvec } => {
-                    if rbvec.len() > 0 {
-                        frame::encode_crypto_header(
-                            *offset,
-                            *length as u64,
-                            &mut $out
-                        )?;
-                        if $is_rev {
-                            for rb in rbvec.iter().rev() {
-                                $out.put_bytes(&rb[..])?;
-                            }
-                        } else {
-                            for rb in rbvec {
-                                $out.put_bytes(&rb[..])?;
-                            }
-                        }
-                    }
-                }
-                frame::Frame::DatagramHeader { length } => {
-                    let hdr_len = 1 + // frame type
-                        2; // length, always encode as 2-byte varint
-                    $out.skip(length + hdr_len)?;
-                },
-                frame::Frame::CryptoHeader { offset, length } => {
-                    let hdr_len = 1 + // frame type
-                        octets_rev::varint_len(*offset) + // offset
-                        2; // length, always encode as 2-byte varint
-                    $out.skip(length + hdr_len)?;
-                }
-                _ => {
-                    frame.to_bytes(&mut $out)?;
-                },
+        if $is_rev {
+            for frame in $frames.iter().rev() {
+                encode_frame_to_packet(frame, &mut $out, $usehiddencopy, true)?;
+            }
+        } else {
+            for frame in $frames.iter() {
+                encode_frame_to_packet(frame, &mut $out, $usehiddencopy, false)?;
             }
         }
     }};
@@ -5540,7 +5556,6 @@ impl<F: BufFactory> Connection<F> {
                         0_usize
                     };
 
-                frames.reverse();
                 trace!("frames {:?}", frames);
                 // ctrl cleartext is written inside the destination buffer,
                 // aligned on a multiple of the AES blocksize.
@@ -5593,7 +5608,6 @@ impl<F: BufFactory> Connection<F> {
             if self.version == crate::PROTOCOL_VERSION_VREVERSO {
                 b.skip(cumul)?;
                 let mut b_rev = OctetsMutRev::from(b);
-                frames.reverse();
                 push_frames_to_pkt!(b_rev, frames, false, self.version, true);
                 b = OctetsMut::from(b_rev);
                 (b, None, cumul, 0_usize)
@@ -5689,13 +5703,15 @@ impl<F: BufFactory> Connection<F> {
         };
 
         let written = if self.use_hidden_crypt_copy_for_zc {
-            // For vreverso, we called reverse(); so it should be the
-            // last.
             let sentry =
-                if let Some(frame::Frame::StreamHeader { stream_id, .. }) =
-                    frames.last()
-                {
-                    Some(self.streams.entry(*stream_id))
+                if self.version == crate::PROTOCOL_VERSION_VREVERSO {
+                    if let Some(frame::Frame::StreamHeader { stream_id, .. }) =
+                        frames.first()
+                    {
+                        Some(self.streams.entry(*stream_id))
+                    } else {
+                        None
+                    }
                 } else if self.version == crate::PROTOCOL_VERSION_V1 {
                     if let Some(frame::Frame::StreamHeader {
                         stream_id, ..
