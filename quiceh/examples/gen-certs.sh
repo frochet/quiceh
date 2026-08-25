@@ -10,6 +10,7 @@ cat cert.crt >> cert-big.crt
 cat cert.crt >> cert-big.crt
 cat cert.crt >> cert-big.crt
 cat cert.crt >> cert-big.crt
+cat cert-big.crt cert-big.crt > cert-huge.crt
 rm cert.csr
 rm rootca.key
 rm rootca.srl
