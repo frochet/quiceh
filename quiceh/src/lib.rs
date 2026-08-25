@@ -11378,6 +11378,10 @@ mod tests {
         assert_eq!(pipe.server.server_name(), Some("quic.tech"));
     }
 
+    // XXX enables this test for BoringSSL as well when it supports post-quantum
+    // hybrids handshake.
+    // XXX assumes the default crypto is always going to emit more than one packet
+    // the test is going fail if this assumption becomes wrong in the future.
     #[test]
     #[cfg(feature = "aws-lc")]
     fn handshake_initial_reordered() {
