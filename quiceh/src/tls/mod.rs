@@ -1055,7 +1055,7 @@ fn log_ssl_error() {
     trace!("{}", std::str::from_utf8(&err).unwrap());
 }
 
-#[cfg(feature = "aws-lc")]
+#[cfg(all(feature = "aws-lc", not(feature = "boringssl-boring-crate")))]
 use aws_lc_sys as sys;
 #[cfg(feature = "boringssl-boring-crate")]
 use boring_sys as sys;
@@ -1311,7 +1311,7 @@ unsafe fn SSL_get_servername(ssl: *const SSL, ty: c_int) -> *const c_char {
 unsafe fn SSL_provide_quic_data(
     ssl: *mut SSL, level: crypto::Level, data: *const u8, len: usize,
 ) -> c_int {
-    sys::SSL_provide_quic_data(ssl as _, level as _, data as _, len as _) as _
+    sys::SSL_provide_quic_data(ssl as _, std::mem::transmute(level), data as _, len as _) as _
 }
 
 #[inline]

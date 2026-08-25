@@ -11379,6 +11379,58 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "aws-lc")]
+    fn handshake_initial_reordered() {
+        let mut pipe = <Pipe>::new().unwrap();
+
+        // Client sends initial flight.
+        let mut flight = testing::emit_flight(&mut pipe.client).unwrap();
+
+        // Ensure there are multiple initial packets to reorder.
+        assert!(
+            flight.len() > 1,
+            "expected initial flight to contain multiple packets"
+        );
+
+        // Reverse initial flight packet order.
+        flight.reverse();
+
+        // Server receives out-of-order initial packet (offset > 0).
+        let (mut pkt, si) = flight.remove(0);
+        let info = RecvInfo {
+            to: si.to,
+            from: si.from,
+        };
+        assert_eq!(pipe.server.recv(&mut pkt, info), Ok(pkt.len()));
+
+        // Server has not yet received full ClientHello, so no handshake keys yet.
+        assert!(!pipe.server.handshake_status().has_handshake_keys);
+        assert!(!pipe.server.is_established());
+
+        // Server receives the first initial packet (offset 0).
+        let (mut pkt, si) = flight.remove(0);
+        let info = RecvInfo {
+            to: si.to,
+            from: si.from,
+        };
+        assert_eq!(pipe.server.recv(&mut pkt, info), Ok(pkt.len()));
+
+        // Server has now reassembled ClientHello and derived handshake keys.
+        assert!(pipe.server.handshake_status().has_handshake_keys);
+
+        // Process remaining flights and complete handshake.
+        assert_eq!(pipe.advance(), Ok(()));
+
+        assert!(pipe.client.is_established());
+        assert!(pipe.server.is_established());
+        assert_eq!(
+            pipe.client.application_proto(),
+            pipe.server.application_proto()
+        );
+        assert_eq!(pipe.server.server_name(), Some("quic.tech"));
+    }
+
+    #[test]
     fn handshake_done() {
         let mut pipe = <Pipe>::new().unwrap();
 

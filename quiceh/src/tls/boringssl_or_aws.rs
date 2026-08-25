@@ -293,7 +293,7 @@ pub(super) fn get_session_bytes(session: *mut SSL_SESSION) -> Result<Vec<u8>> {
 }
 pub(super) const TLS_ERROR: c_int = 3;
 
-#[cfg(feature = "aws-lc")]
+#[cfg(all(feature = "aws-lc", not(feature = "boringssl-boring-crate")))]
 use aws_lc_sys as sys;
 #[cfg(feature = "boringssl-boring-crate")]
 use boring_sys as sys;
