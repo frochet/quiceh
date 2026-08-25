@@ -541,7 +541,7 @@ pub fn verify_slices_are_equal(a: &[u8], b: &[u8]) -> Result<()> {
     Err(Error::CryptoFail)
 }
 
-#[cfg(feature = "aws-lc")]
+#[cfg(all(feature = "aws-lc", not(feature = "boringssl-boring-crate")))]
 use aws_lc_sys as sys;
 #[cfg(feature = "boringssl-boring-crate")]
 use boring_sys as sys;

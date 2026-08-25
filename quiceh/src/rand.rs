@@ -59,7 +59,7 @@ pub fn rand_u64_uniform(max: u64) -> u64 {
     r / chunk_size
 }
 
-#[cfg(feature = "aws-lc")]
+#[cfg(all(feature = "aws-lc", not(feature = "boringssl-boring-crate")))]
 use aws_lc_sys as sys;
 #[cfg(feature = "boringssl-boring-crate")]
 use boring_sys as sys;

@@ -383,7 +383,7 @@ pub(crate) fn hkdf_expand(
 
     Ok(())
 }
-#[cfg(feature = "aws-lc")]
+#[cfg(all(feature = "aws-lc", not(feature = "boringssl-boring-crate")))]
 use aws_lc_sys as sys;
 #[cfg(feature = "boringssl-boring-crate")]
 use boring_sys as sys;

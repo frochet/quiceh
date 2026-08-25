@@ -1892,17 +1892,19 @@ pub fn version_is_supported(version: u32) -> bool {
 
 #[inline]
 fn encode_frame_to_packet<T: octets_rev::OctetsWrite>(
-    frame: &frame::Frame,
-    out: &mut T,
-    use_hidden_copy: bool,
-    is_rev: bool,
+    frame: &frame::Frame, out: &mut T, use_hidden_copy: bool, is_rev: bool,
 ) -> Result<()> {
     match frame {
         /*
          * Some frames have been already been encoded to avoid a copy from
          * frame.to_bytes(). We just need to out.skip them.
          **/
-        frame::Frame::StreamHeader { stream_id, offset, length, fin } => {
+        frame::Frame::StreamHeader {
+            stream_id,
+            offset,
+            length,
+            fin,
+        } => {
             if use_hidden_copy {
                 frame::encode_stream_header(
                     *stream_id,
@@ -1921,13 +1923,13 @@ fn encode_frame_to_packet<T: octets_rev::OctetsWrite>(
                 out.skip(length + hdr_len)?;
             }
         },
-        frame::Frame::CryptoVec { offset, length, rbvec } => {
+        frame::Frame::CryptoVec {
+            offset,
+            length,
+            rbvec,
+        } => {
             if rbvec.len() > 0 {
-                frame::encode_crypto_header(
-                    *offset,
-                    *length as u64,
-                    out,
-                )?;
+                frame::encode_crypto_header(*offset, *length as u64, out)?;
                 if is_rev {
                     for rb in rbvec.iter().rev() {
                         out.put_bytes(&rb[..])?;
@@ -5703,27 +5705,25 @@ impl<F: BufFactory> Connection<F> {
         };
 
         let written = if self.use_hidden_crypt_copy_for_zc {
-            let sentry =
-                if self.version == crate::PROTOCOL_VERSION_VREVERSO {
-                    if let Some(frame::Frame::StreamHeader { stream_id, .. }) =
-                        frames.first()
-                    {
-                        Some(self.streams.entry(*stream_id))
-                    } else {
-                        None
-                    }
-                } else if self.version == crate::PROTOCOL_VERSION_V1 {
-                    if let Some(frame::Frame::StreamHeader {
-                        stream_id, ..
-                    }) = &maybe_stream_header
-                    {
-                        Some(self.streams.entry(*stream_id))
-                    } else {
-                        None
-                    }
+            let sentry = if self.version == crate::PROTOCOL_VERSION_VREVERSO {
+                if let Some(frame::Frame::StreamHeader { stream_id, .. }) =
+                    frames.first()
+                {
+                    Some(self.streams.entry(*stream_id))
                 } else {
                     None
-                };
+                }
+            } else if self.version == crate::PROTOCOL_VERSION_V1 {
+                if let Some(frame::Frame::StreamHeader { stream_id, .. }) =
+                    &maybe_stream_header
+                {
+                    Some(self.streams.entry(*stream_id))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
             let written = if likely(self.version == PROTOCOL_VERSION_VREVERSO) {
                 // We encrypt with the data in inbuf and the ctrl data in
@@ -11327,8 +11327,6 @@ mod tests {
 
     #[test]
     fn missing_initial_source_connection_id() {
-        let mut buf = [0; 65535];
-
         let mut pipe = <Pipe>::new().unwrap();
 
         // Reset initial_source_connection_id.
@@ -11338,19 +11336,17 @@ mod tests {
         assert_eq!(pipe.client.encode_transport_params(), Ok(()));
 
         // Client sends initial flight.
-        let (len, _) = pipe.client.send(&mut buf).unwrap();
+        let flight = testing::emit_flight(&mut pipe.client).unwrap();
 
         // Server rejects transport parameters.
         assert_eq!(
-            pipe.server_recv(&mut buf[..len]),
+            testing::process_flight(&mut pipe.server, flight),
             Err(Error::InvalidTransportParam)
         );
     }
 
     #[test]
     fn invalid_initial_source_connection_id() {
-        let mut buf = [0; 65535];
-
         let mut pipe = <Pipe>::new().unwrap();
 
         // Scramble initial_source_connection_id.
@@ -11360,11 +11356,11 @@ mod tests {
         assert_eq!(pipe.client.encode_transport_params(), Ok(()));
 
         // Client sends initial flight.
-        let (len, _) = pipe.client.send(&mut buf).unwrap();
+        let flight = testing::emit_flight(&mut pipe.client).unwrap();
 
         // Server rejects transport parameters.
         assert_eq!(
-            pipe.server_recv(&mut buf[..len]),
+            testing::process_flight(&mut pipe.server, flight),
             Err(Error::InvalidTransportParam)
         );
     }
@@ -11379,6 +11375,58 @@ mod tests {
             pipe.server.application_proto()
         );
 
+        assert_eq!(pipe.server.server_name(), Some("quic.tech"));
+    }
+
+    #[test]
+    #[cfg(feature = "aws-lc")]
+    fn handshake_initial_reordered() {
+        let mut pipe = <Pipe>::new().unwrap();
+
+        // Client sends initial flight.
+        let mut flight = testing::emit_flight(&mut pipe.client).unwrap();
+
+        // Ensure there are multiple initial packets to reorder.
+        assert!(
+            flight.len() > 1,
+            "expected initial flight to contain multiple packets"
+        );
+
+        // Reverse initial flight packet order.
+        flight.reverse();
+
+        // Server receives out-of-order initial packet (offset > 0).
+        let (mut pkt, si) = flight.remove(0);
+        let info = RecvInfo {
+            to: si.to,
+            from: si.from,
+        };
+        assert_eq!(pipe.server.recv(&mut pkt, info), Ok(pkt.len()));
+
+        // Server has not yet received full ClientHello, so no handshake keys yet.
+        assert!(!pipe.server.handshake_status().has_handshake_keys);
+        assert!(!pipe.server.is_established());
+
+        // Server receives the first initial packet (offset 0).
+        let (mut pkt, si) = flight.remove(0);
+        let info = RecvInfo {
+            to: si.to,
+            from: si.from,
+        };
+        assert_eq!(pipe.server.recv(&mut pkt, info), Ok(pkt.len()));
+
+        // Server has now reassembled ClientHello and derived handshake keys.
+        assert!(pipe.server.handshake_status().has_handshake_keys);
+
+        // Process remaining flights and complete handshake.
+        assert_eq!(pipe.advance(), Ok(()));
+
+        assert!(pipe.client.is_established());
+        assert!(pipe.server.is_established());
+        assert_eq!(
+            pipe.client.application_proto(),
+            pipe.server.application_proto()
+        );
         assert_eq!(pipe.server.server_name(), Some("quic.tech"));
     }
 
@@ -11574,8 +11622,8 @@ mod tests {
         assert_eq!(pipe.client.set_session(session), Ok(()));
 
         // Client sends initial flight.
-        let (len, _) = pipe.client.send(&mut buf).unwrap();
-        assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
+        let flight = testing::emit_flight(&mut pipe.client).unwrap();
+        testing::process_flight(&mut pipe.server, flight).unwrap();
 
         // Client sends 0-RTT packet.
         let pkt_type = packet::Type::ZeroRTT;
@@ -11642,8 +11690,7 @@ mod tests {
         assert_eq!(pipe.client.set_session(session), Ok(()));
 
         // Client sends initial flight.
-        let (len, _) = pipe.client.send(&mut buf).unwrap();
-        let mut initial = buf[..len].to_vec();
+        let initial_flight = testing::emit_flight(&mut pipe.client).unwrap();
 
         // Client sends 0-RTT packet.
         let pkt_type = packet::Type::ZeroRTT;
@@ -11658,7 +11705,7 @@ mod tests {
                 .unwrap();
         let mut zrtt = buf[..len].to_vec();
 
-        // 0-RTT packet is received before the Initial one.
+        // 0-RTT packet is received before the Initial flight.
         assert_eq!(pipe.server_recv(&mut zrtt), Ok(zrtt.len()));
 
         assert_eq!(pipe.server.undecryptable_pkts.len(), 1);
@@ -11667,8 +11714,8 @@ mod tests {
         let mut r = pipe.server.readable();
         assert_eq!(r.next(), None);
 
-        // Initial packet is also received.
-        assert_eq!(pipe.server_recv(&mut initial), Ok(initial.len()));
+        // Initial flight is also received.
+        testing::process_flight(&mut pipe.server, initial_flight).unwrap();
 
         // 0-RTT stream data is readable.
         let mut r = pipe.server.readable();
@@ -11820,7 +11867,7 @@ mod tests {
     fn limit_handshake_data() {
         let mut config = Config::new(PROTOCOL_VERSION).unwrap();
         config
-            .load_cert_chain_from_pem_file("examples/cert-big.crt")
+            .load_cert_chain_from_pem_file("examples/cert-huge.crt")
             .unwrap();
         config
             .load_priv_key_from_pem_file("examples/cert.key")
@@ -11847,7 +11894,7 @@ mod tests {
 
         let mut config = Config::new(PROTOCOL_VERSION).unwrap();
         config
-            .load_cert_chain_from_pem_file("examples/cert-big.crt")
+            .load_cert_chain_from_pem_file("examples/cert-huge.crt")
             .unwrap();
         config
             .load_priv_key_from_pem_file("examples/cert.key")
@@ -12595,8 +12642,6 @@ mod tests {
 
     #[test]
     fn zero_rtt() {
-        let mut buf = [0; 65535];
-
         let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
         config
             .load_cert_chain_from_pem_file("examples/cert.crt")
@@ -12626,22 +12671,20 @@ mod tests {
         assert_eq!(pipe.client.set_session(session), Ok(()));
 
         // Client sends initial flight.
-        let (len, _) = pipe.client.send(&mut buf).unwrap();
-        let mut initial = buf[..len].to_vec();
+        let initial = testing::emit_flight(&mut pipe.client).unwrap();
 
         assert!(pipe.client.is_in_early_data());
 
         // Client sends 0-RTT data.
         assert_eq!(pipe.client.stream_send(4, b"hello, world", true), Ok(12));
 
-        let (len, _) = pipe.client.send(&mut buf).unwrap();
-        let mut zrtt = buf[..len].to_vec();
+        let zrtt = testing::emit_flight(&mut pipe.client).unwrap();
 
         // Server receives packets.
-        assert_eq!(pipe.server_recv(&mut initial), Ok(initial.len()));
+        testing::process_flight(&mut pipe.server, initial).unwrap();
         assert!(pipe.server.is_in_early_data());
 
-        assert_eq!(pipe.server_recv(&mut zrtt), Ok(zrtt.len()));
+        testing::process_flight(&mut pipe.server, zrtt).unwrap();
 
         // 0-RTT stream data is readable.
         let mut r = pipe.server.readable();
@@ -16395,14 +16438,14 @@ mod tests {
         // Client receives Retry and sends new Initial.
         assert_eq!(pipe.client_recv(&mut buf[..len]), Ok(len));
 
-        let (len, _) = pipe.client.send(&mut buf).unwrap();
+        let flight = testing::emit_flight(&mut pipe.client).unwrap();
 
         // Server accepts connection and send first flight. But original
         // destination connection ID is ignored.
         let from = "127.0.0.1:1234".parse().unwrap();
         pipe.server =
             accept(&scid, None, <Pipe>::server_addr(), from, &config).unwrap();
-        assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
+        testing::process_flight(&mut pipe.server, flight).unwrap();
 
         let flight = testing::emit_flight(&mut pipe.server).unwrap();
 
@@ -16454,7 +16497,7 @@ mod tests {
         // Client receives Retry and sends new Initial.
         assert_eq!(pipe.client_recv(&mut buf[..len]), Ok(len));
 
-        let (len, _) = pipe.client.send(&mut buf).unwrap();
+        let flight = testing::emit_flight(&mut pipe.client).unwrap();
 
         // Server accepts connection and send first flight. But original
         // destination connection ID is invalid.
@@ -16463,7 +16506,7 @@ mod tests {
         pipe.server =
             accept(&scid, Some(&odcid), <Pipe>::server_addr(), from, &config)
                 .unwrap();
-        assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
+        testing::process_flight(&mut pipe.server, flight).unwrap();
 
         let flight = testing::emit_flight(&mut pipe.server).unwrap();
 
@@ -18166,26 +18209,25 @@ mod tests {
         let mut pipe = <Pipe>::new().unwrap();
 
         // Client sends first flight.
-        let (len, _) = pipe.client.send(&mut buf).unwrap();
-        assert_eq!(len, MIN_CLIENT_INITIAL_LEN);
-        assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
+        while let Ok((len, _)) = pipe.client.send(&mut buf) {
+            assert_eq!(len, MIN_CLIENT_INITIAL_LEN);
+            assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
+        }
 
         // Server sends first flight.
-        let (len, _) = pipe.server.send(&mut buf).unwrap();
-        assert_eq!(len, MIN_CLIENT_INITIAL_LEN);
-        assert_eq!(pipe.client_recv(&mut buf[..len]), Ok(len));
-
-        let (len, _) = pipe.server.send(&mut buf).unwrap();
-        assert_eq!(pipe.client_recv(&mut buf[..len]), Ok(len));
+        while let Ok((len, _)) = pipe.server.send(&mut buf) {
+            assert_eq!(pipe.client_recv(&mut buf[..len]), Ok(len));
+        }
 
         // Client sends stream data.
         assert!(pipe.client.is_established());
         assert_eq!(pipe.client.stream_send(4, b"hello", true), Ok(5));
 
         // Client sends second flight.
-        let (len, _) = pipe.client.send(&mut buf).unwrap();
-        assert_eq!(len, MIN_CLIENT_INITIAL_LEN);
-        assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
+        while let Ok((len, _)) = pipe.client.send(&mut buf) {
+            assert_eq!(len, MIN_CLIENT_INITIAL_LEN);
+            assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
+        }
 
         // None of the sent packets should have been dropped.
         assert_eq!(pipe.client.sent_count, pipe.server.recv_count);
@@ -18195,11 +18237,9 @@ mod tests {
     #[test]
     /// Tests that client avoids handshake deadlock by arming PTO.
     fn handshake_anti_deadlock() {
-        let mut buf = [0; 65535];
-
         let mut config = Config::new(PROTOCOL_VERSION).unwrap();
         config
-            .load_cert_chain_from_pem_file("examples/cert-big.crt")
+            .load_cert_chain_from_pem_file("examples/cert-huge.crt")
             .unwrap();
         config
             .load_priv_key_from_pem_file("examples/cert.key")
@@ -18215,13 +18255,12 @@ mod tests {
         assert!(!pipe.server.handshake_status().has_handshake_keys);
         assert!(pipe.server.handshake_status().peer_verified_address);
 
-        // Client sends padded Initial.
-        let (len, _) = pipe.client.send(&mut buf).unwrap();
-        assert_eq!(len, 1200);
+        // Client sends padded Initial flight.
+        let flight = testing::emit_flight(&mut pipe.client).unwrap();
 
         // Server receives client's Initial and sends own Initial and Handshake
         // until it's blocked by the anti-amplification limit.
-        assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
+        testing::process_flight(&mut pipe.server, flight).unwrap();
         let flight = testing::emit_flight(&mut pipe.server).unwrap();
 
         assert!(!pipe.client.handshake_status().has_handshake_keys);
@@ -18251,12 +18290,11 @@ mod tests {
 
         let mut pipe = <Pipe>::new().unwrap();
 
-        // Client sends padded Initial.
-        let (len, _) = pipe.client.send(&mut buf).unwrap();
-        assert_eq!(len, 1200);
+        // Client sends padded Initial flight.
+        let flight = testing::emit_flight(&mut pipe.client).unwrap();
 
         // Server receives client's Initial and sends own Initial and Handshake.
-        assert_eq!(pipe.server_recv(&mut buf[..len]), Ok(len));
+        testing::process_flight(&mut pipe.server, flight).unwrap();
 
         let flight = testing::emit_flight(&mut pipe.server).unwrap();
         testing::process_flight(&mut pipe.client, flight).unwrap();
