@@ -442,7 +442,7 @@ use branches::likely;
 use smallvec::SmallVec;
 
 /// The current QUIC wire version.
-pub const PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_V1;
+pub const PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_VREVERSO;
 
 /// Supported QUIC versions.
 pub const PROTOCOL_VERSION_V1: u32 = 0x0000_0001;

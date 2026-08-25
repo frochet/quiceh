@@ -968,12 +968,12 @@ pub struct Connection {
 
 impl Connection {
     fn new(
-        config: &Config, is_server: bool, enable_dgram: bool,
+        config: &Config, is_server: bool, enable_dgram: bool, version: u32,
     ) -> Result<Connection> {
         let initial_uni_stream_id = if is_server { 0x3 } else { 0x2 };
         let h3_datagram = if enable_dgram { Some(1) } else { None };
         let next_request_stream_id =
-            if crate::PROTOCOL_VERSION == crate::PROTOCOL_VERSION_VREVERSO {
+            if version == crate::PROTOCOL_VERSION_VREVERSO {
                 0x4
             } else {
                 0
@@ -1061,7 +1061,7 @@ impl Connection {
         }
 
         let mut http3_conn =
-            Connection::new(config, conn.is_server, conn.dgram_enabled())?;
+            Connection::new(config, conn.is_server, conn.dgram_enabled(), conn.version)?;
 
         match http3_conn.send_settings(conn) {
             Ok(_) => (),
@@ -3432,8 +3432,8 @@ pub mod testing {
             let server_dgram = pipe.server.dgram_enabled();
             Ok(Session {
                 pipe,
-                client: Connection::new(h3_config, false, client_dgram)?,
-                server: Connection::new(h3_config, true, server_dgram)?,
+                client: Connection::new(h3_config, false, client_dgram, config.version)?,
+                server: Connection::new(h3_config, true, server_dgram, config.version)?,
             })
         }
 
@@ -5613,10 +5613,14 @@ mod tests {
     fn uni_stream_local_counting() {
         let config = Config::new().unwrap();
 
-        let h3_cln = Connection::new(&config, false, false).unwrap();
+        let h3_cln =
+            Connection::new(&config, false, false, crate::PROTOCOL_VERSION)
+                .unwrap();
         assert_eq!(h3_cln.next_uni_stream_id, 2);
 
-        let h3_srv = Connection::new(&config, true, false).unwrap();
+        let h3_srv =
+            Connection::new(&config, true, false, crate::PROTOCOL_VERSION)
+                .unwrap();
         assert_eq!(h3_srv.next_uni_stream_id, 3);
     }
 
